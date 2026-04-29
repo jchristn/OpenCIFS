@@ -1,0 +1,23 @@
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+csharp_style_var_for_built_in_types = false:error
+csharp_style_var_when_type_is_apparent = false:error
+csharp_style_var_elsewhere = false:error
+csharp_prefer_braces = true:error
+csharp_new_line_before_open_brace = all
+
+dotnet_naming_rule.private_fields_must_be_pascal_prefixed.severity = error
+dotnet_naming_rule.private_fields_must_be_pascal_prefixed.symbols = private_fields
+dotnet_naming_rule.private_fields_must_be_pascal_prefixed.style = private_field_style
+
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+
+dotnet_naming_style.private_field_style.required_prefix = _
+dotnet_naming_style.private_field_style.capitalization = pascal_case
+

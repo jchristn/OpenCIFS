@@ -1,0 +1,28 @@
+param(
+    [string]$Configuration = "Release",
+    [string]$Framework = "net8.0"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Invoke-ChildPowerShellScript {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    & powershell -ExecutionPolicy Bypass -File $ScriptPath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
+$commonArguments = @(
+    "-Configuration", $Configuration,
+    "-Framework", $Framework
+)
+
+Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-integration-gates.ps1") -Arguments $commonArguments
+Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "validate-release-artifacts.ps1") -Arguments @(
+    "-Configuration", $Configuration
+)

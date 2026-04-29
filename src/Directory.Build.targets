@@ -1,0 +1,85 @@
+<Project>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'OpenCIFS.Protocol' or '$(MSBuildProjectName)' == 'OpenCIFS.Transport' or '$(MSBuildProjectName)' == 'OpenCIFS.Security' or '$(MSBuildProjectName)' == 'OpenCIFS.Server' or '$(MSBuildProjectName)' == 'OpenCIFS.Client'">
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Core.Tests.Shared</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Core.Tests.Console</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Core.Tests.Xunit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Core.Tests.Nunit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Core.Tests.Mstest</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Server.Tests.Shared</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Server.Tests.Console</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Server.Tests.Xunit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Server.Tests.Nunit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Server.Tests.Mstest</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Client.Tests.Shared</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Client.Tests.Console</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Client.Tests.Xunit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Client.Tests.Nunit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Client.Tests.Mstest</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Interop.Tests.Shared</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Interop.Tests.Console</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Interop.Tests.Xunit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Interop.Tests.Nunit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>OpenCIFS.Interop.Tests.Mstest</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <Target
+    Name="OpenCifsValidateCoverageMatrix"
+    AfterTargets="Build"
+    Condition="'$(MSBuildProjectName)' == 'Sample.OpenCifsServer' and '$(IsCrossTargetingBuild)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(SkipOpenCifsCoverageValidation)' != 'true'">
+    <Exec Command="dotnet run --project &quot;$(MSBuildThisFileDirectory)..\eng\OpenCIFS.Build\OpenCIFS.Build.csproj&quot; --configuration $(Configuration) --no-launch-profile -- validate-coverage &quot;$(MSBuildThisFileDirectory)..\docs\coverage-matrix.md&quot;" />
+  </Target>
+
+  <Target
+    Name="OpenCifsValidatePackageGraph"
+    AfterTargets="Build"
+    Condition="'$(MSBuildProjectName)' == 'Sample.OpenCifsServer' and '$(IsCrossTargetingBuild)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(SkipOpenCifsPackageGraphValidation)' != 'true'">
+    <Exec Command="dotnet run --project &quot;$(MSBuildThisFileDirectory)..\eng\OpenCIFS.Build\OpenCIFS.Build.csproj&quot; --configuration $(Configuration) --no-launch-profile -- validate-package-graph &quot;$(MSBuildThisFileDirectory)..\src&quot;" />
+  </Target>
+
+  <Target
+    Name="OpenCifsValidateInteropMatrix"
+    AfterTargets="Build"
+    Condition="'$(MSBuildProjectName)' == 'Sample.OpenCifsServer' and '$(IsCrossTargetingBuild)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(SkipOpenCifsInteropValidation)' != 'true'">
+    <Exec Command="dotnet run --project &quot;$(MSBuildThisFileDirectory)..\eng\OpenCIFS.Build\OpenCIFS.Build.csproj&quot; --configuration $(Configuration) --no-launch-profile -- validate-interop &quot;$(MSBuildThisFileDirectory)..\docs\interop-matrix.md&quot;" />
+  </Target>
+</Project>

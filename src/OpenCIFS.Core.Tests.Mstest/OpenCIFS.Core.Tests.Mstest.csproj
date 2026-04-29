@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenCIFS.Core.Tests.Shared\OpenCIFS.Core.Tests.Shared.csproj" />
+    <ProjectReference Include="..\OpenCIFS.Security\OpenCIFS.Security.csproj" />
+    <ProjectReference Include="..\OpenCIFS.Transport\OpenCIFS.Transport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Pipelines" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="MSTest" />
+    <PackageReference Include="Touchstone.Core" />
+  </ItemGroup>
+
+</Project>
