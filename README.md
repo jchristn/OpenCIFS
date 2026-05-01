@@ -201,6 +201,23 @@ For the bounded SMB `2.1` large-I/O slice, use `OpenCifsClientConnection` direct
 
 For bounded realistic small-flow compounding on the advanced path, use `OpenCifsClientConnection.CompoundCreateQueryInfoCloseAsync(...)`, `CompoundOpenReadCloseAsync(...)`, and `CompoundCreateWriteFlushCloseAsync(...)`. The verified scope currently covers those helpers over managed direct TCP and loopback, including signed related responses and missing-path create-failure propagation, and the high-level `OpenCifsShareSession.Files.ReadAllBytesAsync(...)`, `WriteAllBytesAsync(...)`, and `Metadata.GetAttributesAsync(...)` paths now opportunistically use them when the request fits inside the bounded compound slice.
 
+For the bounded SMB `3.1.1` opt-in preview, set `WithSmb311Preview()` on both the client builder and the server builder. When both sides opt in, the negotiated dialect lifts to `Smb311` end-to-end with SHA-512 preauth integrity transcript hashing, AES-GMAC per-message signing, AES-128-GCM session encryption, and SMB 3.1.1 key derivation using the captured preauth hash. When only the client opts in, the existing tolerance path on the server selects the highest non-3.1.1 dialect (typically SMB 3.0.2), so opting in on the client is safe against legacy servers.
+
+```csharp
+using OpenCIFS.Client;
+using OpenCIFS.Server;
+
+await using OpenCifsClient client = new OpenCifsClientBuilder()
+    .WithServer("fileserver.contoso.local", 445)
+    .WithSmb311Preview()
+    .Build();
+await client.ConnectAsync(credential);
+
+// client.Session.NegotiatedDialect is SmbDialect.Smb311 when the peer also opts in.
+```
+
+The bounded SMB 3.1.1 preview is also reachable through `Sample.OpenCifsServer` without code edits using `--enable-smb311-preview true` on the command line; the resulting startup banner reports the SMB 3.1.1 preview state. AES-256-GCM/CCM ciphers (gated on Kerberos session keys) and external SMB 3.1.1 interop with Windows / Samba clients remain backlog.
+
 ### Server Example
 
 This example starts an OpenCIFS server, registers a local filesystem share, inspects the shares the server will expose, accepts remote CIFS clients, and logs authenticated sessions, tree connects, and create requests through the callback surface. Remote clients then perform reads, writes, directory enumeration, rename, and delete operations against the registered share root.
