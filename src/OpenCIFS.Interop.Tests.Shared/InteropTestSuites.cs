@@ -78,7 +78,8 @@ namespace OpenCIFS.Interop.Tests.Shared
                             token.ThrowIfCancellationRequested();
 
                             string readmePath = RepositoryPaths.FromRoot("README.md");
-                            FileAssertions.AssertContains(readmePath, "The verified working dialect surface is now managed direct-TCP SMB 2.0.2 and SMB 2.1; SMB 3.x and SMB1/CIFS remain backlog.");
+                            FileAssertions.AssertContains(readmePath, "The verified managed dialect surface now covers direct-TCP SMB 2.0.2, SMB 2.1, and a bounded SMB 3.0 / SMB 3.0.2 slice.");
+                            FileAssertions.AssertContains(readmePath, "By default the current managed client and server path prefer encryption-capable SMB 3.0.2");
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(
@@ -107,8 +108,8 @@ namespace OpenCIFS.Interop.Tests.Shared
                 {
                     new TestCaseDescriptor(
                         suiteId: "Interop.Loopback",
-                        caseId: "ClientAndServerNegotiateSmb21",
-                        displayName: "Client and server loopback negotiate SMB 2.1 with matching GUID and signing state",
+                        caseId: "ClientAndServerNegotiateDefaultSmb302",
+                        displayName: "Client and server loopback negotiate default SMB 3.0.2 with matching GUID, signing state, and encryption capability",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -119,9 +120,9 @@ namespace OpenCIFS.Interop.Tests.Shared
                             Smb2NegotiateResponse response = server.HandleNegotiate(request);
                             client.ApplyNegotiateResponse(response);
 
-                            if (client.NegotiatedDialect != SmbDialect.Smb21)
+                            if (client.NegotiatedDialect != SmbDialect.Smb302)
                             {
-                                throw new InvalidOperationException("Expected loopback negotiation to select SMB 2.1.");
+                                throw new InvalidOperationException("Expected loopback negotiation to select SMB 3.0.2 by default.");
                             }
 
                             if (client.ServerGuid != server.ServerGuid)
@@ -134,12 +135,51 @@ namespace OpenCIFS.Interop.Tests.Shared
                                 throw new InvalidOperationException("Expected loopback negotiation to require signing by default.");
                             }
 
+                            if ((response.Capabilities & Smb2GlobalCapabilities.Encryption) == 0)
+                            {
+                                throw new InvalidOperationException("Expected the default loopback negotiate response to advertise bounded SMB3 encryption capability.");
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.Loopback",
+                        caseId: "ClientAndServerSmb311PreviewNegotiateSmb311DialectWithTypedContextsWhenBothOptIn",
+                        displayName: "Client and server loopback SMB 3.1.1 preview negotiate the SMB 3.1.1 dialect with typed Preauth and Encryption response contexts when both sides opt in",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerHost server = new OpenCifsServerHost(new OpenCifsServerOptions
+                            {
+                                EnableSmb311Preview = true,
+                                RequireEncryptionForSmb3 = false
+                            });
+                            OpenCifsClientSession client = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                EnableSmb311Preview = true,
+                                PreferEncryption = false
+                            });
+                            Smb2NegotiateRequest request = client.CreateNegotiateRequest();
+                            TestAssertions.True(Array.IndexOf(request.Dialects, SmbDialect.Smb311) >= 0, "Expected the SMB 3.1.1 preview client to advertise the SMB 3.1.1 dialect.");
+                            TestAssertions.Equal((ushort)4, request.NegotiateContextCount, "Expected the SMB 3.1.1 preview client to advertise four typed negotiate-context entries.");
+
+                            Smb2NegotiateResponse response = server.HandleNegotiate(request);
+                            TestAssertions.Equal(SmbDialect.Smb311, response.Dialect, "Expected the loopback server to negotiate the SMB 3.1.1 dialect when both sides opt in.");
+                            TestAssertions.True(response.NegotiateContextCount >= 1, "Expected the SMB 3.1.1 preview server to emit at least one typed response negotiate-context entry.");
+
+                            client.ApplyNegotiateResponse(response);
+                            TestAssertions.Equal(SmbDialect.Smb311, client.NegotiatedDialect!.Value, "Expected the SMB 3.1.1 preview client to track the negotiated SMB 3.1.1 dialect.");
+
+                            byte[]? clientHash = client.GetCurrentPreauthIntegrityHash();
+                            byte[]? serverHash = server.GetCurrentPreauthIntegrityHash();
+                            TestAssertions.True(clientHash != null && serverHash != null, "Expected both sides of the loopback SMB 3.1.1 preview slice to allocate a preauth integrity hash accumulator.");
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Interop.Loopback",
                         caseId: "ClientAndServerRespectOptionalSigningPolicy",
-                        displayName: "Client and server loopback negotiate optional signing when both sides relax the policy",
+                        displayName: "Client and server loopback negotiate default SMB 3.0.2 while keeping signing optional when both sides relax the policy",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -156,9 +196,9 @@ namespace OpenCIFS.Interop.Tests.Shared
                             Smb2NegotiateResponse response = server.HandleNegotiate(request);
                             client.ApplyNegotiateResponse(response);
 
-                            if (client.NegotiatedDialect != SmbDialect.Smb21)
+                            if (client.NegotiatedDialect != SmbDialect.Smb302)
                             {
-                                throw new InvalidOperationException("Expected loopback negotiation to keep SMB 2.1 selected.");
+                                throw new InvalidOperationException("Expected loopback negotiation to keep SMB 3.0.2 selected.");
                             }
 
                             if (client.IsSigningRequired)
@@ -169,6 +209,11 @@ namespace OpenCIFS.Interop.Tests.Shared
                             if ((response.SecurityMode & Smb2SecurityMode.SigningEnabled) == 0)
                             {
                                 throw new InvalidOperationException("Expected signing to remain enabled even when it is not required.");
+                            }
+
+                            if ((response.Capabilities & Smb2GlobalCapabilities.Encryption) == 0)
+                            {
+                                throw new InvalidOperationException("Expected the relaxed-signing loopback negotiate response to continue advertising bounded SMB3 encryption capability.");
                             }
 
                             return Task.CompletedTask;
@@ -217,6 +262,65 @@ namespace OpenCIFS.Interop.Tests.Shared
                             client.ApplyNegotiateResponse(response);
 
                             TestAssertions.Equal(SmbDialect.Smb2002, client.NegotiatedDialect!.Value, "Expected loopback negotiation to clamp to SMB 2.0.2 when both sides cap the dialect range.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.Loopback",
+                        caseId: "ClientAndServerNegotiateOptInSmb302WithoutEncryption",
+                        displayName: "Client and server loopback negotiate SMB 3.0.2 without session encryption when both sides explicitly disable SMB3 encryption",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerHost server = CreateServerHost(maximumDialect: SmbDialect.Smb302, requireEncryptionForSmb3: false);
+                            OpenCifsClientSession client = CreateClient(maximumDialect: SmbDialect.Smb302, preferEncryption: false);
+                            Smb2NegotiateRequest request = client.CreateNegotiateRequest();
+                            Smb2NegotiateResponse response = server.HandleNegotiate(request);
+                            client.ApplyNegotiateResponse(response);
+
+                            TestAssertions.Equal(SmbDialect.Smb302, client.NegotiatedDialect!.Value, "Expected loopback negotiation to select SMB 3.0.2.");
+                            TestAssertions.Equal(
+                                Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                response.Capabilities,
+                                "Expected the bounded SMB 3.0.2 loopback response to advertise the implemented large-MTU, leasing, and encryption capabilities.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.Loopback",
+                        caseId: "ClientAndServerClampOptInNegotiationToSmb30WithoutEncryption",
+                        displayName: "Client and server loopback clamp the bounded non-encrypted SMB3 slice to SMB 3.0 when the server caps below SMB 3.0.2",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerHost server = CreateServerHost(maximumDialect: SmbDialect.Smb30, requireEncryptionForSmb3: false);
+                            OpenCifsClientSession client = CreateClient(maximumDialect: SmbDialect.Smb302, preferEncryption: false);
+                            Smb2NegotiateRequest request = client.CreateNegotiateRequest();
+                            Smb2NegotiateResponse response = server.HandleNegotiate(request);
+                            client.ApplyNegotiateResponse(response);
+
+                            TestAssertions.Equal(SmbDialect.Smb30, client.NegotiatedDialect!.Value, "Expected loopback negotiation to clamp to SMB 3.0 when the server caps below SMB 3.0.2.");
+                            TestAssertions.Equal(
+                                Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                response.Capabilities,
+                                "Expected the bounded SMB 3.0 loopback response to advertise the implemented large-MTU, leasing, and encryption capabilities.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.Loopback",
+                        caseId: "ClientAndServerClampRequiredEncryptionSmb3NegotiationToSmb21WhenClientDisablesEncryption",
+                        displayName: "Client and server loopback clamp required-encryption SMB3 negotiation to SMB 2.1 when the client disables encryption",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerHost server = CreateServerHost(maximumDialect: SmbDialect.Smb302, requireEncryptionForSmb3: true);
+                            OpenCifsClientSession client = CreateClient(maximumDialect: SmbDialect.Smb302, preferEncryption: false);
+                            Smb2NegotiateRequest request = client.CreateNegotiateRequest();
+                            Smb2NegotiateResponse response = server.HandleNegotiate(request);
+                            client.ApplyNegotiateResponse(response);
+
+                            TestAssertions.Equal(SmbDialect.Smb21, client.NegotiatedDialect!.Value, "Expected loopback negotiation to clamp to SMB 2.1 when the server requires SMB3 encryption but the client does not advertise it.");
                             return Task.CompletedTask;
                         })
                 });
@@ -280,6 +384,194 @@ namespace OpenCIFS.Interop.Tests.Shared
 
                             TestAssertions.False(client.IsAuthenticated, "Expected logoff to clear loopback authentication state.");
                             TestAssertions.Equal(0, client.ConnectedTreeIds.Length, "Expected logoff to leave no connected trees.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackSessionTree",
+                        caseId: "ClientAndServerCompleteSessionAndTreeLifecycleUnderOptInSmb302",
+                        displayName: "Client and server loopback complete session setup, tree connect, tree disconnect, and logoff under opt-in SMB 3.0.2",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerHost server = CreateServerHost(maximumDialect: SmbDialect.Smb302, requireEncryptionForSmb3: false);
+                            OpenCifsClientSession client = CreateClient(maximumDialect: SmbDialect.Smb302, preferEncryption: false);
+                            OpenCifsClientCredential credential = CreateCredential();
+
+                            Smb2NegotiateRequest negotiateRequest = client.CreateNegotiateRequest();
+                            Smb2NegotiateResponse negotiateResponse = server.HandleNegotiate(negotiateRequest);
+                            client.ApplyNegotiateResponse(negotiateResponse);
+
+                            Smb2SessionSetupRequest initialRequest = client.CreateSessionSetupRequest(credential);
+                            OpenCifsServerSessionSetupResult challengeResult = server.HandleSessionSetup(0, initialRequest);
+                            Smb2SessionSetupRequest authenticateRequest = client.CreateSessionAuthenticateRequest(
+                                credential,
+                                challengeResult.SessionId,
+                                challengeResult.Status,
+                                challengeResult.Response);
+                            OpenCifsServerSessionSetupResult successResult = server.HandleSessionSetup(challengeResult.SessionId, authenticateRequest);
+                            client.ApplySessionSetupResult(successResult.SessionId, successResult.Status, successResult.Response);
+
+                            Smb2TreeConnectRequest treeConnectRequest = client.CreateTreeConnectRequest(TestEnvironmentDefaults.DefaultShareName);
+                            OpenCifsServerTreeConnectResult treeConnectResult = server.HandleTreeConnect(client.SessionId!.Value, treeConnectRequest);
+                            client.ApplyTreeConnectResult(TestEnvironmentDefaults.DefaultShareName, treeConnectResult.TreeId, treeConnectResult.Status, treeConnectResult.Response);
+
+                            TestAssertions.Equal(SmbDialect.Smb302, client.NegotiatedDialect!.Value, "Expected the authenticated loopback flow to remain on SMB 3.0.2.");
+                            TestAssertions.True(client.IsAuthenticated, "Expected the opt-in SMB 3.0.2 loopback session to authenticate successfully.");
+                            TestAssertions.Equal(1, client.ConnectedTreeIds.Length, "Expected a connected tree under the opt-in SMB 3.0.2 loopback flow.");
+
+                            uint treeId = client.ConnectedTreeIds[0];
+                            OpenCifsServerOperationResult<Smb2TreeDisconnectResponse> treeDisconnectResult = server.HandleTreeDisconnect(
+                                client.SessionId!.Value,
+                                treeId,
+                                client.CreateTreeDisconnectRequest(treeId));
+                            client.ApplyTreeDisconnectResult(treeId, treeDisconnectResult.Status, treeDisconnectResult.Response);
+
+                            OpenCifsServerOperationResult<Smb2LogoffResponse> logoffResult = server.HandleLogoff(
+                                client.SessionId!.Value,
+                                client.CreateLogoffRequest());
+                            client.ApplyLogoffResult(logoffResult.Status, logoffResult.Response);
+
+                            TestAssertions.False(client.IsAuthenticated, "Expected logoff to clear opt-in SMB 3.0.2 authentication state.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackSessionTree",
+                        caseId: "ClientAndServerCompleteEncryptedSessionTreeAndEchoLifecycleUnderSmb302",
+                        displayName: "Client and server loopback complete encrypted SMB 3.0.2 session, echo, tree, and logoff lifecycle through transform packets",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerHost server = CreateServerHost(maximumDialect: SmbDialect.Smb302, requireEncryptionForSmb3: true);
+                            OpenCifsClientSession client = CreateClient(maximumDialect: SmbDialect.Smb302, preferEncryption: true);
+                            OpenCifsClientCredential credential = CreateCredential();
+
+                            Smb2NegotiateRequest negotiateRequest = client.CreateNegotiateRequest();
+                            Smb2NegotiateResponse negotiateResponse = server.HandleNegotiate(negotiateRequest);
+                            client.ApplyNegotiateResponse(negotiateResponse);
+                            TestAssertions.Equal(SmbDialect.Smb302, client.NegotiatedDialect!.Value, "Expected encrypted loopback negotiation to select SMB 3.0.2.");
+                            TestAssertions.True((negotiateResponse.Capabilities & Smb2GlobalCapabilities.Encryption) != 0, "Expected the encrypted loopback negotiate response to advertise encryption capability.");
+
+                            OpenCifsServerSessionSetupResult challengeResult = server.HandleSessionSetup(0, client.CreateSessionSetupRequest(credential));
+                            OpenCifsServerSessionSetupResult successResult = server.HandleSessionSetup(
+                                challengeResult.SessionId,
+                                client.CreateSessionAuthenticateRequest(
+                                    credential,
+                                    challengeResult.SessionId,
+                                    challengeResult.Status,
+                                    challengeResult.Response));
+                            client.ApplySessionSetupResult(successResult.SessionId, successResult.Status, successResult.Response);
+
+                            TestAssertions.True((successResult.Response.SessionFlags & Smb2SessionFlags.EncryptData) != 0, "Expected the SMB3 session-setup success response to require encryption.");
+                            TestAssertions.True(client.IsSessionEncryptionRequired, "Expected the authenticated SMB3 loopback session to require encryption.");
+
+                            Smb2Header treeConnectHeader = client.CreateRequestHeader(Smb2Command.TreeConnect, sessionId: client.SessionId!.Value);
+                            Smb2TreeConnectRequest treeConnectRequest = client.CreateTreeConnectRequest(TestEnvironmentDefaults.DefaultShareName);
+                            Smb2CompoundPacket treeConnectRequestPacket = new Smb2CompoundPacket(new[]
+                            {
+                                new Smb2CompoundPacketEntry(treeConnectHeader, treeConnectRequest.ToByteArray())
+                            });
+                            byte[] encryptedTreeConnectBytes = client.FinalizeRequestPacket(treeConnectRequestPacket);
+                            TestAssertions.True(Smb2TransformHeader.LooksLikeTransformHeader(encryptedTreeConnectBytes), "Expected the encrypted loopback tree connect request to use an SMB3 transform header.");
+                            byte[] decryptedTreeConnectBytes = server.UnwrapRequestPacket(encryptedTreeConnectBytes, out bool treeConnectWasEncrypted);
+                            TestAssertions.True(treeConnectWasEncrypted, "Expected the server to recognize the encrypted loopback tree connect request.");
+                            Smb2CompoundPacket parsedTreeConnectPacket = Smb2CompoundPacket.ReadFrom(decryptedTreeConnectBytes);
+                            server.ValidateRequestPacket(parsedTreeConnectPacket, decryptedTreeConnectBytes, treeConnectWasEncrypted);
+                            server.ValidateAndAcceptRequestHeader(parsedTreeConnectPacket.Entries[0].Header, Smb2Command.TreeConnect, expectedSessionId: client.SessionId.Value);
+                            OpenCifsServerTreeConnectResult treeConnectResult = server.HandleTreeConnect(client.SessionId.Value, treeConnectRequest);
+                            byte[] encryptedTreeConnectResponseBytes = server.FinalizeResponsePacket(
+                                new Smb2CompoundPacket(new[]
+                                {
+                                    new Smb2CompoundPacketEntry(
+                                        server.CreateResponseHeader(treeConnectHeader, treeConnectResult.Status, sessionId: client.SessionId.Value, treeId: treeConnectResult.TreeId),
+                                        treeConnectResult.Response.ToByteArray())
+                                }));
+                            TestAssertions.True(Smb2TransformHeader.LooksLikeTransformHeader(encryptedTreeConnectResponseBytes), "Expected the encrypted loopback tree connect response to use an SMB3 transform header.");
+                            byte[] decryptedTreeConnectResponseBytes = client.UnwrapResponsePacket(encryptedTreeConnectResponseBytes);
+                            Smb2CompoundPacket parsedTreeConnectResponsePacket = Smb2CompoundPacket.ReadFrom(decryptedTreeConnectResponseBytes);
+                            client.ValidateResponsePacket(parsedTreeConnectResponsePacket, decryptedTreeConnectResponseBytes);
+                            client.ApplyResponseHeader(parsedTreeConnectResponsePacket.Entries[0].Header);
+                            client.ApplyTreeConnectResult(TestEnvironmentDefaults.DefaultShareName, treeConnectResult.TreeId, treeConnectResult.Status, treeConnectResult.Response);
+
+                            uint treeId = client.ConnectedTreeIds[0];
+                            Smb2Header echoHeader = client.CreateRequestHeader(Smb2Command.Echo, treeId, sessionId: client.SessionId.Value);
+                            Smb2EchoRequest echoRequest = client.CreateEchoRequest();
+                            byte[] encryptedEchoBytes = client.FinalizeRequestPacket(new Smb2CompoundPacket(new[]
+                            {
+                                new Smb2CompoundPacketEntry(echoHeader, echoRequest.ToByteArray())
+                            }));
+                            byte[] decryptedEchoBytes = server.UnwrapRequestPacket(encryptedEchoBytes, out bool echoWasEncrypted);
+                            TestAssertions.True(echoWasEncrypted, "Expected the server to recognize the encrypted loopback echo request.");
+                            Smb2CompoundPacket parsedEchoPacket = Smb2CompoundPacket.ReadFrom(decryptedEchoBytes);
+                            server.ValidateRequestPacket(parsedEchoPacket, decryptedEchoBytes, echoWasEncrypted);
+                            server.ValidateAndAcceptRequestHeader(parsedEchoPacket.Entries[0].Header, Smb2Command.Echo, expectedSessionId: client.SessionId.Value, expectedTreeId: treeId);
+                            OpenCifsServerOperationResult<Smb2EchoResponse> echoResult = server.HandleEcho(client.SessionId.Value, echoRequest);
+                            byte[] encryptedEchoResponseBytes = server.FinalizeResponsePacket(
+                                new Smb2CompoundPacket(new[]
+                                {
+                                    new Smb2CompoundPacketEntry(
+                                        server.CreateResponseHeader(echoHeader, echoResult.Status, sessionId: client.SessionId.Value, treeId: treeId),
+                                        echoResult.Response.ToByteArray())
+                                }));
+                            byte[] decryptedEchoResponseBytes = client.UnwrapResponsePacket(encryptedEchoResponseBytes);
+                            Smb2CompoundPacket parsedEchoResponsePacket = Smb2CompoundPacket.ReadFrom(decryptedEchoResponseBytes);
+                            client.ValidateResponsePacket(parsedEchoResponsePacket, decryptedEchoResponseBytes);
+                            client.ApplyResponseHeader(parsedEchoResponsePacket.Entries[0].Header);
+                            client.ApplyEchoResult(echoResult.Status, Smb2EchoResponse.ReadFrom(parsedEchoResponsePacket.Entries[0].Payload));
+
+                            Smb2Header treeDisconnectHeader = client.CreateRequestHeader(Smb2Command.TreeDisconnect, treeId, sessionId: client.SessionId.Value);
+                            Smb2TreeDisconnectRequest treeDisconnectRequest = client.CreateTreeDisconnectRequest(treeId);
+                            byte[] encryptedTreeDisconnectBytes = client.FinalizeRequestPacket(new Smb2CompoundPacket(new[]
+                            {
+                                new Smb2CompoundPacketEntry(treeDisconnectHeader, treeDisconnectRequest.ToByteArray())
+                            }));
+                            byte[] decryptedTreeDisconnectBytes = server.UnwrapRequestPacket(encryptedTreeDisconnectBytes, out bool treeDisconnectWasEncrypted);
+                            TestAssertions.True(treeDisconnectWasEncrypted, "Expected the server to recognize the encrypted loopback tree disconnect request.");
+                            Smb2CompoundPacket parsedTreeDisconnectPacket = Smb2CompoundPacket.ReadFrom(decryptedTreeDisconnectBytes);
+                            server.ValidateRequestPacket(parsedTreeDisconnectPacket, decryptedTreeDisconnectBytes, treeDisconnectWasEncrypted);
+                            server.ValidateAndAcceptRequestHeader(parsedTreeDisconnectPacket.Entries[0].Header, Smb2Command.TreeDisconnect, expectedSessionId: client.SessionId.Value, expectedTreeId: treeId);
+                            OpenCifsServerOperationResult<Smb2TreeDisconnectResponse> treeDisconnectResult = server.HandleTreeDisconnect(client.SessionId.Value, treeId, treeDisconnectRequest);
+                            byte[] encryptedTreeDisconnectResponseBytes = server.FinalizeResponsePacket(
+                                new Smb2CompoundPacket(new[]
+                                {
+                                    new Smb2CompoundPacketEntry(
+                                        server.CreateResponseHeader(treeDisconnectHeader, treeDisconnectResult.Status, sessionId: client.SessionId.Value, treeId: treeId),
+                                        treeDisconnectResult.Response.ToByteArray())
+                                }));
+                            byte[] decryptedTreeDisconnectResponseBytes = client.UnwrapResponsePacket(encryptedTreeDisconnectResponseBytes);
+                            Smb2CompoundPacket parsedTreeDisconnectResponsePacket = Smb2CompoundPacket.ReadFrom(decryptedTreeDisconnectResponseBytes);
+                            client.ValidateResponsePacket(parsedTreeDisconnectResponsePacket, decryptedTreeDisconnectResponseBytes);
+                            client.ApplyResponseHeader(parsedTreeDisconnectResponsePacket.Entries[0].Header);
+                            client.ApplyTreeDisconnectResult(treeId, treeDisconnectResult.Status, treeDisconnectResult.Response);
+
+                            Smb2Header logoffHeader = client.CreateRequestHeader(Smb2Command.Logoff, sessionId: client.SessionId.Value);
+                            Smb2LogoffRequest logoffRequest = client.CreateLogoffRequest();
+                            byte[] encryptedLogoffBytes = client.FinalizeRequestPacket(new Smb2CompoundPacket(new[]
+                            {
+                                new Smb2CompoundPacketEntry(logoffHeader, logoffRequest.ToByteArray())
+                            }));
+                            byte[] decryptedLogoffBytes = server.UnwrapRequestPacket(encryptedLogoffBytes, out bool logoffWasEncrypted);
+                            TestAssertions.True(logoffWasEncrypted, "Expected the server to recognize the encrypted loopback logoff request.");
+                            Smb2CompoundPacket parsedLogoffPacket = Smb2CompoundPacket.ReadFrom(decryptedLogoffBytes);
+                            server.ValidateRequestPacket(parsedLogoffPacket, decryptedLogoffBytes, logoffWasEncrypted);
+                            server.ValidateAndAcceptRequestHeader(parsedLogoffPacket.Entries[0].Header, Smb2Command.Logoff, expectedSessionId: client.SessionId.Value);
+                            OpenCifsServerOperationResult<Smb2LogoffResponse> logoffResult = server.HandleLogoff(client.SessionId.Value, logoffRequest);
+                            byte[] encryptedLogoffResponseBytes = server.FinalizeResponsePacket(
+                                new Smb2CompoundPacket(new[]
+                                {
+                                    new Smb2CompoundPacketEntry(
+                                        server.CreateResponseHeader(logoffHeader, logoffResult.Status, sessionId: logoffHeader.SessionId),
+                                        logoffResult.Response.ToByteArray())
+                                }));
+                            byte[] decryptedLogoffResponseBytes = client.UnwrapResponsePacket(encryptedLogoffResponseBytes);
+                            Smb2CompoundPacket parsedLogoffResponsePacket = Smb2CompoundPacket.ReadFrom(decryptedLogoffResponseBytes);
+                            client.ValidateResponsePacket(parsedLogoffResponsePacket, decryptedLogoffResponseBytes);
+                            client.ApplyResponseHeader(parsedLogoffResponsePacket.Entries[0].Header);
+                            client.ApplyLogoffResult(logoffResult.Status, logoffResult.Response);
+
+                            TestAssertions.False(client.IsAuthenticated, "Expected encrypted loopback logoff to clear the authenticated client session.");
+                            TestAssertions.Equal(0, client.ConnectedTreeIds.Length, "Expected encrypted loopback logoff to leave no connected trees.");
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(
@@ -807,7 +1099,7 @@ namespace OpenCIFS.Interop.Tests.Shared
                             tamperedResponseBytes[tamperedResponseBytes.Length - 1] ^= 0x01;
                             Smb2CompoundPacket parsedTamperedResponsePacket = Smb2CompoundPacket.ReadFrom(tamperedResponseBytes);
 
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => client.ValidateResponsePacket(parsedTamperedResponsePacket, tamperedResponseBytes),
                                 "Expected the loopback client to reject tampered signed SMB2 echo responses.");
                             return Task.CompletedTask;
@@ -1931,6 +2223,268 @@ namespace OpenCIFS.Interop.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Interop.LoopbackDurable",
+                        caseId: "ClientAndServerReconnectEncryptedDurableBatchOpenAcrossHostsUnderSmb302",
+                        displayName: "Client and server loopback reconnect an encrypted durable batch open across hosts under SMB 3.0.2",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsInteropEncryptedDurable_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            File.WriteAllText(Path.Combine(sharePath, "shared.txt"), "durable-data");
+                            OpenCifsServerSharedState sharedState = new OpenCifsServerSharedState();
+                            OpenCifsServerHost firstHost = CreateServerHost(sharePath, sharedState, maximumDialect: SmbDialect.Smb302, requireEncryptionForSmb3: true);
+                            OpenCifsServerHost secondHost = CreateServerHost(sharePath, sharedState, maximumDialect: SmbDialect.Smb302, requireEncryptionForSmb3: true);
+
+                            try
+                            {
+                                OpenCifsClientSession firstClient = CreateNegotiatedClient(firstHost, maximumDialect: SmbDialect.Smb302, preferEncryption: true);
+                                OpenCifsClientCredential credential = CreateCredential();
+                                uint firstTreeId = AuthenticateEncryptedLoopbackSessionAndTree(firstHost, firstClient, credential);
+
+                                Smb2CreateRequest initialOpenRequest = firstClient.CreateCreateRequest(
+                                    firstTreeId,
+                                    "shared.txt",
+                                    desiredAccess: 0x80000000U,
+                                    shareAccess: 0x00000007U,
+                                    createDisposition: Smb2CreateDisposition.Open,
+                                    requestedOplockLevel: Smb2OplockLevel.Batch,
+                                    requestDurableHandle: true);
+                                Smb2CompoundPacket initialOpenResponsePacket = RoundTripEncryptedPacket(
+                                    firstHost,
+                                    firstClient,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            firstClient.CreateRequestHeader(Smb2Command.Create, firstTreeId, sessionId: firstClient.SessionId!.Value),
+                                            initialOpenRequest.ToByteArray())
+                                    }),
+                                    "encrypted durable create");
+                                OpenState durableOpen = firstClient.ApplyCreateResult(
+                                    firstTreeId,
+                                    "shared.txt",
+                                    initialOpenResponsePacket.Entries[0].Header.Status,
+                                    Smb2CreateResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(initialOpenResponsePacket.Entries[0].Header.Command, initialOpenResponsePacket.Entries[0].Payload)),
+                                    initialOpenRequest);
+                                TestAssertions.True(durableOpen.IsDurable, "Expected the initial encrypted durable open to be granted durable reconnect state.");
+                                TestAssertions.Equal(Smb2OplockLevel.Batch, durableOpen.OplockLevel, "Expected the initial encrypted durable open to receive a batch oplock.");
+                                TestAssertions.True(durableOpen.UsesDurableHandleV2, "Expected the initial encrypted SMB 3.0.2 durable open to use durable-handle v2.");
+                                TestAssertions.False(durableOpen.DurableCreateGuid == Guid.Empty, "Expected the initial encrypted SMB 3.0.2 durable open to preserve a non-empty durable create GUID.");
+                                TestAssertions.Equal(300000U, durableOpen.DurableTimeoutMs, "Expected the initial encrypted SMB 3.0.2 durable open to preserve the bounded durable timeout.");
+                                TestAssertions.False(durableOpen.IsPersistent, "Expected the initial encrypted SMB 3.0.2 durable open to remain non-persistent.");
+
+                                lock (firstHost.SyncRoot)
+                                {
+                                    firstHost.HandleTransportDisconnect();
+                                    firstHost.UnregisterFromSharedState();
+                                }
+
+                                OpenCifsClientSession secondClient = CreateNegotiatedClient(secondHost, maximumDialect: SmbDialect.Smb302, preferEncryption: true);
+                                uint secondTreeId = AuthenticateEncryptedLoopbackSessionAndTree(secondHost, secondClient, credential);
+
+                                Smb2CreateRequest reconnectRequest = secondClient.CreateDurableReconnectCreateRequest(
+                                    secondTreeId,
+                                    "shared.txt",
+                                    durableOpen.PersistentFileId,
+                                    durableOpen.VolatileFileId,
+                                    desiredAccess: 0x80000000U,
+                                    shareAccess: 0x00000007U,
+                                    requestedOplockLevel: Smb2OplockLevel.Batch,
+                                    durableCreateGuid: durableOpen.DurableCreateGuid,
+                                    useDurableHandleV2: durableOpen.UsesDurableHandleV2);
+                                Smb2CompoundPacket reconnectResponsePacket = RoundTripEncryptedPacket(
+                                    secondHost,
+                                    secondClient,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            secondClient.CreateRequestHeader(Smb2Command.Create, secondTreeId, sessionId: secondClient.SessionId!.Value),
+                                            reconnectRequest.ToByteArray())
+                                    }),
+                                    "encrypted durable reconnect");
+                                OpenState reconnectedOpen = secondClient.ApplyCreateResult(
+                                    secondTreeId,
+                                    "shared.txt",
+                                    reconnectResponsePacket.Entries[0].Header.Status,
+                                    Smb2CreateResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(reconnectResponsePacket.Entries[0].Header.Command, reconnectResponsePacket.Entries[0].Payload)),
+                                    reconnectRequest);
+                                TestAssertions.True(reconnectedOpen.IsDurable, "Expected the encrypted reconnected open to remain durable.");
+                                TestAssertions.Equal(durableOpen.PersistentFileId, reconnectedOpen.PersistentFileId, "Expected encrypted durable reconnect to preserve the persistent file identifier.");
+                                TestAssertions.False(reconnectedOpen.VolatileFileId == durableOpen.VolatileFileId, "Expected encrypted durable reconnect to allocate a fresh volatile file identifier.");
+                                TestAssertions.True(reconnectedOpen.UsesDurableHandleV2, "Expected the encrypted SMB 3.0.2 durable reconnect to remain on durable-handle v2.");
+                                TestAssertions.Equal(durableOpen.DurableCreateGuid, reconnectedOpen.DurableCreateGuid, "Expected the encrypted SMB 3.0.2 durable reconnect to preserve the durable create GUID.");
+                                TestAssertions.Equal(300000U, reconnectedOpen.DurableTimeoutMs, "Expected the encrypted SMB 3.0.2 durable reconnect to preserve the bounded durable timeout.");
+
+                                Smb2CompoundPacket readResponsePacket = RoundTripEncryptedPacket(
+                                    secondHost,
+                                    secondClient,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            secondClient.CreateRequestHeader(Smb2Command.Read, secondTreeId, sessionId: secondClient.SessionId.Value),
+                                            secondClient.CreateReadRequest(
+                                                reconnectedOpen.PersistentFileId,
+                                                reconnectedOpen.VolatileFileId,
+                                                length: 32,
+                                                offset: 0,
+                                                minimumCount: 1).ToByteArray())
+                                    }),
+                                    "encrypted durable read");
+                                byte[] buffer = secondClient.ApplyReadResult(
+                                    reconnectedOpen.PersistentFileId,
+                                    reconnectedOpen.VolatileFileId,
+                                    readResponsePacket.Entries[0].Header.Status,
+                                    Smb2ReadResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(readResponsePacket.Entries[0].Header.Command, readResponsePacket.Entries[0].Payload)));
+                                TestAssertions.Equal("durable-data", Encoding.UTF8.GetString(buffer), "Expected the encrypted durable reconnect path to preserve file access.");
+
+                                Smb2CompoundPacket closeResponsePacket = RoundTripEncryptedPacket(
+                                    secondHost,
+                                    secondClient,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            secondClient.CreateRequestHeader(Smb2Command.Close, secondTreeId, sessionId: secondClient.SessionId.Value),
+                                            secondClient.CreateCloseRequest(reconnectedOpen.PersistentFileId, reconnectedOpen.VolatileFileId).ToByteArray())
+                                    }),
+                                    "encrypted durable close");
+                                secondClient.ApplyCloseResult(
+                                    reconnectedOpen.PersistentFileId,
+                                    reconnectedOpen.VolatileFileId,
+                                    closeResponsePacket.Entries[0].Header.Status,
+                                    Smb2CloseResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(closeResponsePacket.Entries[0].Header.Command, closeResponsePacket.Entries[0].Payload)));
+                                TestAssertions.Equal(0, secondClient.OpenCount, "Expected the encrypted durable reconnect flow to leave no tracked opens after close.");
+                            }
+                            finally
+                            {
+                                secondHost.UnregisterFromSharedState();
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackDurable",
+                        caseId: "ClientAndServerReconnectDurableLeaseOpenAcrossHosts",
+                        displayName: "Client and server loopback reconnect a durable lease-backed open across hosts that share server state",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsInteropDurableLease_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            File.WriteAllText(Path.Combine(sharePath, "shared.txt"), "durable-lease-data");
+                            OpenCifsServerSharedState sharedState = new OpenCifsServerSharedState();
+                            OpenCifsServerHost firstHost = CreateServerHost(sharePath, sharedState);
+                            OpenCifsServerHost secondHost = CreateServerHost(sharePath, sharedState);
+
+                            try
+                            {
+                                Guid durableClientGuid = Guid.NewGuid();
+                                byte[] leaseKey = new byte[16];
+                                Smb2LeaseState leaseState = Smb2LeaseState.ReadCaching | Smb2LeaseState.HandleCaching | Smb2LeaseState.WriteCaching;
+
+                                for (int index = 0; index < leaseKey.Length; index++)
+                                {
+                                    leaseKey[index] = (byte)(index + 33);
+                                }
+
+                                OpenCifsClientSession firstClient = CreateNegotiatedClient(firstHost, durableClientGuid);
+                                TestAssertions.Equal(SmbDialect.Smb21, firstClient.NegotiatedDialect, "Expected the initial durable lease loopback session to negotiate SMB 2.1.");
+                                OpenCifsClientCredential credential = CreateCredential();
+                                uint firstTreeId = AuthenticateLoopbackSessionAndTree(firstHost, firstClient, credential);
+                                ulong firstSessionId = firstClient.SessionId!.Value;
+
+                                Smb2CreateRequest initialOpenRequest = firstClient.CreateCreateRequest(
+                                    firstTreeId,
+                                    "shared.txt",
+                                    desiredAccess: 0xC0010000U,
+                                    shareAccess: 0x00000007U,
+                                    createDisposition: Smb2CreateDisposition.Open,
+                                    requestedOplockLevel: Smb2OplockLevel.Lease,
+                                    requestDurableHandle: true,
+                                    requestedLeaseState: leaseState,
+                                    leaseKey: leaseKey);
+                                OpenCifsServerOperationResult<Smb2CreateResponse> initialOpenResult = firstHost.HandleCreate(firstSessionId, firstTreeId, initialOpenRequest);
+                                OpenState durableOpen = firstClient.ApplyCreateResult(firstTreeId, "shared.txt", initialOpenResult.Status, initialOpenResult.Response);
+                                TestAssertions.True(durableOpen.IsDurable, "Expected the initial loopback lease-backed open to be granted durable reconnect state.");
+                                TestAssertions.Equal(Smb2OplockLevel.Lease, durableOpen.OplockLevel, "Expected the initial loopback durable lease open to receive an SMB 2.1 lease.");
+                                TestAssertions.SequenceEqual(leaseKey, durableOpen.LeaseKey, "Expected the initial loopback durable lease open to preserve the requested lease key.");
+                                TestAssertions.Equal(leaseState, durableOpen.LeaseState, "Expected the initial loopback durable lease open to preserve the granted lease state.");
+
+                                lock (firstHost.SyncRoot)
+                                {
+                                    firstHost.HandleTransportDisconnect();
+                                    firstHost.UnregisterFromSharedState();
+                                }
+
+                                OpenCifsClientSession secondClient = CreateNegotiatedClient(secondHost, durableClientGuid);
+                                TestAssertions.Equal(SmbDialect.Smb21, secondClient.NegotiatedDialect, "Expected the reconnect loopback session to negotiate SMB 2.1.");
+                                uint secondTreeId = AuthenticateLoopbackSessionAndTree(secondHost, secondClient, credential);
+                                ulong secondSessionId = secondClient.SessionId!.Value;
+
+                                Smb2CreateRequest reconnectRequest = secondClient.CreateDurableReconnectCreateRequest(
+                                    secondTreeId,
+                                    "shared.txt",
+                                    durableOpen.PersistentFileId,
+                                    durableOpen.VolatileFileId,
+                                    desiredAccess: 0xC0010000U,
+                                    shareAccess: 0x00000007U,
+                                    requestedOplockLevel: Smb2OplockLevel.Lease,
+                                    requestedLeaseState: leaseState,
+                                    leaseKey: leaseKey);
+                                OpenCifsServerOperationResult<Smb2CreateResponse> reconnectResult = secondHost.HandleCreate(secondSessionId, secondTreeId, reconnectRequest);
+                                OpenState reconnectedOpen = secondClient.ApplyCreateResult(secondTreeId, "shared.txt", reconnectResult.Status, reconnectResult.Response);
+                                TestAssertions.True(reconnectedOpen.IsDurable, "Expected the reconnected loopback durable lease open to stay durable.");
+                                TestAssertions.Equal(durableOpen.PersistentFileId, reconnectedOpen.PersistentFileId, "Expected durable lease reconnect to preserve the persistent file identifier.");
+                                TestAssertions.False(reconnectedOpen.VolatileFileId == durableOpen.VolatileFileId, "Expected durable lease reconnect to allocate a fresh volatile file identifier.");
+                                TestAssertions.Equal(Smb2OplockLevel.Lease, reconnectedOpen.OplockLevel, "Expected durable lease reconnect to preserve the granted lease-backed oplock level.");
+                                TestAssertions.SequenceEqual(leaseKey, reconnectedOpen.LeaseKey, "Expected durable lease reconnect to preserve the lease key.");
+                                TestAssertions.Equal(leaseState, reconnectedOpen.LeaseState, "Expected durable lease reconnect to preserve the lease state.");
+
+                                OpenCifsServerOperationResult<Smb2ReadResponse> readResult = secondHost.HandleRead(
+                                    secondSessionId,
+                                    secondTreeId,
+                                    secondClient.CreateReadRequest(
+                                        reconnectedOpen.PersistentFileId,
+                                        reconnectedOpen.VolatileFileId,
+                                        length: 32,
+                                        offset: 0,
+                                        minimumCount: 1));
+                                byte[] buffer = secondClient.ApplyReadResult(
+                                    reconnectedOpen.PersistentFileId,
+                                    reconnectedOpen.VolatileFileId,
+                                    readResult.Status,
+                                    readResult.Response);
+                                TestAssertions.Equal("durable-lease-data", Encoding.UTF8.GetString(buffer), "Expected the reconnected durable lease open to preserve file access.");
+
+                                OpenCifsServerOperationResult<Smb2CloseResponse> closeResult = secondHost.HandleClose(
+                                    secondSessionId,
+                                    secondTreeId,
+                                    secondClient.CreateCloseRequest(reconnectedOpen.PersistentFileId, reconnectedOpen.VolatileFileId));
+                                secondClient.ApplyCloseResult(
+                                    reconnectedOpen.PersistentFileId,
+                                    reconnectedOpen.VolatileFileId,
+                                    closeResult.Status,
+                                    closeResult.Response);
+                            }
+                            finally
+                            {
+                                secondHost.UnregisterFromSharedState();
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackDurable",
                         caseId: "ClientAndServerRejectMismatchedDurableReconnectAndPreserveDetachedOpen",
                         displayName: "Client and server loopback reject mismatched durable reconnect requests and preserve the detached open for the correct retry",
                         executeAsync: token =>
@@ -1994,6 +2548,122 @@ namespace OpenCIFS.Interop.Tests.Shared
                                 OpenCifsServerOperationResult<Smb2CreateResponse> validReconnectResult = secondHost.HandleCreate(secondSessionId, secondTreeId, validReconnectRequest);
                                 OpenState reconnectedOpen = secondClient.ApplyCreateResult(secondTreeId, "shared.txt", validReconnectResult.Status, validReconnectResult.Response);
                                 TestAssertions.True(reconnectedOpen.IsDurable, "Expected the detached durable open to remain reconnectable after a mismatched retry.");
+
+                                OpenCifsServerOperationResult<Smb2CloseResponse> closeResult = secondHost.HandleClose(
+                                    secondSessionId,
+                                    secondTreeId,
+                                    secondClient.CreateCloseRequest(reconnectedOpen.PersistentFileId, reconnectedOpen.VolatileFileId));
+                                secondClient.ApplyCloseResult(
+                                    reconnectedOpen.PersistentFileId,
+                                    reconnectedOpen.VolatileFileId,
+                                    closeResult.Status,
+                                    closeResult.Response);
+                            }
+                            finally
+                            {
+                                secondHost.UnregisterFromSharedState();
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackDurable",
+                        caseId: "ClientAndServerRejectMissingOrMismatchedLeaseReconnectAndPreserveDetachedOpen",
+                        displayName: "Client and server loopback reject missing or mismatched lease reconnect requests and preserve the detached durable open for the correct retry",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsInteropDurableLease_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            File.WriteAllText(Path.Combine(sharePath, "shared.txt"), "durable-lease-data");
+                            OpenCifsServerSharedState sharedState = new OpenCifsServerSharedState();
+                            OpenCifsServerHost firstHost = CreateServerHost(sharePath, sharedState);
+                            OpenCifsServerHost secondHost = CreateServerHost(sharePath, sharedState);
+
+                            try
+                            {
+                                Guid durableClientGuid = Guid.NewGuid();
+                                byte[] leaseKey = new byte[16];
+                                byte[] wrongLeaseKey = new byte[16];
+                                Smb2LeaseState leaseState = Smb2LeaseState.ReadCaching | Smb2LeaseState.HandleCaching | Smb2LeaseState.WriteCaching;
+
+                                for (int index = 0; index < leaseKey.Length; index++)
+                                {
+                                    leaseKey[index] = (byte)(index + 49);
+                                    wrongLeaseKey[index] = (byte)(index + 81);
+                                }
+
+                                OpenCifsClientSession firstClient = CreateNegotiatedClient(firstHost, durableClientGuid);
+                                OpenCifsClientCredential credential = CreateCredential();
+                                uint firstTreeId = AuthenticateLoopbackSessionAndTree(firstHost, firstClient, credential);
+                                ulong firstSessionId = firstClient.SessionId!.Value;
+
+                                Smb2CreateRequest initialOpenRequest = firstClient.CreateCreateRequest(
+                                    firstTreeId,
+                                    "shared.txt",
+                                    desiredAccess: 0xC0010000U,
+                                    shareAccess: 0x00000007U,
+                                    createDisposition: Smb2CreateDisposition.Open,
+                                    requestedOplockLevel: Smb2OplockLevel.Lease,
+                                    requestDurableHandle: true,
+                                    requestedLeaseState: leaseState,
+                                    leaseKey: leaseKey);
+                                OpenCifsServerOperationResult<Smb2CreateResponse> initialOpenResult = firstHost.HandleCreate(firstSessionId, firstTreeId, initialOpenRequest);
+                                OpenState durableOpen = firstClient.ApplyCreateResult(firstTreeId, "shared.txt", initialOpenResult.Status, initialOpenResult.Response);
+
+                                lock (firstHost.SyncRoot)
+                                {
+                                    firstHost.HandleTransportDisconnect();
+                                    firstHost.UnregisterFromSharedState();
+                                }
+
+                                OpenCifsClientSession secondClient = CreateNegotiatedClient(secondHost, durableClientGuid);
+                                uint secondTreeId = AuthenticateLoopbackSessionAndTree(secondHost, secondClient, credential);
+                                ulong secondSessionId = secondClient.SessionId!.Value;
+
+                                Smb2CreateRequest missingLeaseReconnectRequest = secondClient.CreateDurableReconnectCreateRequest(
+                                    secondTreeId,
+                                    "shared.txt",
+                                    durableOpen.PersistentFileId,
+                                    durableOpen.VolatileFileId,
+                                    desiredAccess: 0xC0010000U,
+                                    shareAccess: 0x00000007U,
+                                    requestedOplockLevel: Smb2OplockLevel.Batch);
+                                OpenCifsServerOperationResult<Smb2CreateResponse> missingLeaseReconnectResult = secondHost.HandleCreate(secondSessionId, secondTreeId, missingLeaseReconnectRequest);
+                                TestAssertions.Equal(NtStatus.ObjectNameNotFound, missingLeaseReconnectResult.Status, "Expected the loopback durable lease reconnect flow to reject a missing lease create context.");
+
+                                Smb2CreateRequest wrongLeaseReconnectRequest = secondClient.CreateDurableReconnectCreateRequest(
+                                    secondTreeId,
+                                    "shared.txt",
+                                    durableOpen.PersistentFileId,
+                                    durableOpen.VolatileFileId,
+                                    desiredAccess: 0xC0010000U,
+                                    shareAccess: 0x00000007U,
+                                    requestedOplockLevel: Smb2OplockLevel.Lease,
+                                    requestedLeaseState: leaseState,
+                                    leaseKey: wrongLeaseKey);
+                                OpenCifsServerOperationResult<Smb2CreateResponse> wrongLeaseReconnectResult = secondHost.HandleCreate(secondSessionId, secondTreeId, wrongLeaseReconnectRequest);
+                                TestAssertions.Equal(NtStatus.ObjectNameNotFound, wrongLeaseReconnectResult.Status, "Expected the loopback durable lease reconnect flow to reject the wrong lease key.");
+
+                                Smb2CreateRequest validReconnectRequest = secondClient.CreateDurableReconnectCreateRequest(
+                                    secondTreeId,
+                                    "shared.txt",
+                                    durableOpen.PersistentFileId,
+                                    durableOpen.VolatileFileId,
+                                    desiredAccess: 0xC0010000U,
+                                    shareAccess: 0x00000007U,
+                                    requestedOplockLevel: Smb2OplockLevel.Lease,
+                                    requestedLeaseState: leaseState,
+                                    leaseKey: leaseKey);
+                                OpenCifsServerOperationResult<Smb2CreateResponse> validReconnectResult = secondHost.HandleCreate(secondSessionId, secondTreeId, validReconnectRequest);
+                                OpenState reconnectedOpen = secondClient.ApplyCreateResult(secondTreeId, "shared.txt", validReconnectResult.Status, validReconnectResult.Response);
+                                TestAssertions.True(reconnectedOpen.IsDurable, "Expected the detached durable lease open to remain reconnectable after rejected retries.");
 
                                 OpenCifsServerOperationResult<Smb2CloseResponse> closeResult = secondHost.HandleClose(
                                     secondSessionId,
@@ -2482,12 +3152,344 @@ namespace OpenCIFS.Interop.Tests.Shared
                                 TestAssertions.True((relatedBasicInformation.FileAttributes & OpenCIFS.Protocol.FileAttributes.Hidden) != 0, "Expected related compounded loopback FILE_BASIC_INFORMATION queries to include Hidden.");
                                 TestAssertions.Equal(0U, snapshotArray.NumberOfSnapshots, "Expected related compounded loopback snapshot enumeration to expose no snapshots.");
                                 TestAssertions.Equal(0, snapshotArray.Snapshots.Length, "Expected related compounded loopback snapshot enumeration to return an empty list.");
-                                TestAssertions.Equal(Smb2HeaderFlags.ServerToRedir | Smb2HeaderFlags.RelatedOperations, parsedResponsePacket.Entries[1].Header.Flags, "Expected related compounded loopback responses to mark subsequent entries as related operations.");
+                                TestAssertions.Equal(Smb2HeaderFlags.ServerToRedir | Smb2HeaderFlags.RelatedOperations | Smb2HeaderFlags.Signed, parsedResponsePacket.Entries[1].Header.Flags, "Expected related compounded loopback responses to preserve signing and mark subsequent entries as related operations.");
                                 TestAssertions.Equal(0, client.OpenCount, "Expected the related compounded close response to clear the loopback open.");
                                 TestAssertions.Equal(0, client.ConnectedTreeIds.Length, "Expected the related compounded tree-disconnect response to clear the connected tree.");
                                 TestAssertions.Equal(9, client.AvailableCredits, "Expected the related compounded loopback response to restore the negotiated client credit window.");
                                 TestAssertions.Equal(9, server.AvailableCredits, "Expected the related compounded loopback response to restore the negotiated server credit window.");
                                 TestAssertions.True((File.GetAttributes(Path.Combine(sharePath, "related.txt")) & System.IO.FileAttributes.Hidden) != 0, "Expected the related compounded loopback set-info request to persist the Hidden attribute.");
+                            }
+                            finally
+                            {
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackCompound",
+                        caseId: "ClientAndServerCompleteRealisticRelatedCompoundReadWriteAndMetadataChains",
+                        displayName: "Client and server loopback complete realistic related compounded create-write-flush-close, create-query-close, and open-read-close chains",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsInteropRelatedCompoundRealistic_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(Path.Combine(sharePath, "docs"));
+
+                            try
+                            {
+                                OpenCifsServerHost server = CreateServerHost(sharePath);
+                                OpenCifsClientSession client = CreateClient();
+                                OpenCifsClientCredential credential = CreateCredential();
+                                uint treeId = AuthenticateLoopbackSessionAndTreeWithHeaders(server, client, credential, creditRequest: 12);
+                                byte[] payload = Encoding.UTF8.GetBytes("realistic-compound-data");
+
+                                Smb2CompoundPacket createWriteFlushClosePacket = new Smb2CompoundPacket(
+                                    new List<Smb2CompoundPacketEntry>
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRequestHeader(Smb2Command.Create, treeId, sessionId: client.SessionId!.Value),
+                                            client.CreateCreateRequest(treeId, "docs\\compound.txt", createDisposition: Smb2CreateDisposition.OverwriteIf).ToByteArray()),
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRelatedRequestHeader(Smb2Command.Write, sessionId: client.SessionId!.Value),
+                                            new Smb2WriteRequest
+                                            {
+                                                Offset = 0,
+                                                PersistentFileId = UInt64.MaxValue,
+                                                VolatileFileId = UInt64.MaxValue,
+                                                Flags = Smb2WriteFlags.None,
+                                                Channel = 0,
+                                                RemainingBytes = 0,
+                                                WriteChannelInfo = Array.Empty<byte>(),
+                                                DataBuffer = payload
+                                            }.ToByteArray()),
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRelatedRequestHeader(Smb2Command.Flush, sessionId: client.SessionId!.Value),
+                                            new Smb2FlushRequest
+                                            {
+                                                PersistentFileId = UInt64.MaxValue,
+                                                VolatileFileId = UInt64.MaxValue
+                                            }.ToByteArray()),
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRelatedRequestHeader(Smb2Command.Close, sessionId: client.SessionId!.Value),
+                                            new Smb2CloseRequest
+                                            {
+                                                PersistentFileId = UInt64.MaxValue,
+                                                VolatileFileId = UInt64.MaxValue
+                                            }.ToByteArray())
+                                    });
+                                Smb2CompoundPacket createWriteFlushCloseResponsePacket = server.HandleCompoundRequestPacket(Smb2CompoundPacket.ReadFrom(createWriteFlushClosePacket.ToByteArray()));
+                                Smb2CompoundPacket parsedCreateWriteFlushCloseResponsePacket = Smb2CompoundPacket.ReadFrom(createWriteFlushCloseResponsePacket.ToByteArray());
+                                client.ApplyCompoundResponsePacket(parsedCreateWriteFlushCloseResponsePacket);
+
+                                OpenState createdOpenState = client.ApplyCreateResult(
+                                    treeId,
+                                    "docs\\compound.txt",
+                                    parsedCreateWriteFlushCloseResponsePacket.Entries[0].Header.Status,
+                                    Smb2CreateResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedCreateWriteFlushCloseResponsePacket.Entries[0].Header.Command, parsedCreateWriteFlushCloseResponsePacket.Entries[0].Payload)));
+                                uint writtenCount = client.ApplyWriteResult(
+                                    createdOpenState.PersistentFileId,
+                                    createdOpenState.VolatileFileId,
+                                    parsedCreateWriteFlushCloseResponsePacket.Entries[1].Header.Status,
+                                    Smb2WriteResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedCreateWriteFlushCloseResponsePacket.Entries[1].Header.Command, parsedCreateWriteFlushCloseResponsePacket.Entries[1].Payload)));
+                                client.ApplyFlushResult(
+                                    createdOpenState.PersistentFileId,
+                                    createdOpenState.VolatileFileId,
+                                    parsedCreateWriteFlushCloseResponsePacket.Entries[2].Header.Status,
+                                    Smb2FlushResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedCreateWriteFlushCloseResponsePacket.Entries[2].Header.Command, parsedCreateWriteFlushCloseResponsePacket.Entries[2].Payload)));
+                                client.ApplyCloseResult(
+                                    createdOpenState.PersistentFileId,
+                                    createdOpenState.VolatileFileId,
+                                    parsedCreateWriteFlushCloseResponsePacket.Entries[3].Header.Status,
+                                    Smb2CloseResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedCreateWriteFlushCloseResponsePacket.Entries[3].Header.Command, parsedCreateWriteFlushCloseResponsePacket.Entries[3].Payload)));
+                                TestAssertions.Equal((uint)payload.Length, writtenCount, "Expected the realistic related compounded write leg to acknowledge the full payload.");
+                                TestAssertions.Equal(0, client.OpenCount, "Expected the realistic related compounded write chain to close the temporary open.");
+
+                                Smb2CompoundPacket createQueryClosePacket = new Smb2CompoundPacket(
+                                    new List<Smb2CompoundPacketEntry>
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRequestHeader(Smb2Command.Create, treeId, sessionId: client.SessionId!.Value),
+                                            client.CreateCreateRequest(treeId, "docs\\compound.txt").ToByteArray()),
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRelatedRequestHeader(Smb2Command.QueryInfo, sessionId: client.SessionId!.Value),
+                                            new Smb2QueryInfoRequest
+                                            {
+                                                InfoType = Smb2InfoType.File,
+                                                FileInfoClass = FileInformationClass.AllInformation,
+                                                OutputBufferLength = 1024,
+                                                PersistentFileId = UInt64.MaxValue,
+                                                VolatileFileId = UInt64.MaxValue,
+                                                InputBuffer = Array.Empty<byte>()
+                                            }.ToByteArray()),
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRelatedRequestHeader(Smb2Command.Close, sessionId: client.SessionId!.Value),
+                                            new Smb2CloseRequest
+                                            {
+                                                PersistentFileId = UInt64.MaxValue,
+                                                VolatileFileId = UInt64.MaxValue
+                                            }.ToByteArray())
+                                    });
+                                Smb2CompoundPacket createQueryCloseResponsePacket = server.HandleCompoundRequestPacket(Smb2CompoundPacket.ReadFrom(createQueryClosePacket.ToByteArray()));
+                                Smb2CompoundPacket parsedCreateQueryCloseResponsePacket = Smb2CompoundPacket.ReadFrom(createQueryCloseResponsePacket.ToByteArray());
+                                client.ApplyCompoundResponsePacket(parsedCreateQueryCloseResponsePacket);
+
+                                OpenState queryOpenState = client.ApplyCreateResult(
+                                    treeId,
+                                    "docs\\compound.txt",
+                                    parsedCreateQueryCloseResponsePacket.Entries[0].Header.Status,
+                                    Smb2CreateResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedCreateQueryCloseResponsePacket.Entries[0].Header.Command, parsedCreateQueryCloseResponsePacket.Entries[0].Payload)));
+                                FileAllInformation allInformation = FileAllInformation.ReadFrom(client.ApplyQueryInfoResult(
+                                    queryOpenState.PersistentFileId,
+                                    queryOpenState.VolatileFileId,
+                                    parsedCreateQueryCloseResponsePacket.Entries[1].Header.Status,
+                                    Smb2QueryInfoResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedCreateQueryCloseResponsePacket.Entries[1].Header.Command, parsedCreateQueryCloseResponsePacket.Entries[1].Payload))));
+                                client.ApplyCloseResult(
+                                    queryOpenState.PersistentFileId,
+                                    queryOpenState.VolatileFileId,
+                                    parsedCreateQueryCloseResponsePacket.Entries[2].Header.Status,
+                                    Smb2CloseResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedCreateQueryCloseResponsePacket.Entries[2].Header.Command, parsedCreateQueryCloseResponsePacket.Entries[2].Payload)));
+                                TestAssertions.Equal((ulong)payload.Length, allInformation.StandardInformation.EndOfFile, "Expected the realistic related compounded query leg to report the current EOF.");
+                                TestAssertions.Equal("docs\\compound.txt", allInformation.NameInformation.FileName, "Unexpected FILE_ALL_INFORMATION name from the realistic related compounded query leg.");
+                                TestAssertions.Equal(0, client.OpenCount, "Expected the realistic related compounded query chain to close the temporary open.");
+
+                                Smb2CompoundPacket openReadClosePacket = new Smb2CompoundPacket(
+                                    new List<Smb2CompoundPacketEntry>
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRequestHeader(Smb2Command.Create, treeId, sessionId: client.SessionId!.Value),
+                                            client.CreateCreateRequest(treeId, "docs\\compound.txt", desiredAccess: 0x80000000U, createDisposition: Smb2CreateDisposition.Open).ToByteArray()),
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRelatedRequestHeader(Smb2Command.Read, sessionId: client.SessionId!.Value),
+                                            new Smb2ReadRequest
+                                            {
+                                                Length = (uint)payload.Length,
+                                                Offset = 0,
+                                                PersistentFileId = UInt64.MaxValue,
+                                                VolatileFileId = UInt64.MaxValue,
+                                                MinimumCount = (uint)payload.Length,
+                                                Channel = 0,
+                                                RemainingBytes = 0,
+                                                ReadChannelInfo = Array.Empty<byte>()
+                                            }.ToByteArray()),
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRelatedRequestHeader(Smb2Command.Close, sessionId: client.SessionId!.Value),
+                                            new Smb2CloseRequest
+                                            {
+                                                PersistentFileId = UInt64.MaxValue,
+                                                VolatileFileId = UInt64.MaxValue
+                                            }.ToByteArray())
+                                    });
+                                Smb2CompoundPacket openReadCloseResponsePacket = server.HandleCompoundRequestPacket(Smb2CompoundPacket.ReadFrom(openReadClosePacket.ToByteArray()));
+                                Smb2CompoundPacket parsedOpenReadCloseResponsePacket = Smb2CompoundPacket.ReadFrom(openReadCloseResponsePacket.ToByteArray());
+                                client.ApplyCompoundResponsePacket(parsedOpenReadCloseResponsePacket);
+
+                                OpenState readOpenState = client.ApplyCreateResult(
+                                    treeId,
+                                    "docs\\compound.txt",
+                                    parsedOpenReadCloseResponsePacket.Entries[0].Header.Status,
+                                    Smb2CreateResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedOpenReadCloseResponsePacket.Entries[0].Header.Command, parsedOpenReadCloseResponsePacket.Entries[0].Payload)));
+                                byte[] readBytes = client.ApplyReadResult(
+                                    readOpenState.PersistentFileId,
+                                    readOpenState.VolatileFileId,
+                                    parsedOpenReadCloseResponsePacket.Entries[1].Header.Status,
+                                    Smb2ReadResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedOpenReadCloseResponsePacket.Entries[1].Header.Command, parsedOpenReadCloseResponsePacket.Entries[1].Payload)));
+                                client.ApplyCloseResult(
+                                    readOpenState.PersistentFileId,
+                                    readOpenState.VolatileFileId,
+                                    parsedOpenReadCloseResponsePacket.Entries[2].Header.Status,
+                                    Smb2CloseResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(parsedOpenReadCloseResponsePacket.Entries[2].Header.Command, parsedOpenReadCloseResponsePacket.Entries[2].Payload)));
+                                TestAssertions.SequenceEqual(payload, readBytes, "Expected the realistic related compounded read leg to round-trip the file payload.");
+                                TestAssertions.Equal(0, client.OpenCount, "Expected the realistic related compounded read chain to close the temporary open.");
+                                TestAssertions.True(parsedOpenReadCloseResponsePacket.Entries[0].Header.NextCommand != 0, "Expected the realistic related compounded response packet to preserve next-command offsets.");
+                                TestAssertions.SequenceEqual(payload, File.ReadAllBytes(Path.Combine(sharePath, "docs", "compound.txt")), "Unexpected bytes persisted by the realistic related compounded loopback flows.");
+                            }
+                            finally
+                            {
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackCompound",
+                        caseId: "ClientAndServerCompleteEncryptedRealisticRelatedCompoundChainsUnderSmb302",
+                        displayName: "Client and server loopback complete encrypted realistic related compound chains under SMB 3.0.2",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsInteropEncryptedCompound_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(Path.Combine(sharePath, "docs"));
+
+                            try
+                            {
+                                OpenCifsServerHost server = CreateServerHost(sharePath, maximumDialect: SmbDialect.Smb302, requireEncryptionForSmb3: true);
+                                OpenCifsClientSession client = CreateNegotiatedClient(server, maximumDialect: SmbDialect.Smb302, preferEncryption: true);
+                                OpenCifsClientCredential credential = CreateCredential();
+                                uint treeId = AuthenticateEncryptedLoopbackSessionAndTree(server, client, credential, creditRequest: 12);
+                                byte[] payload = Encoding.UTF8.GetBytes("realistic-compound-data");
+
+                                Smb2CompoundPacket createWriteFlushCloseResponsePacket = RoundTripEncryptedPacket(
+                                    server,
+                                    client,
+                                    new Smb2CompoundPacket(
+                                        new List<Smb2CompoundPacketEntry>
+                                        {
+                                            new Smb2CompoundPacketEntry(
+                                                client.CreateRequestHeader(Smb2Command.Create, treeId, sessionId: client.SessionId!.Value),
+                                                client.CreateCreateRequest(treeId, "docs\\compound.txt", createDisposition: Smb2CreateDisposition.OverwriteIf).ToByteArray()),
+                                            new Smb2CompoundPacketEntry(
+                                                client.CreateRelatedRequestHeader(Smb2Command.Write, sessionId: client.SessionId!.Value),
+                                                new Smb2WriteRequest
+                                                {
+                                                    Offset = 0,
+                                                    PersistentFileId = UInt64.MaxValue,
+                                                    VolatileFileId = UInt64.MaxValue,
+                                                    Flags = Smb2WriteFlags.None,
+                                                    Channel = 0,
+                                                    RemainingBytes = 0,
+                                                    WriteChannelInfo = Array.Empty<byte>(),
+                                                    DataBuffer = payload
+                                                }.ToByteArray()),
+                                            new Smb2CompoundPacketEntry(
+                                                client.CreateRelatedRequestHeader(Smb2Command.Flush, sessionId: client.SessionId!.Value),
+                                                new Smb2FlushRequest
+                                                {
+                                                    PersistentFileId = UInt64.MaxValue,
+                                                    VolatileFileId = UInt64.MaxValue
+                                                }.ToByteArray()),
+                                            new Smb2CompoundPacketEntry(
+                                                client.CreateRelatedRequestHeader(Smb2Command.Close, sessionId: client.SessionId!.Value),
+                                                new Smb2CloseRequest
+                                                {
+                                                    PersistentFileId = UInt64.MaxValue,
+                                                    VolatileFileId = UInt64.MaxValue
+                                                }.ToByteArray())
+                                        }),
+                                    "encrypted create-write-flush-close");
+
+                                OpenState createdOpenState = client.ApplyCreateResult(
+                                    treeId,
+                                    "docs\\compound.txt",
+                                    createWriteFlushCloseResponsePacket.Entries[0].Header.Status,
+                                    Smb2CreateResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(createWriteFlushCloseResponsePacket.Entries[0].Header.Command, createWriteFlushCloseResponsePacket.Entries[0].Payload)));
+                                uint writtenCount = client.ApplyWriteResult(
+                                    createdOpenState.PersistentFileId,
+                                    createdOpenState.VolatileFileId,
+                                    createWriteFlushCloseResponsePacket.Entries[1].Header.Status,
+                                    Smb2WriteResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(createWriteFlushCloseResponsePacket.Entries[1].Header.Command, createWriteFlushCloseResponsePacket.Entries[1].Payload)));
+                                client.ApplyFlushResult(
+                                    createdOpenState.PersistentFileId,
+                                    createdOpenState.VolatileFileId,
+                                    createWriteFlushCloseResponsePacket.Entries[2].Header.Status,
+                                    Smb2FlushResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(createWriteFlushCloseResponsePacket.Entries[2].Header.Command, createWriteFlushCloseResponsePacket.Entries[2].Payload)));
+                                client.ApplyCloseResult(
+                                    createdOpenState.PersistentFileId,
+                                    createdOpenState.VolatileFileId,
+                                    createWriteFlushCloseResponsePacket.Entries[3].Header.Status,
+                                    Smb2CloseResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(createWriteFlushCloseResponsePacket.Entries[3].Header.Command, createWriteFlushCloseResponsePacket.Entries[3].Payload)));
+                                TestAssertions.Equal((uint)payload.Length, writtenCount, "Expected the encrypted realistic related compounded write leg to acknowledge the full payload.");
+                                TestAssertions.Equal(0, client.OpenCount, "Expected the encrypted realistic related compounded write chain to close the temporary open.");
+
+                                Smb2CompoundPacket openReadCloseResponsePacket = RoundTripEncryptedPacket(
+                                    server,
+                                    client,
+                                    new Smb2CompoundPacket(
+                                        new List<Smb2CompoundPacketEntry>
+                                        {
+                                            new Smb2CompoundPacketEntry(
+                                                client.CreateRequestHeader(Smb2Command.Create, treeId, sessionId: client.SessionId!.Value),
+                                                client.CreateCreateRequest(treeId, "docs\\compound.txt", desiredAccess: 0x80000000U, createDisposition: Smb2CreateDisposition.Open).ToByteArray()),
+                                            new Smb2CompoundPacketEntry(
+                                                client.CreateRelatedRequestHeader(Smb2Command.Read, sessionId: client.SessionId!.Value),
+                                                new Smb2ReadRequest
+                                                {
+                                                    Length = (uint)payload.Length,
+                                                    Offset = 0,
+                                                    PersistentFileId = UInt64.MaxValue,
+                                                    VolatileFileId = UInt64.MaxValue,
+                                                    MinimumCount = (uint)payload.Length,
+                                                    Channel = 0,
+                                                    RemainingBytes = 0,
+                                                    ReadChannelInfo = Array.Empty<byte>()
+                                                }.ToByteArray()),
+                                            new Smb2CompoundPacketEntry(
+                                                client.CreateRelatedRequestHeader(Smb2Command.Close, sessionId: client.SessionId!.Value),
+                                                new Smb2CloseRequest
+                                                {
+                                                    PersistentFileId = UInt64.MaxValue,
+                                                    VolatileFileId = UInt64.MaxValue
+                                                }.ToByteArray())
+                                        }),
+                                    "encrypted open-read-close");
+
+                                OpenState readOpenState = client.ApplyCreateResult(
+                                    treeId,
+                                    "docs\\compound.txt",
+                                    openReadCloseResponsePacket.Entries[0].Header.Status,
+                                    Smb2CreateResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(openReadCloseResponsePacket.Entries[0].Header.Command, openReadCloseResponsePacket.Entries[0].Payload)));
+                                byte[] readBytes = client.ApplyReadResult(
+                                    readOpenState.PersistentFileId,
+                                    readOpenState.VolatileFileId,
+                                    openReadCloseResponsePacket.Entries[1].Header.Status,
+                                    Smb2ReadResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(openReadCloseResponsePacket.Entries[1].Header.Command, openReadCloseResponsePacket.Entries[1].Payload)));
+                                client.ApplyCloseResult(
+                                    readOpenState.PersistentFileId,
+                                    readOpenState.VolatileFileId,
+                                    openReadCloseResponsePacket.Entries[2].Header.Status,
+                                    Smb2CloseResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(openReadCloseResponsePacket.Entries[2].Header.Command, openReadCloseResponsePacket.Entries[2].Payload)));
+                                TestAssertions.SequenceEqual(payload, readBytes, "Expected the encrypted realistic related compounded read leg to round-trip the file payload.");
+                                TestAssertions.True(openReadCloseResponsePacket.Entries[0].Header.NextCommand != 0, "Expected the encrypted realistic related compounded response packet to preserve next-command offsets.");
+                                TestAssertions.Equal(0, client.OpenCount, "Expected the encrypted realistic related compounded read chain to close the temporary open.");
+                                TestAssertions.SequenceEqual(payload, File.ReadAllBytes(Path.Combine(sharePath, "docs", "compound.txt")), "Unexpected bytes persisted by the encrypted realistic related compounded loopback flows.");
                             }
                             finally
                             {
@@ -2768,6 +3770,124 @@ namespace OpenCIFS.Interop.Tests.Shared
 
                                 byte[] storedBytes = File.ReadAllBytes(Path.Combine(sharePath, "loopback.txt"));
                                 TestAssertions.SequenceEqual(payload, storedBytes, "Unexpected bytes persisted by the loopback file-I/O path.");
+                            }
+                            finally
+                            {
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackFileIo",
+                        caseId: "ClientAndServerCompleteEncryptedFileIoLifecycleUnderSmb302",
+                        displayName: "Client and server loopback complete encrypted create, write, flush, read, and close under SMB 3.0.2",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsInteropEncryptedFileIo_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+
+                            try
+                            {
+                                OpenCifsServerHost server = CreateServerHost(sharePath, maximumDialect: SmbDialect.Smb302, requireEncryptionForSmb3: true);
+                                OpenCifsClientSession client = CreateNegotiatedClient(server, maximumDialect: SmbDialect.Smb302, preferEncryption: true);
+                                OpenCifsClientCredential credential = CreateCredential();
+                                uint treeId = AuthenticateEncryptedLoopbackSessionAndTree(server, client, credential);
+
+                                Smb2CompoundPacket createResponsePacket = RoundTripEncryptedPacket(
+                                    server,
+                                    client,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRequestHeader(Smb2Command.Create, treeId, sessionId: client.SessionId!.Value),
+                                            client.CreateCreateRequest(treeId, "encrypted-loopback.txt").ToByteArray())
+                                    }),
+                                    "encrypted create");
+                                OpenState openState = client.ApplyCreateResult(
+                                    treeId,
+                                    "encrypted-loopback.txt",
+                                    createResponsePacket.Entries[0].Header.Status,
+                                    Smb2CreateResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(createResponsePacket.Entries[0].Header.Command, createResponsePacket.Entries[0].Payload)));
+                                TestAssertions.Equal(1, client.OpenCount, "Expected the client to track the encrypted loopback open.");
+
+                                byte[] payload = Encoding.UTF8.GetBytes("encrypted loopback data");
+                                Smb2CompoundPacket writeResponsePacket = RoundTripEncryptedPacket(
+                                    server,
+                                    client,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRequestHeader(Smb2Command.Write, treeId, sessionId: client.SessionId.Value),
+                                            client.CreateWriteRequest(openState.PersistentFileId, openState.VolatileFileId, payload, 0).ToByteArray())
+                                    }),
+                                    "encrypted write");
+                                TestAssertions.Equal(
+                                    (uint)payload.Length,
+                                    client.ApplyWriteResult(
+                                        openState.PersistentFileId,
+                                        openState.VolatileFileId,
+                                        writeResponsePacket.Entries[0].Header.Status,
+                                        Smb2WriteResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(writeResponsePacket.Entries[0].Header.Command, writeResponsePacket.Entries[0].Payload))),
+                                    "Unexpected encrypted loopback write count.");
+
+                                Smb2CompoundPacket flushResponsePacket = RoundTripEncryptedPacket(
+                                    server,
+                                    client,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRequestHeader(Smb2Command.Flush, treeId, sessionId: client.SessionId.Value),
+                                            client.CreateFlushRequest(openState.PersistentFileId, openState.VolatileFileId).ToByteArray())
+                                    }),
+                                    "encrypted flush");
+                                client.ApplyFlushResult(
+                                    openState.PersistentFileId,
+                                    openState.VolatileFileId,
+                                    flushResponsePacket.Entries[0].Header.Status,
+                                    Smb2FlushResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(flushResponsePacket.Entries[0].Header.Command, flushResponsePacket.Entries[0].Payload)));
+
+                                Smb2CompoundPacket readResponsePacket = RoundTripEncryptedPacket(
+                                    server,
+                                    client,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRequestHeader(Smb2Command.Read, treeId, sessionId: client.SessionId.Value),
+                                            client.CreateReadRequest(openState.PersistentFileId, openState.VolatileFileId, (uint)payload.Length, 0, minimumCount: (uint)payload.Length).ToByteArray())
+                                    }),
+                                    "encrypted read");
+                                byte[] readBytes = client.ApplyReadResult(
+                                    openState.PersistentFileId,
+                                    openState.VolatileFileId,
+                                    readResponsePacket.Entries[0].Header.Status,
+                                    Smb2ReadResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(readResponsePacket.Entries[0].Header.Command, readResponsePacket.Entries[0].Payload)));
+                                TestAssertions.SequenceEqual(payload, readBytes, "Unexpected encrypted loopback read payload.");
+
+                                Smb2CompoundPacket closeResponsePacket = RoundTripEncryptedPacket(
+                                    server,
+                                    client,
+                                    new Smb2CompoundPacket(new[]
+                                    {
+                                        new Smb2CompoundPacketEntry(
+                                            client.CreateRequestHeader(Smb2Command.Close, treeId, sessionId: client.SessionId.Value),
+                                            client.CreateCloseRequest(openState.PersistentFileId, openState.VolatileFileId, postQueryAttributes: true).ToByteArray())
+                                    }),
+                                    "encrypted close");
+                                client.ApplyCloseResult(
+                                    openState.PersistentFileId,
+                                    openState.VolatileFileId,
+                                    closeResponsePacket.Entries[0].Header.Status,
+                                    Smb2CloseResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(closeResponsePacket.Entries[0].Header.Command, closeResponsePacket.Entries[0].Payload)));
+                                TestAssertions.Equal(0, client.OpenCount, "Expected the client to clear the encrypted loopback open after close.");
+
+                                byte[] storedBytes = File.ReadAllBytes(Path.Combine(sharePath, "encrypted-loopback.txt"));
+                                TestAssertions.SequenceEqual(payload, storedBytes, "Unexpected bytes persisted by the encrypted loopback file-I/O path.");
                             }
                             finally
                             {
@@ -4610,6 +5730,165 @@ namespace OpenCIFS.Interop.Tests.Shared
                 {
                     new TestCaseDescriptor(
                         suiteId: "Interop.LoopbackIoctl",
+                        caseId: "ClientAndServerTransceiveManagedNamedPipeEchoEndpointThroughIpcWithHeaders",
+                        displayName: "Client and server loopback transceive a managed named-pipe echo endpoint through IPC$ with headers",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerHost server = CreateServerHost();
+                            server.RegisterNamedPipeEndpoint(OpenCifsServerNamedPipeEndpoints.CreateUtf8EchoEndpoint());
+                            OpenCifsClientSession client = CreateClient();
+                            OpenCifsClientCredential credential = CreateCredential();
+                            ulong sessionId = AuthenticateLoopbackSessionWithHeaders(server, client, credential, creditRequest: 4);
+
+                            Smb2Header treeConnectHeader = client.CreateRequestHeader(Smb2Command.TreeConnect, sessionId: sessionId);
+                            Smb2TreeConnectRequest treeConnectRequest = client.CreateTreeConnectRequest("IPC$");
+                            server.ValidateAndAcceptRequestHeader(treeConnectHeader, Smb2Command.TreeConnect, expectedSessionId: sessionId);
+                            OpenCifsServerTreeConnectResult treeConnectResult = server.HandleTreeConnect(sessionId, treeConnectRequest);
+                            client.ApplyResponseHeader(server.CreateResponseHeader(treeConnectHeader, treeConnectResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                            client.ApplyTreeConnectResult("IPC$", treeConnectResult.TreeId, treeConnectResult.Status, treeConnectResult.Response);
+
+                            Smb2Header createHeader = client.CreateRequestHeader(Smb2Command.Create, treeConnectResult.TreeId, sessionId: sessionId);
+                            Smb2CreateRequest createRequest = client.CreateCreateRequest(treeConnectResult.TreeId, OpenCifsServerNamedPipeEndpoints.DefaultUtf8EchoPipeName);
+                            server.ValidateAndAcceptRequestHeader(createHeader, Smb2Command.Create, expectedSessionId: sessionId, expectedTreeId: treeConnectResult.TreeId);
+                            OpenCifsServerOperationResult<Smb2CreateResponse> createResult = server.HandleCreate(sessionId, treeConnectResult.TreeId, createRequest);
+                            client.ApplyResponseHeader(server.CreateResponseHeader(createHeader, createResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                            OpenState pipeOpen = client.ApplyCreateResult(treeConnectResult.TreeId, OpenCifsServerNamedPipeEndpoints.DefaultUtf8EchoPipeName, createResult.Status, createResult.Response);
+
+                            byte[] payload = Encoding.UTF8.GetBytes("loopback pipe");
+                            Smb2Header ioctlHeader = client.CreateRequestHeader(Smb2Command.Ioctl, treeConnectResult.TreeId, sessionId: sessionId);
+                            Smb2IoctlRequest ioctlRequest = client.CreateIoctlRequest(
+                                pipeOpen.PersistentFileId,
+                                pipeOpen.VolatileFileId,
+                                (uint)FsctlCode.PipeTransceive,
+                                payload,
+                                maxOutputResponse: 4096,
+                                maxInputResponse: 0,
+                                flags: Smb2IoctlFlags.IsFsctl);
+                            server.ValidateAndAcceptRequestHeader(ioctlHeader, Smb2Command.Ioctl, expectedSessionId: sessionId, expectedTreeId: treeConnectResult.TreeId);
+                            OpenCifsServerOperationResult<Smb2IoctlResponse> ioctlResult = server.HandleIoctl(sessionId, treeConnectResult.TreeId, ioctlRequest);
+                            client.ApplyResponseHeader(server.CreateResponseHeader(ioctlHeader, ioctlResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                            byte[] echoedBytes = client.ApplyIoctlResult(pipeOpen.PersistentFileId, pipeOpen.VolatileFileId, ioctlResult.Status, ioctlResult.Response);
+
+                            Smb2Header closeHeader = client.CreateRequestHeader(Smb2Command.Close, treeConnectResult.TreeId, sessionId: sessionId);
+                            Smb2CloseRequest closeRequest = client.CreateCloseRequest(pipeOpen.PersistentFileId, pipeOpen.VolatileFileId);
+                            server.ValidateAndAcceptRequestHeader(closeHeader, Smb2Command.Close, expectedSessionId: sessionId, expectedTreeId: treeConnectResult.TreeId);
+                            OpenCifsServerOperationResult<Smb2CloseResponse> closeResult = server.HandleClose(sessionId, treeConnectResult.TreeId, closeRequest);
+                            client.ApplyResponseHeader(server.CreateResponseHeader(closeHeader, closeResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                            client.ApplyCloseResult(pipeOpen.PersistentFileId, pipeOpen.VolatileFileId, closeResult.Status, closeResult.Response);
+
+                            TestAssertions.SequenceEqual(payload, echoedBytes, "Expected loopback named-pipe IOCTL coverage to return the original UTF-8 payload.");
+                            TestAssertions.Equal(0, client.OpenCount, "Expected the loopback named-pipe close path to clear the tracked pipe open.");
+                            TestAssertions.Equal(4, client.AvailableCredits, "Expected the loopback named-pipe IOCTL coverage to preserve the negotiated client credit window.");
+                            TestAssertions.Equal(4, server.AvailableCredits, "Expected the loopback named-pipe IOCTL coverage to preserve the negotiated server credit window.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackIoctl",
+                        caseId: "ClientAndServerQueryManagedShareInfoThroughIpcAndSrvsvcWithHeaders",
+                        displayName: "Client and server loopback query managed share info through IPC$ and srvsvc with headers",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsInteropSrvsvc_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+
+                            try
+                            {
+                                OpenCifsServerHost server = CreateServerHost(sharePath);
+                                server.RegisterNamedPipeEndpoint(OpenCifsServerNamedPipeEndpoints.CreateSrvsvcShareEnumerationEndpoint());
+                                OpenCifsClientSession client = CreateClient();
+                                OpenCifsClientCredential credential = CreateCredential();
+                                ulong sessionId = AuthenticateLoopbackSessionWithHeaders(server, client, credential, creditRequest: 4);
+
+                                Smb2Header treeConnectHeader = client.CreateRequestHeader(Smb2Command.TreeConnect, sessionId: sessionId);
+                                Smb2TreeConnectRequest treeConnectRequest = client.CreateTreeConnectRequest("IPC$");
+                                server.ValidateAndAcceptRequestHeader(treeConnectHeader, Smb2Command.TreeConnect, expectedSessionId: sessionId);
+                                OpenCifsServerTreeConnectResult treeConnectResult = server.HandleTreeConnect(sessionId, treeConnectRequest);
+                                client.ApplyResponseHeader(server.CreateResponseHeader(treeConnectHeader, treeConnectResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                                client.ApplyTreeConnectResult("IPC$", treeConnectResult.TreeId, treeConnectResult.Status, treeConnectResult.Response);
+
+                                Smb2Header createHeader = client.CreateRequestHeader(Smb2Command.Create, treeConnectResult.TreeId, sessionId: sessionId);
+                                Smb2CreateRequest createRequest = client.CreateCreateRequest(treeConnectResult.TreeId, "srvsvc");
+                                server.ValidateAndAcceptRequestHeader(createHeader, Smb2Command.Create, expectedSessionId: sessionId, expectedTreeId: treeConnectResult.TreeId);
+                                OpenCifsServerOperationResult<Smb2CreateResponse> createResult = server.HandleCreate(sessionId, treeConnectResult.TreeId, createRequest);
+                                client.ApplyResponseHeader(server.CreateResponseHeader(createHeader, createResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                                OpenState pipeOpen = client.ApplyCreateResult(treeConnectResult.TreeId, "srvsvc", createResult.Status, createResult.Response);
+
+                                DceRpcBindRequest bindRequest = new DceRpcBindRequest
+                                {
+                                    CallId = 1
+                                };
+                                Smb2Header bindIoctlHeader = client.CreateRequestHeader(Smb2Command.Ioctl, treeConnectResult.TreeId, sessionId: sessionId);
+                                Smb2IoctlRequest bindIoctlRequest = client.CreateIoctlRequest(
+                                    pipeOpen.PersistentFileId,
+                                    pipeOpen.VolatileFileId,
+                                    (uint)FsctlCode.PipeTransceive,
+                                    bindRequest.ToByteArray(),
+                                    maxOutputResponse: 4096,
+                                    maxInputResponse: 0,
+                                    flags: Smb2IoctlFlags.IsFsctl);
+                                server.ValidateAndAcceptRequestHeader(bindIoctlHeader, Smb2Command.Ioctl, expectedSessionId: sessionId, expectedTreeId: treeConnectResult.TreeId);
+                                OpenCifsServerOperationResult<Smb2IoctlResponse> bindIoctlResult = server.HandleIoctl(sessionId, treeConnectResult.TreeId, bindIoctlRequest);
+                                client.ApplyResponseHeader(server.CreateResponseHeader(bindIoctlHeader, bindIoctlResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                                byte[] bindResponseBytes = client.ApplyIoctlResult(pipeOpen.PersistentFileId, pipeOpen.VolatileFileId, bindIoctlResult.Status, bindIoctlResult.Response);
+                                DceRpcBindAck bindAck = DceRpcBindAck.ReadFrom(bindResponseBytes);
+                                bindAck.EnsureAccepted();
+
+                                SrvsvcNetrShareGetInfoRequest shareInfoRequest = new SrvsvcNetrShareGetInfoRequest
+                                {
+                                    ShareName = TestEnvironmentDefaults.DefaultShareName
+                                };
+                                DceRpcRequestPdu rpcRequest = new DceRpcRequestPdu
+                                {
+                                    CallId = 2,
+                                    ContextId = DceRpcConstants.SrvsvcContextId,
+                                    OperationNumber = SrvsvcNetrShareGetInfoRequest.OperationNumber,
+                                    StubData = shareInfoRequest.ToByteArray()
+                                };
+                                Smb2Header ioctlHeader = client.CreateRequestHeader(Smb2Command.Ioctl, treeConnectResult.TreeId, sessionId: sessionId);
+                                Smb2IoctlRequest ioctlRequest = client.CreateIoctlRequest(
+                                    pipeOpen.PersistentFileId,
+                                    pipeOpen.VolatileFileId,
+                                    (uint)FsctlCode.PipeTransceive,
+                                    rpcRequest.ToByteArray(),
+                                    maxOutputResponse: 4096,
+                                    maxInputResponse: 0,
+                                    flags: Smb2IoctlFlags.IsFsctl);
+                                server.ValidateAndAcceptRequestHeader(ioctlHeader, Smb2Command.Ioctl, expectedSessionId: sessionId, expectedTreeId: treeConnectResult.TreeId);
+                                OpenCifsServerOperationResult<Smb2IoctlResponse> ioctlResult = server.HandleIoctl(sessionId, treeConnectResult.TreeId, ioctlRequest);
+                                client.ApplyResponseHeader(server.CreateResponseHeader(ioctlHeader, ioctlResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                                byte[] rpcResponseBytes = client.ApplyIoctlResult(pipeOpen.PersistentFileId, pipeOpen.VolatileFileId, ioctlResult.Status, ioctlResult.Response);
+                                DceRpcResponsePdu rpcResponse = DceRpcResponsePdu.ReadFrom(rpcResponseBytes);
+                                SrvsvcNetrShareGetInfoResponse shareInfoResponse = SrvsvcNetrShareGetInfoResponse.ReadFrom(rpcResponse.StubData);
+
+                                Smb2Header closeHeader = client.CreateRequestHeader(Smb2Command.Close, treeConnectResult.TreeId, sessionId: sessionId);
+                                Smb2CloseRequest closeRequest = client.CreateCloseRequest(pipeOpen.PersistentFileId, pipeOpen.VolatileFileId);
+                                server.ValidateAndAcceptRequestHeader(closeHeader, Smb2Command.Close, expectedSessionId: sessionId, expectedTreeId: treeConnectResult.TreeId);
+                                OpenCifsServerOperationResult<Smb2CloseResponse> closeResult = server.HandleClose(sessionId, treeConnectResult.TreeId, closeRequest);
+                                client.ApplyResponseHeader(server.CreateResponseHeader(closeHeader, closeResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
+                                client.ApplyCloseResult(pipeOpen.PersistentFileId, pipeOpen.VolatileFileId, closeResult.Status, closeResult.Response);
+
+                                TestAssertions.Equal((uint)0, shareInfoResponse.ReturnCode, "Expected loopback SRVSVC share-info queries to succeed.");
+                                TestAssertions.True(shareInfoResponse.Share != null, "Expected loopback SRVSVC share-info queries to return share details.");
+                                TestAssertions.Equal(TestEnvironmentDefaults.DefaultShareName, shareInfoResponse.Share!.Name, "Unexpected loopback SRVSVC share-info share name.");
+                                TestAssertions.Equal(sharePath, shareInfoResponse.Share.Path, "Unexpected loopback SRVSVC share-info local path.");
+                                TestAssertions.Equal(0, client.OpenCount, "Expected the loopback SRVSVC share-info close path to clear the tracked pipe open.");
+                            }
+                            finally
+                            {
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Interop.LoopbackIoctl",
                         caseId: "ClientAndServerHandleValidateNegotiateAndSnapshotEnumerationAndRejectUnsupportedWildcardIoctlsWithHeaders",
                         displayName: "Client and server loopback handle validate-negotiate and bounded snapshot enumeration and reject unsupported wildcard SMB2 IOCTL requests with headers",
                         executeAsync: token =>
@@ -4629,24 +5908,14 @@ namespace OpenCIFS.Interop.Tests.Shared
                                 ulong sessionId = client.SessionId ?? throw new InvalidOperationException("Expected the loopback client session to be authenticated before IOCTL validation.");
 
                                 Smb2Header validateIoctlHeader = client.CreateRequestHeader(Smb2Command.Ioctl, treeId, sessionId: sessionId);
-                                Smb2NegotiateRequest validateNegotiateRequest = client.CreateNegotiateRequest();
-                                Smb2IoctlRequest validateIoctlRequest = client.CreateConnectionIoctlRequest(
-                                    (uint)FsctlCode.ValidateNegotiateInfo,
-                                    new ValidateNegotiateInfoRequest
-                                    {
-                                        Capabilities = validateNegotiateRequest.Capabilities,
-                                        ClientGuid = validateNegotiateRequest.ClientGuid,
-                                        SecurityMode = validateNegotiateRequest.SecurityMode,
-                                        Dialects = validateNegotiateRequest.Dialects
-                                    }.ToByteArray(),
-                                    maxOutputResponse: 256);
+                                Smb2IoctlRequest validateIoctlRequest = client.CreateValidateNegotiateInfoRequest(maxOutputResponse: 256);
                                 server.ValidateAndAcceptRequestHeader(validateIoctlHeader, Smb2Command.Ioctl, expectedSessionId: sessionId, expectedTreeId: treeId);
                                 OpenCifsServerOperationResult<Smb2IoctlResponse> validateIoctlResult = server.HandleIoctl(sessionId, treeId, validateIoctlRequest);
                                 client.ApplyResponseHeader(server.CreateResponseHeader(validateIoctlHeader, validateIoctlResult.Status, sessionId: sessionId, treeId: treeId));
                                 TestAssertions.Equal(NtStatus.Success, validateIoctlResult.Status, "Expected loopback validate-negotiate IOCTL requests to succeed.");
-                                byte[] validateOutputBuffer = client.ApplyConnectionIoctlResult(validateIoctlResult.Status, validateIoctlResult.Response);
-                                ValidateNegotiateInfoResponse validateIoctlResponse = ValidateNegotiateInfoResponse.ReadFrom(validateOutputBuffer);
+                                ValidateNegotiateInfoResponse validateIoctlResponse = client.ApplyValidateNegotiateInfoResult(validateIoctlResult.Status, validateIoctlResult.Response);
                                 TestAssertions.Equal(client.NegotiatedDialect!.Value, validateIoctlResponse.Dialect, "Expected loopback validate-negotiate responses to preserve the negotiated dialect.");
+                                TestAssertions.True(client.IsSecureNegotiateValidated, "Expected successful loopback validate-negotiate coverage to mark the client session as validated.");
 
                                 Smb2Header createHeader = client.CreateRequestHeader(Smb2Command.Create, treeId, sessionId: client.SessionId!.Value);
                                 Smb2CreateRequest createRequest = client.CreateCreateRequest(treeId, "notes.txt", createDisposition: Smb2CreateDisposition.Open);
@@ -4707,23 +5976,25 @@ namespace OpenCIFS.Interop.Tests.Shared
                 });
         }
 
-        private static OpenCifsServerHost CreateServerHost(string? sharePath = null, OpenCifsServerSharedState? sharedState = null)
+        private static OpenCifsServerHost CreateServerHost(string? sharePath = null, OpenCifsServerSharedState? sharedState = null, SmbDialect maximumDialect = SmbDialect.Smb21, bool requireEncryptionForSmb3 = true)
         {
             OpenCifsServerHost host = new OpenCifsServerHost(new OpenCifsServerOptions
             {
-                ServerName = "LAB-SERVER"
+                ServerName = TestEnvironmentDefaults.DefaultServerName,
+                MaximumDialect = maximumDialect,
+                RequireEncryptionForSmb3 = requireEncryptionForSmb3
             }, sharedState);
             host.RegisterShare(new OpenCifsServerFileSystemShare
             {
-                ShareName = "public",
+                ShareName = TestEnvironmentDefaults.DefaultShareName,
                 RootPath = sharePath ?? "SampleShare",
                 CreateRootIfMissing = true
             });
             host.RegisterAccount(new OpenCifsServerAccount
             {
-                UserName = "alice",
-                UserDomain = "WORKGROUP",
-                Password = "Password123!"
+                UserName = TestEnvironmentDefaults.DefaultUserName,
+                UserDomain = TestEnvironmentDefaults.DefaultUserDomain,
+                Password = TestEnvironmentDefaults.DefaultPassword
             });
             return host;
         }
@@ -4745,9 +6016,9 @@ namespace OpenCIFS.Interop.Tests.Shared
         {
             ulong sessionId = AuthenticateLoopbackSession(server, client, credential);
 
-            Smb2TreeConnectRequest treeConnectRequest = client.CreateTreeConnectRequest("public");
+            Smb2TreeConnectRequest treeConnectRequest = client.CreateTreeConnectRequest(TestEnvironmentDefaults.DefaultShareName);
             OpenCifsServerTreeConnectResult treeConnectResult = server.HandleTreeConnect(sessionId, treeConnectRequest);
-            client.ApplyTreeConnectResult("public", treeConnectResult.TreeId, treeConnectResult.Status, treeConnectResult.Response);
+            client.ApplyTreeConnectResult(TestEnvironmentDefaults.DefaultShareName, treeConnectResult.TreeId, treeConnectResult.Status, treeConnectResult.Response);
             TestAssertions.Equal(1, client.ConnectedTreeIds.Length, "Expected a connected tree before loopback file operations.");
             return treeConnectResult.TreeId;
         }
@@ -4757,16 +6028,43 @@ namespace OpenCIFS.Interop.Tests.Shared
             ulong sessionId = AuthenticateLoopbackSessionWithHeaders(server, client, credential, creditRequest);
 
             Smb2Header treeConnectHeader = client.CreateRequestHeader(Smb2Command.TreeConnect, sessionId: sessionId);
-            Smb2TreeConnectRequest treeConnectRequest = client.CreateTreeConnectRequest("public");
+            Smb2TreeConnectRequest treeConnectRequest = client.CreateTreeConnectRequest(TestEnvironmentDefaults.DefaultShareName);
             server.ValidateAndAcceptRequestHeader(treeConnectHeader, Smb2Command.TreeConnect, expectedSessionId: sessionId);
             OpenCifsServerTreeConnectResult treeConnectResult = server.HandleTreeConnect(sessionId, treeConnectRequest);
             client.ApplyResponseHeader(server.CreateResponseHeader(treeConnectHeader, treeConnectResult.Status, sessionId: sessionId, treeId: treeConnectResult.TreeId));
-            client.ApplyTreeConnectResult("public", treeConnectResult.TreeId, treeConnectResult.Status, treeConnectResult.Response);
+            client.ApplyTreeConnectResult(TestEnvironmentDefaults.DefaultShareName, treeConnectResult.TreeId, treeConnectResult.Status, treeConnectResult.Response);
 
             TestAssertions.Equal(1, client.ConnectedTreeIds.Length, "Expected a connected tree before compounded loopback file operations.");
             TestAssertions.Equal(creditRequest, (ushort)client.AvailableCredits, "Expected header-wrapped authenticate and tree setup to preserve the negotiated client credit window.");
             TestAssertions.Equal(creditRequest, (ushort)server.AvailableCredits, "Expected header-wrapped authenticate and tree setup to preserve the negotiated server credit window.");
             return treeConnectResult.TreeId;
+        }
+
+        private static uint AuthenticateEncryptedLoopbackSessionAndTree(OpenCifsServerHost server, OpenCifsClientSession client, OpenCifsClientCredential credential, ushort creditRequest = 4)
+        {
+            ulong sessionId = AuthenticateLoopbackSessionWithHeaders(server, client, credential, creditRequest);
+            TestAssertions.True(client.IsSessionEncryptionRequired, "Expected the authenticated SMB3 loopback session to require encryption before tree connect.");
+
+            Smb2CompoundPacket treeConnectResponsePacket = RoundTripEncryptedPacket(
+                server,
+                client,
+                new Smb2CompoundPacket(new[]
+                {
+                    new Smb2CompoundPacketEntry(
+                        client.CreateRequestHeader(Smb2Command.TreeConnect, sessionId: sessionId),
+                        client.CreateTreeConnectRequest(TestEnvironmentDefaults.DefaultShareName).ToByteArray())
+                }),
+                "encrypted tree connect");
+
+            Smb2CompoundPacketEntry treeConnectResponseEntry = treeConnectResponsePacket.Entries[0];
+            client.ApplyTreeConnectResult(
+                TestEnvironmentDefaults.DefaultShareName,
+                treeConnectResponseEntry.Header.TreeId,
+                treeConnectResponseEntry.Header.Status,
+                Smb2TreeConnectResponse.ReadFrom(Smb2CompoundPayloadHelper.TrimResponsePayload(treeConnectResponseEntry.Header.Command, treeConnectResponseEntry.Payload)));
+
+            TestAssertions.Equal(1, client.ConnectedTreeIds.Length, "Expected a connected tree before encrypted loopback file operations.");
+            return treeConnectResponseEntry.Header.TreeId;
         }
 
         private static ulong AuthenticateLoopbackSessionWithHeaders(OpenCifsServerHost server, OpenCifsClientSession client, OpenCifsClientCredential credential, ushort creditRequest)
@@ -4800,30 +6098,54 @@ namespace OpenCIFS.Interop.Tests.Shared
             return successResult.SessionId;
         }
 
-        private static OpenCifsClientSession CreateNegotiatedClient(OpenCifsServerHost server)
+        private static OpenCifsClientSession CreateNegotiatedClient(OpenCifsServerHost server, Guid? clientGuid = null, SmbDialect maximumDialect = SmbDialect.Smb21, bool preferEncryption = true)
         {
-            OpenCifsClientSession client = CreateClient();
+            OpenCifsClientSession client = CreateClient(clientGuid, maximumDialect, preferEncryption);
             Smb2NegotiateRequest request = client.CreateNegotiateRequest();
             Smb2NegotiateResponse response = server.HandleNegotiate(request);
             client.ApplyNegotiateResponse(response);
             return client;
         }
 
-        private static OpenCifsClientSession CreateClient()
+        private static OpenCifsClientSession CreateClient(Guid? clientGuid = null, SmbDialect maximumDialect = SmbDialect.Smb21, bool preferEncryption = true)
         {
             return new OpenCifsClientSession(new OpenCifsClientOptions
             {
-                ServerName = "LAB-SERVER"
-            });
+                ServerName = TestEnvironmentDefaults.DefaultServerName,
+                MaximumDialect = maximumDialect,
+                PreferEncryption = preferEncryption
+            }, clientGuid);
+        }
+
+        private static Smb2CompoundPacket RoundTripEncryptedPacket(OpenCifsServerHost server, OpenCifsClientSession client, Smb2CompoundPacket requestPacket, string operationLabel)
+        {
+            byte[] encryptedRequestBytes = client.FinalizeRequestPacket(requestPacket);
+            TestAssertions.True(Smb2TransformHeader.LooksLikeTransformHeader(encryptedRequestBytes), "Expected " + operationLabel + " requests to use an SMB3 transform header.");
+
+            byte[] decryptedRequestBytes = server.UnwrapRequestPacket(encryptedRequestBytes, out bool wasEncrypted);
+            TestAssertions.True(wasEncrypted, "Expected the server to recognize the encrypted " + operationLabel + " request.");
+
+            Smb2CompoundPacket parsedRequestPacket = Smb2CompoundPacket.ReadFrom(decryptedRequestBytes);
+            server.ValidateRequestPacket(parsedRequestPacket, decryptedRequestBytes, wasEncrypted);
+
+            Smb2CompoundPacket responsePacket = server.HandleCompoundRequestPacket(parsedRequestPacket);
+            byte[] encryptedResponseBytes = server.FinalizeResponsePacket(responsePacket);
+            TestAssertions.True(Smb2TransformHeader.LooksLikeTransformHeader(encryptedResponseBytes), "Expected " + operationLabel + " responses to use an SMB3 transform header.");
+
+            byte[] decryptedResponseBytes = client.UnwrapResponsePacket(encryptedResponseBytes);
+            Smb2CompoundPacket parsedResponsePacket = Smb2CompoundPacket.ReadFrom(decryptedResponseBytes);
+            client.ValidateResponsePacket(parsedResponsePacket, decryptedResponseBytes);
+            client.ApplyCompoundResponsePacket(parsedResponsePacket);
+            return parsedResponsePacket;
         }
 
         private static OpenCifsClientCredential CreateCredential()
         {
             return new OpenCifsClientCredential
             {
-                UserName = "alice",
-                UserDomain = "WORKGROUP",
-                Password = "Password123!"
+                UserName = TestEnvironmentDefaults.DefaultUserName,
+                UserDomain = TestEnvironmentDefaults.DefaultUserDomain,
+                Password = TestEnvironmentDefaults.DefaultPassword
             };
         }
 
@@ -4846,23 +6168,7 @@ namespace OpenCIFS.Interop.Tests.Shared
 
         private static void DeleteDirectoryForcefully(string rootPath)
         {
-            if (!Directory.Exists(rootPath))
-            {
-                return;
-            }
-
-            foreach (string filePath in Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories))
-            {
-                File.SetAttributes(filePath, System.IO.FileAttributes.Normal);
-            }
-
-            foreach (string directoryPath in Directory.EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories))
-            {
-                File.SetAttributes(directoryPath, System.IO.FileAttributes.Directory);
-            }
-
-            File.SetAttributes(rootPath, System.IO.FileAttributes.Directory);
-            Directory.Delete(rootPath, recursive: true);
+            TestPathUtilities.DeleteDirectoryForcefully(rootPath);
         }
     }
 }

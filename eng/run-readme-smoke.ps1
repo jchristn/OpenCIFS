@@ -26,7 +26,7 @@ $projectContent = @"
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>$Framework</TargetFramework>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -71,6 +71,8 @@ internal static class Program
         bool deleteFailureObserved = false;
         string roundTripText;
         ulong endOfFile;
+        string configuredShareName;
+        string applicationShareName;
 
         SmbDialect minimumDialect = SmbDialect.Smb2002;
         SmbDialect maximumDialect = SmbDialect.Smb21;
@@ -84,19 +86,14 @@ internal static class Program
             MaximumDialect = maximumDialect
         };
 
-        OpenCifsServerHostBuilder builder = new OpenCifsServerHostBuilder(serverOptions)
+        OpenCifsServerBuilder builder = new OpenCifsServerBuilder(serverOptions)
             .AddAccount(new OpenCifsServerAccount
             {
                 UserName = "alice",
                 UserDomain = "WORKGROUP",
                 Password = "Password123!"
             })
-            .AddFileSystemShare(new OpenCifsServerFileSystemShare
-            {
-                ShareName = "share",
-                RootPath = shareRoot,
-                CreateRootIfMissing = true
-            })
+            .AddShare("share", share => share.UseLocalFileSystem(shareRoot))
             .ConfigureRequestCallbacks(new OpenCifsServerRequestCallbacks
             {
                 AuthenticatedSessionCallback = context =>
@@ -116,16 +113,36 @@ internal static class Program
                 }
             });
 
-        await using OpenCifsServerApplication server = builder.BuildApplication(
+        OpenCifsServerShareInfo[] configuredShares = builder.GetAvailableShares().ToArray();
+        if (configuredShares.Length != 1 || !StringComparer.Ordinal.Equals(configuredShares[0].ShareName, "share"))
+        {
+            throw new InvalidOperationException("README smoke builder share introspection did not expose the documented share registration.");
+        }
+
+        configuredShareName = configuredShares[0].ShareName;
+
+        OpenCifsServer configuredServer = builder.Build();
+        if (!StringComparer.Ordinal.Equals(configuredServer.Settings.ServerName, "127.0.0.1"))
+        {
+            throw new InvalidOperationException("README smoke configured-server surface did not preserve the documented server name.");
+        }
+
+        OpenCifsServerShareInfo[] serverShares = configuredServer.GetAvailableShares().ToArray();
+        if (serverShares.Length != 1 || !StringComparer.Ordinal.Equals(serverShares[0].ShareName, "share"))
+        {
+            throw new InvalidOperationException("README smoke configured-server share introspection did not expose the documented share registration.");
+        }
+
+        await using OpenCifsServerApplication server = configuredServer.BuildApplication(
             exception => Console.Error.WriteLine("[readme-smoke-server] " + exception.Message));
 
-        OpenCifsClientOptions clientOptions = new OpenCifsClientOptions
+        OpenCifsServerShareInfo[] applicationShares = server.GetAvailableShares().ToArray();
+        if (applicationShares.Length != 1 || !StringComparer.Ordinal.Equals(applicationShares[0].ShareName, "share"))
         {
-            ServerName = "127.0.0.1",
-            ServerPort = port,
-            MinimumDialect = minimumDialect,
-            MaximumDialect = maximumDialect
-        };
+            throw new InvalidOperationException("README smoke application share introspection did not expose the documented share registration.");
+        }
+
+        applicationShareName = applicationShares[0].ShareName;
 
         OpenCifsClientCredential credential = new OpenCifsClientCredential
         {
@@ -138,32 +155,37 @@ internal static class Program
         {
             await server.StartAsync(CancellationToken.None).ConfigureAwait(false);
 
-            await using OpenCifsClientFacade client = new OpenCifsClientFacade(clientOptions);
+            await using OpenCifsClient client = new OpenCifsClientBuilder()
+                .WithServer("127.0.0.1", port)
+                .WithDialectRange(minimumDialect, maximumDialect)
+                .Build();
             await client.ConnectAsync(credential).ConfigureAwait(false);
             await client.EchoAsync().ConfigureAwait(false);
 
-            await client.CreateDirectoryAsync("share", "docs").ConfigureAwait(false);
-            await client.WriteAllBytesAsync("share", "docs\\hello.txt", Encoding.UTF8.GetBytes("hello from OpenCIFS")).ConfigureAwait(false);
+            await using OpenCifsShareSession share = await client.OpenShareAsync("share").ConfigureAwait(false);
+            await share.Directories.CreateAsync("/docs").ConfigureAwait(false);
+            await share.Files.WriteAllBytesAsync("/docs/hello.txt", Encoding.UTF8.GetBytes("hello from OpenCIFS")).ConfigureAwait(false);
 
-            byte[] fileBytes = await client.ReadAllBytesAsync("share", "docs\\hello.txt").ConfigureAwait(false);
-            OpenCifsClientFileMetadata metadata = await client.GetMetadataAsync("share", "docs\\hello.txt").ConfigureAwait(false);
-            OpenCifsClientDirectoryEntry[] entries = await client.EnumerateDirectoryAsync("share", "docs").ConfigureAwait(false);
+            byte[] fileBytes = await share.Files.ReadAllBytesAsync("/docs/hello.txt").ConfigureAwait(false);
+            OpenCifsClientFileMetadata metadata = await share.Metadata.GetAttributesAsync("/docs/hello.txt").ConfigureAwait(false);
+            OpenCifsClientDirectoryEntry[] entries = await share.Directories.EnumerateAsync("/docs").ConfigureAwait(false);
 
             roundTripText = Encoding.UTF8.GetString(fileBytes);
             endOfFile = metadata.EndOfFile;
 
             try
             {
-                await client.DeleteAsync("share", "docs").ConfigureAwait(false);
+                await share.Directories.DeleteAsync("/docs").ConfigureAwait(false);
             }
             catch (OpenCifsStatusException exception) when (exception.Status == NtStatus.DirectoryNotEmpty)
             {
                 deleteFailureObserved = true;
             }
 
-            await client.RenameAsync("share", "docs\\hello.txt", "docs\\hello-renamed.txt").ConfigureAwait(false);
-            await client.DeleteAsync("share", "docs\\hello-renamed.txt").ConfigureAwait(false);
-            await client.DeleteAsync("share", "docs").ConfigureAwait(false);
+            await share.Files.RenameAsync("/docs/hello.txt", "/docs/hello-renamed.txt").ConfigureAwait(false);
+            await share.Files.DeleteAsync("/docs/hello-renamed.txt").ConfigureAwait(false);
+            await share.Directories.DeleteAsync("/docs").ConfigureAwait(false);
+            await client.DisconnectAsync().ConfigureAwait(false);
 
             if (!deleteFailureObserved)
             {
@@ -197,6 +219,8 @@ internal static class Program
                 Port = port,
                 RoundTripText = roundTripText,
                 EndOfFile = endOfFile,
+                ConfiguredShareName = configuredShareName,
+                ApplicationShareName = applicationShareName,
                 EnumeratedFileCount = entries.Length,
                 AuthenticatedSessionCount = authenticatedSessionCount,
                 TreeConnectCount = treeConnectCount,
@@ -261,7 +285,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-dotnet run --project $projectPath --configuration $Configuration --no-build --no-restore | Tee-Object -FilePath $resultPath
+dotnet run --project $projectPath --configuration $Configuration --framework $Framework --no-build --no-restore | Tee-Object -FilePath $resultPath
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

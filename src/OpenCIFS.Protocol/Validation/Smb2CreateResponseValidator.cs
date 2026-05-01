@@ -55,6 +55,7 @@ namespace OpenCIFS.Protocol
             }
 
             int durableResponseCount = 0;
+            int durableResponseV2Count = 0;
             int leaseResponseCount = 0;
             bool hasLeaseV2Response = false;
 
@@ -74,13 +75,20 @@ namespace OpenCIFS.Protocol
                     continue;
                 }
 
+                if (Smb2DurableHandleResponseV2Context.IsMatch(contexts[index]))
+                {
+                    Smb2DurableHandleResponseV2Context.Validate(Smb2DurableHandleResponseV2Context.ReadFrom(contexts[index]));
+                    durableResponseV2Count++;
+                    continue;
+                }
+
                 if (Smb2CreateResponseLeaseContext.HasLeaseContextName(contexts[index]))
                 {
                     hasLeaseV2Response = true;
                 }
             }
 
-            if (durableResponseCount > 1)
+            if (durableResponseCount > 1 || durableResponseV2Count > 1 || (durableResponseCount != 0 && durableResponseV2Count != 0))
             {
                 throw new ProtocolValidationException("The SMB2 create response contains duplicate durable-handle response contexts.", nameof(response));
             }

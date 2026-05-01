@@ -153,6 +153,16 @@ namespace OpenCIFS.Server
         public bool RequireEncryptionForSmb3 { get; set; } = true;
 
         /// <summary>
+        /// Whether the bounded SMB 3.1.1 preview slice should be enabled on the server side.
+        /// When <c>true</c>, the server allocates a SHA-512 preauth integrity transcript hash for
+        /// SMB 3.1.1-shaped negotiate requests so the negotiate transcript is preserved for future
+        /// session-key derivation wiring. The server's dialect-selection behavior continues to use
+        /// the existing tolerance path until end-to-end SMB 3.1.1 wiring is complete.
+        /// Default value: <c>false</c>.
+        /// </summary>
+        public bool EnableSmb311Preview { get; set; } = false;
+
+        /// <summary>
         /// Maximum SMB2 credits that may be granted to a client on a single connection.
         /// Default value: <c>64</c>.
         /// Minimum value: <c>1</c>.

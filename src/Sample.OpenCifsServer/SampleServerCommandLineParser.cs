@@ -71,6 +71,9 @@ namespace Sample.OpenCifsServer
                     case "--require-encryption-for-smb3":
                         options.RequireEncryptionForSmb3 = ParseBoolean(argument, ReadValue(args, ref index, argument));
                         break;
+                    case "--enable-smb311-preview":
+                        options.EnableSmb311Preview = ParseBoolean(argument, ReadValue(args, ref index, argument));
+                        break;
                     case "--account-username":
                         options.AccountUserName = ReadValue(args, ref index, argument);
                         break;

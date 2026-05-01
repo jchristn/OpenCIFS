@@ -19,7 +19,6 @@ namespace OpenCIFS.SambaInterop.Console
         private const uint ShareAccess = 0x00000007U;
         private const string PayloadText = "hello from opencifs client";
         private const ulong TruncatedLength = 6;
-        private const int LargePayloadLength = 200000;
         private const string DirectoryName = "opencifs-samba-smoke";
         private const string RenamedDirectoryName = "opencifs-samba-smoke-renamed";
         private const string NestedDirectoryName = "nested";
@@ -72,17 +71,19 @@ namespace OpenCIFS.SambaInterop.Console
             string renamedNestedDirectoryPath = RenamedDirectoryName + "\\" + NestedDirectoryName;
             string renamedFileInRenamedDirectoryPath = RenamedDirectoryName + "\\" + RenamedFileName;
             byte[] payloadBytes = Encoding.UTF8.GetBytes(PayloadText);
-            byte[] largePayloadBytes = CreateLargePayloadBytes(LargePayloadLength);
+            byte[] largePayloadBytes = CreateLargePayloadBytes(options.LargePayloadLength);
             ulong mutatedLastWriteTime = unchecked((ulong)new DateTime(2024, 1, 2, 3, 4, 5, DateTimeKind.Utc).ToFileTimeUtc());
             string truncatedText = Encoding.UTF8.GetString(payloadBytes, 0, checked((int)TruncatedLength));
+            string dialectLabel = GetDialectLabel(options.Dialect);
 
             OpenCifsClientOptions clientOptions = new OpenCifsClientOptions
             {
                 ServerName = options.Server,
                 ServerPort = options.Port,
                 RequireSigning = true,
-                MinimumDialect = SmbDialect.Smb21,
-                MaximumDialect = SmbDialect.Smb21
+                PreferEncryption = options.Dialect >= SmbDialect.Smb30,
+                MinimumDialect = options.Dialect,
+                MaximumDialect = options.Dialect
             };
             OpenCifsClientCredential credential = new OpenCifsClientCredential
             {
@@ -113,6 +114,18 @@ namespace OpenCIFS.SambaInterop.Console
             {
                 await firstClient.ConnectAndAuthenticateAsync(credential, cancellationToken).ConfigureAwait(false);
                 await secondClient.ConnectAndAuthenticateAsync(credential, cancellationToken).ConfigureAwait(false);
+                OpenCifsRemoteShareInfo[] browsedShares = await firstClient.EnumerateRemoteSharesAsync(cancellationToken).ConfigureAwait(false);
+                OpenCifsRemoteShareInfo browsedShareInfo = await firstClient.GetRemoteShareInfoAsync(options.Share, cancellationToken).ConfigureAwait(false);
+
+                if (!ContainsRemoteShare(browsedShares, options.Share))
+                {
+                    throw new InvalidOperationException("Expected OpenCIFS remote share browsing to find the requested Samba share.");
+                }
+
+                if (!StringComparer.OrdinalIgnoreCase.Equals(browsedShareInfo.Name, options.Share))
+                {
+                    throw new InvalidOperationException("Expected OpenCIFS SRVSVC share-info browsing to return the requested Samba share.");
+                }
 
                 firstTree = await firstClient.TreeConnectAsync(options.Share, cancellationToken).ConfigureAwait(false);
                 secondTree = await secondClient.TreeConnectAsync(options.Share, cancellationToken).ConfigureAwait(false);
@@ -227,8 +240,9 @@ namespace OpenCIFS.SambaInterop.Console
                     Smb2CreateDisposition.OverwriteIf,
                     Smb2CreateOptions.NonDirectoryFile,
                     cancellationToken).ConfigureAwait(false);
-                uint largeWrittenCount = await firstClient.WriteAsync(largeFileHandle, largePayloadBytes, 0, cancellationToken).ConfigureAwait(false);
-                byte[] largeRoundTripBytes = await firstClient.ReadAsync(largeFileHandle, (uint)largePayloadBytes.Length, 0, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await firstClient.RequestMaximumCreditsAsync(cancellationToken).ConfigureAwait(false);
+                uint largeWrittenCount = await WriteAllBytesAsync(firstClient, largeFileHandle, largePayloadBytes, cancellationToken).ConfigureAwait(false);
+                byte[] largeRoundTripBytes = await ReadAllBytesAsync(firstClient, largeFileHandle, (uint)largePayloadBytes.Length, cancellationToken).ConfigureAwait(false);
                 FileStandardInformation largeStandardInfo = FileStandardInformation.ReadFrom(
                     await firstClient.QueryInfoAsync(largeFileHandle, FileInformationClass.StandardInformation, cancellationToken: cancellationToken).ConfigureAwait(false));
 
@@ -389,7 +403,11 @@ namespace OpenCIFS.SambaInterop.Console
                     Server = options.Server,
                     Port = options.Port,
                     Share = options.Share,
+                    Dialect = dialectLabel,
                     UserName = options.UserName,
+                    BrowsedShareNames = ProjectRemoteShareNames(browsedShares),
+                    BrowsedShareLocalPath = browsedShareInfo.LocalPath,
+                    BrowsedShareCurrentUses = browsedShareInfo.CurrentUses ?? 0,
                     Directory = DirectoryName,
                     NestedDirectory = nestedDirectoryPath,
                     RenamedDirectory = renamedDirectoryPath,
@@ -447,6 +465,31 @@ namespace OpenCIFS.SambaInterop.Console
             return names.ToArray();
         }
 
+        private static string[] ProjectRemoteShareNames(OpenCifsRemoteShareInfo[] shares)
+        {
+            List<string> names = new List<string>(shares.Length);
+
+            for (int index = 0; index < shares.Length; index++)
+            {
+                names.Add(shares[index].Name);
+            }
+
+            return names.ToArray();
+        }
+
+        private static bool ContainsRemoteShare(OpenCifsRemoteShareInfo[] shares, string shareName)
+        {
+            for (int index = 0; index < shares.Length; index++)
+            {
+                if (StringComparer.OrdinalIgnoreCase.Equals(shares[index].Name, shareName))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static byte[] CreateLargePayloadBytes(int length)
         {
             if (length <= 0)
@@ -462,6 +505,82 @@ namespace OpenCIFS.SambaInterop.Console
             }
 
             return bytes;
+        }
+
+        private static async Task<uint> WriteAllBytesAsync(
+            OpenCifsClientConnection client,
+            OpenCifsClientOpenHandle openHandle,
+            byte[] data,
+            CancellationToken cancellationToken)
+        {
+            uint chunkLength = GetReadWriteChunkLength(client, client.Session.NegotiatedMaxWriteSize);
+            uint totalWritten = 0;
+
+            for (int offset = 0; offset < data.Length; offset += checked((int)chunkLength))
+            {
+                int chunkSize = Math.Min(data.Length - offset, checked((int)chunkLength));
+                byte[] chunk = new byte[chunkSize];
+                Buffer.BlockCopy(data, offset, chunk, 0, chunkSize);
+                totalWritten += await client.WriteAsync(openHandle, chunk, checked((ulong)offset), cancellationToken).ConfigureAwait(false);
+            }
+
+            return totalWritten;
+        }
+
+        private static async Task<byte[]> ReadAllBytesAsync(
+            OpenCifsClientConnection client,
+            OpenCifsClientOpenHandle openHandle,
+            uint length,
+            CancellationToken cancellationToken)
+        {
+            uint chunkLength = GetReadWriteChunkLength(client, client.Session.NegotiatedMaxReadSize);
+            byte[] result = new byte[length];
+            int copied = 0;
+
+            for (uint offset = 0; offset < length; offset += chunkLength)
+            {
+                uint currentLength = Math.Min(chunkLength, length - offset);
+                byte[] chunk = await client.ReadAsync(openHandle, currentLength, offset, cancellationToken: cancellationToken).ConfigureAwait(false);
+                Buffer.BlockCopy(chunk, 0, result, copied, chunk.Length);
+                copied += chunk.Length;
+            }
+
+            return result;
+        }
+
+        private static uint GetReadWriteChunkLength(OpenCifsClientConnection client, uint negotiatedMaximum)
+        {
+            if (negotiatedMaximum == 0)
+            {
+                return Smb2CreditChargeHelper.BytesPerCredit;
+            }
+
+            uint creditBoundLength = checked((uint)Math.Max(1, client.Session.AvailableCredits)) * Smb2CreditChargeHelper.BytesPerCredit;
+            return Math.Min(negotiatedMaximum, creditBoundLength);
+        }
+
+        private static SmbDialect ParseDialect(string value)
+        {
+            return value switch
+            {
+                "Smb2002" => SmbDialect.Smb2002,
+                "Smb21" => SmbDialect.Smb21,
+                "Smb30" => SmbDialect.Smb30,
+                "Smb302" => SmbDialect.Smb302,
+                _ => throw new ArgumentException("Unsupported dialect '" + value + "'.")
+            };
+        }
+
+        private static string GetDialectLabel(SmbDialect dialect)
+        {
+            return dialect switch
+            {
+                SmbDialect.Smb2002 => "SMB 2.0.2",
+                SmbDialect.Smb21 => "SMB 2.1",
+                SmbDialect.Smb30 => "SMB 3.0",
+                SmbDialect.Smb302 => "SMB 3.0.2",
+                _ => dialect.ToString()
+            };
         }
 
         private static async Task CloseIfNeededAsync(OpenCifsClientConnection client, OpenCifsClientOpenHandle? openHandle)
@@ -518,6 +637,10 @@ namespace OpenCIFS.SambaInterop.Console
                 UserName = GetRequired(values, "username"),
                 Password = GetRequired(values, "password"),
                 Domain = GetRequired(values, "domain"),
+                Dialect = values.TryGetValue("dialect", out string? dialectValue) ? ParseDialect(dialectValue) : SmbDialect.Smb21,
+                LargePayloadLength = values.TryGetValue("large-payload-length", out string? largePayloadLengthValue)
+                    ? Int32.Parse(largePayloadLengthValue, System.Globalization.CultureInfo.InvariantCulture)
+                    : 200000,
                 OutputPath = values.TryGetValue("output", out string? outputPath) ? outputPath : String.Empty
             };
         }
@@ -534,7 +657,11 @@ namespace OpenCIFS.SambaInterop.Console
 
         private sealed class Options
         {
+            public SmbDialect Dialect { get; init; }
+
             public string Domain { get; init; } = String.Empty;
+
+            public int LargePayloadLength { get; init; } = 200000;
 
             public string OutputPath { get; init; } = String.Empty;
 
@@ -551,6 +678,14 @@ namespace OpenCIFS.SambaInterop.Console
 
         private sealed class SmokeResult
         {
+            public string[] BrowsedShareNames { get; init; } = Array.Empty<string>();
+
+            public string BrowsedShareLocalPath { get; init; } = String.Empty;
+
+            public uint BrowsedShareCurrentUses { get; init; }
+
+            public string Dialect { get; init; } = String.Empty;
+
             public string[] DirectoryEntryNames { get; init; } = Array.Empty<string>();
 
             public bool DeletedDirectoryReopenRejected { get; init; }

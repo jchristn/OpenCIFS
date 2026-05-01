@@ -45,11 +45,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--username", required=True)
     parser.add_argument("--password", required=True)
     parser.add_argument("--domain", default="")
+    parser.add_argument("--dialect", choices=("smb2002", "smb21", "smb302"), default="smb21")
     parser.add_argument("--directory", default="real-client-smoke")
     parser.add_argument("--file", default="smoke.txt")
     parser.add_argument("--payload", default="hello from smbprotocol")
     parser.add_argument("--large-payload-length", type=int, default=200000)
     return parser.parse_args()
+
+
+def get_dialect(args: argparse.Namespace) -> tuple[int, str]:
+    if args.dialect == "smb2002":
+        return Dialects.SMB_2_0_2, "SMB 2.0.2"
+
+    if args.dialect == "smb21":
+        return Dialects.SMB_2_1_0, "SMB 2.1"
+
+    if args.dialect == "smb302":
+        return Dialects.SMB_3_0_2, "SMB 3.0.2"
+
+    raise ValueError(f"Unsupported dialect '{args.dialect}'.")
 
 
 def decode_file_name(entry) -> str:
@@ -140,6 +154,7 @@ def read_bytes_in_chunks(open_handle: Open, length: int, chunk_size: int = SINGL
 
 def main() -> int:
     args = parse_args()
+    selected_dialect, dialect_label = get_dialect(args)
     combined_username = args.username if not args.domain else args.domain + "\\" + args.username
     payload = args.payload.encode("utf-8")
     large_payload = create_large_payload(args.large_payload_length)
@@ -156,6 +171,7 @@ def main() -> int:
     expected_last_write_utc = datetime(2024, 5, 6, 7, 8, 9, tzinfo=timezone.utc)
     expected_last_write_filetime = to_filetime_utc(expected_last_write_utc)
 
+    require_encryption = args.dialect == "smb302"
     connection = Connection(uuid.uuid4(), args.server, args.port, require_signing=True)
     session = None
     tree = None
@@ -169,12 +185,12 @@ def main() -> int:
     renamed_directory_open = None
 
     try:
-        connection.connect(Dialects.SMB_2_1_0)
+        connection.connect(selected_dialect)
         session = Session(
             connection,
             username=combined_username,
             password=args.password,
-            require_encryption=False,
+            require_encryption=require_encryption,
             auth_protocol="ntlm")
         session.connect()
 
@@ -445,7 +461,9 @@ def main() -> int:
             "server": args.server,
             "port": args.port,
             "share": args.share,
-            "dialect": "SMB 2.1",
+            "dialect": dialect_label,
+            "session_encryption_required": require_encryption,
+            "dialect_id": args.dialect,
             "directory": args.directory,
             "nested_directory": nested_directory,
             "file": args.file,

@@ -10,6 +10,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $repositoryRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $artifactRoot = Join-Path $repositoryRoot "artifacts\package-smoke"
 $feedRoot = Join-Path $artifactRoot "feed"
+$packageCacheRoot = Join-Path $artifactRoot "packages"
 $consumerRoot = Join-Path $artifactRoot "consumer"
 $consumerProjectPath = Join-Path $consumerRoot "PackageSmokeApp.csproj"
 $consumerProgramPath = Join-Path $consumerRoot "Program.cs"
@@ -79,7 +80,8 @@ function Assert-PackageArtifact {
         [string]$PackagePath,
         [string]$PackageId,
         [string]$ExpectedReadmeFile,
-        [string]$RequiredReadmePhrase
+        [string]$ExpectedDescription,
+        [string[]]$RequiredReadmePhrases
     )
 
     $entryNames = Get-ArchiveEntryNames -PackagePath $PackagePath
@@ -124,8 +126,8 @@ function Assert-PackageArtifact {
         throw "Package '$PackageId' is missing package authors metadata."
     }
 
-    if ([string]::IsNullOrWhiteSpace($description)) {
-        throw "Package '$PackageId' is missing a package description."
+    if (-not [string]::Equals($description, $ExpectedDescription, [System.StringComparison]::Ordinal)) {
+        throw "Package '$PackageId' emitted description '$description' instead of '$ExpectedDescription'."
     }
 
     if (-not [string]::Equals($readme, $ExpectedReadmeFile, [System.StringComparison]::Ordinal)) {
@@ -165,8 +167,10 @@ function Assert-PackageArtifact {
         throw "Package '$PackageId' readme does not start with the expected package heading."
     }
 
-    if ($readmeText.IndexOf($RequiredReadmePhrase, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
-        throw "Package '$PackageId' readme does not contain the expected phrase '$RequiredReadmePhrase'."
+    foreach ($requiredReadmePhrase in $RequiredReadmePhrases) {
+        if ($readmeText.IndexOf($requiredReadmePhrase, [System.StringComparison]::Ordinal) -lt 0) {
+            throw "Package '$PackageId' readme does not contain the expected phrase '$requiredReadmePhrase'."
+        }
     }
 
     $dependencyIds = @(
@@ -179,6 +183,7 @@ function Assert-PackageArtifact {
         PackageId = $PackageId
         PackagePath = $PackagePath
         ReadmeFile = $ExpectedReadmeFile
+        Description = $description
         Tags = $tags
         Dependencies = $dependencyIds
     }
@@ -188,7 +193,12 @@ if (Test-Path $artifactRoot) {
     Remove-Item -LiteralPath $artifactRoot -Recurse -Force
 }
 
+if ($PackageVersion -eq "1.0.0-package-smoke") {
+    $PackageVersion = "1.0.0-package-smoke.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
+}
+
 New-Item -ItemType Directory -Path $feedRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $packageCacheRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $consumerRoot -Force | Out-Null
 
 $packageDefinitions = @(
@@ -196,31 +206,59 @@ $packageDefinitions = @(
         ProjectPath = "src/OpenCIFS.Protocol/OpenCIFS.Protocol.csproj"
         PackageId = "OpenCIFS.Protocol"
         ReadmeFile = "PackageReadme.md"
-        RequiredReadmePhrase = "SmbDialect"
+        ExpectedDescription = "Shared OpenCIFS SMB/CIFS protocol models, codecs, and wire-format foundations."
+        RequiredReadmePhrases = @(
+            "SmbDialect",
+            '`OpenCIFS.Protocol` is not a standalone SMB client or server.',
+            "SMB 3.x and SMB1/CIFS compatibility work beyond the current bounded scope remains backlog."
+        )
     },
     [pscustomobject]@{
         ProjectPath = "src/OpenCIFS.Security/OpenCIFS.Security.csproj"
         PackageId = "OpenCIFS.Security"
         ReadmeFile = "PackageReadme.md"
-        RequiredReadmePhrase = "NTLMv2"
+        ExpectedDescription = "Shared OpenCIFS NTLMv2, SPNEGO, signing, encryption, and key-derivation helpers."
+        RequiredReadmePhrases = @(
+            "NTLMv2",
+            '`OpenCIFS.Security` is an advanced dependency package.',
+            "Native Kerberos and broader SMB 3.x behavior such as SMB 3.1.1 signing or encryption negotiation remain backlog."
+        )
     },
     [pscustomobject]@{
         ProjectPath = "src/OpenCIFS.Transport/OpenCIFS.Transport.csproj"
         PackageId = "OpenCIFS.Transport"
         ReadmeFile = "PackageReadme.md"
-        RequiredReadmePhrase = "direct-TCP"
+        ExpectedDescription = "Shared OpenCIFS direct-TCP, NetBIOS session-service, and framing helpers."
+        RequiredReadmePhrases = @(
+            "direct-TCP",
+            '`OpenCIFS.Transport` is an advanced dependency package.',
+            "managed SMB 2.0.2 and SMB 2.1 client and server flows"
+        )
     },
     [pscustomobject]@{
         ProjectPath = "src/OpenCIFS.Client/OpenCIFS.Client.csproj"
         PackageId = "OpenCIFS.Client"
         ReadmeFile = "PackageReadme.md"
-        RequiredReadmePhrase = "OpenCifsClientFacade"
+        ExpectedDescription = "Managed OpenCIFS direct-TCP SMB 2.0.2 through bounded SMB 3.0.2 client library."
+        RequiredReadmePhrases = @(
+            "OpenCifsClientBuilder",
+            "Managed direct-TCP SMB 2.0.2 through bounded SMB 3.0.2 client surface for OpenCIFS.",
+            'bounded remote share browsing and share inspection over `IPC$` and `srvsvc`, plus bounded generic named-pipe transceive over `IPC$`, when the target server exposes those paths',
+            "bounded SMB 3.0 / SMB 3.0.2 secure-negotiate validation",
+            "SMB 3.1.1, Kerberos, and broader Windows-server interop remain backlog."
+        )
     },
     [pscustomobject]@{
         ProjectPath = "src/OpenCIFS.Server/OpenCIFS.Server.csproj"
         PackageId = "OpenCIFS.Server"
         ReadmeFile = "PackageReadme.md"
-        RequiredReadmePhrase = "OpenCifsServerHostBuilder"
+        ExpectedDescription = "Managed OpenCIFS direct-TCP SMB 2.0.2 through bounded SMB 3.0.2 server library."
+        RequiredReadmePhrases = @(
+            "OpenCifsServerBuilder",
+            'bounded local `IPC$` / named-pipe hosting with the built-in `srvsvc` share-enumeration/share-info endpoint, the built-in UTF-8 echo endpoint, plus host-provided named-pipe endpoints',
+            "bounded SMB 3.0 / SMB 3.0.2 negotiate, secure-negotiate validation, AES-CMAC signing, and SMB 3.0.2 AES-128-CCM session encryption",
+            "Continuous availability, persistent clustered handles, SMB 3.1.1, SMB1/CIFS, DFS, broader named-pipe semantics, and Kerberos remain backlog."
+        )
     }
 )
 
@@ -241,7 +279,8 @@ foreach ($definition in $packageDefinitions) {
         -PackagePath $packagePath `
         -PackageId $definition.PackageId `
         -ExpectedReadmeFile $definition.ReadmeFile `
-        -RequiredReadmePhrase $definition.RequiredReadmePhrase))
+        -ExpectedDescription $definition.ExpectedDescription `
+        -RequiredReadmePhrases $definition.RequiredReadmePhrases))
 }
 
 $packageMetadata | ConvertTo-Json -Depth 6 | Set-Content -Path $metadataPath -Encoding UTF8
@@ -250,7 +289,7 @@ $consumerProject = @"
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>$Framework</TargetFramework>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -312,42 +351,50 @@ internal static class Program
             SharePath = shareRoot
         };
 
-        OpenCifsServerHostBuilder builder = new OpenCifsServerHostBuilder(serverOptions)
+        OpenCifsServerBuilder builder = new OpenCifsServerBuilder(serverOptions)
             .AddAccount(new OpenCifsServerAccount
             {
                 UserName = "alice",
                 UserDomain = "WORKGROUP",
                 Password = "Password123!"
             })
-            .AddFileSystemShare(new OpenCifsServerFileSystemShare
-            {
-                ShareName = "share",
-                RootPath = shareRoot,
-                CreateRootIfMissing = true
-            });
+            .AddShare("share", share => share.UseLocalFileSystem(shareRoot));
 
         await using OpenCifsServerApplication server = builder.BuildApplication(
             exception => Console.Error.WriteLine("[package-smoke-server] " + exception));
-
-        OpenCifsClientOptions clientOptions = new OpenCifsClientOptions
-        {
-            ServerName = "127.0.0.1",
-            ServerPort = port,
-            MinimumDialect = SmbDialect.Smb2002,
-            MaximumDialect = SmbDialect.Smb21,
-            RequireSigning = true
-        };
 
         bool badCredentialRejected = false;
         bool nonEmptyDirectoryDeleteRejected = false;
         string roundTripText;
         ulong endOfFile;
+        string configuredShareName;
+        string applicationShareName;
 
         try
         {
+            OpenCifsServerShareInfo[] configuredShares = builder.GetAvailableShares().ToArray();
+            if (configuredShares.Length != 1 || !StringComparer.Ordinal.Equals(configuredShares[0].ShareName, "share"))
+            {
+                throw new InvalidOperationException("The package smoke builder share introspection did not expose the configured share.");
+            }
+
+            configuredShareName = configuredShares[0].ShareName;
+
+            OpenCifsServerShareInfo[] applicationShares = server.GetAvailableShares().ToArray();
+            if (applicationShares.Length != 1 || !StringComparer.Ordinal.Equals(applicationShares[0].ShareName, "share"))
+            {
+                throw new InvalidOperationException("The package smoke application share introspection did not expose the configured share.");
+            }
+
+            applicationShareName = applicationShares[0].ShareName;
+
             await server.StartAsync(CancellationToken.None);
 
-            await using (OpenCifsClientFacade invalidClient = new OpenCifsClientFacade(clientOptions))
+            await using (OpenCifsClient invalidClient = new OpenCifsClientBuilder()
+                .WithServer("127.0.0.1", port)
+                .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                .WithSigningRequired()
+                .Build())
             {
                 try
                 {
@@ -364,7 +411,11 @@ internal static class Program
                 }
             }
 
-            await using OpenCifsClientFacade client = new OpenCifsClientFacade(clientOptions);
+            await using OpenCifsClient client = new OpenCifsClientBuilder()
+                .WithServer("127.0.0.1", port)
+                .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                .WithSigningRequired()
+                .Build();
             await client.ConnectAsync(new OpenCifsClientCredential
             {
                 UserName = "alice",
@@ -373,36 +424,38 @@ internal static class Program
             }).ConfigureAwait(false);
 
             await client.EchoAsync().ConfigureAwait(false);
-            await client.CreateDirectoryAsync("share", "docs").ConfigureAwait(false);
+            await using OpenCifsShareSession share = await client.OpenShareAsync("share").ConfigureAwait(false);
+            await share.Directories.CreateAsync("/docs").ConfigureAwait(false);
 
             byte[] payload = Encoding.UTF8.GetBytes("hello from package smoke");
-            await client.WriteAllBytesAsync("share", @"docs\smoke.txt", payload).ConfigureAwait(false);
+            await share.Files.WriteAllBytesAsync("/docs/smoke.txt", payload).ConfigureAwait(false);
 
             try
             {
-                await client.DeleteAsync("share", "docs").ConfigureAwait(false);
+                await share.Directories.DeleteAsync("/docs").ConfigureAwait(false);
             }
             catch (OpenCifsStatusException exception) when (exception.Status == NtStatus.DirectoryNotEmpty)
             {
                 nonEmptyDirectoryDeleteRejected = true;
             }
 
-            byte[] readBytes = await client.ReadAllBytesAsync("share", @"docs\smoke.txt").ConfigureAwait(false);
+            byte[] readBytes = await share.Files.ReadAllBytesAsync("/docs/smoke.txt").ConfigureAwait(false);
             roundTripText = Encoding.UTF8.GetString(readBytes);
 
-            OpenCifsClientFileMetadata metadata = await client.GetMetadataAsync("share", @"docs\smoke.txt").ConfigureAwait(false);
+            OpenCifsClientFileMetadata metadata = await share.Metadata.GetAttributesAsync("/docs/smoke.txt").ConfigureAwait(false);
             endOfFile = metadata.EndOfFile;
 
-            OpenCifsClientDirectoryEntry[] directoryEntries = await client.EnumerateDirectoryAsync("share", "docs").ConfigureAwait(false);
+            OpenCifsClientDirectoryEntry[] directoryEntries = await share.Directories.EnumerateAsync("/docs").ConfigureAwait(false);
 
             if (!directoryEntries.Any(static entry => StringComparer.OrdinalIgnoreCase.Equals(entry.FileName, "smoke.txt")))
             {
                 throw new InvalidOperationException("The package smoke directory enumeration did not return smoke.txt.");
             }
 
-            await client.RenameAsync("share", @"docs\smoke.txt", @"docs\renamed.txt").ConfigureAwait(false);
-            await client.DeleteAsync("share", @"docs\renamed.txt").ConfigureAwait(false);
-            await client.DeleteAsync("share", "docs").ConfigureAwait(false);
+            await share.Files.RenameAsync("/docs/smoke.txt", "/docs/renamed.txt").ConfigureAwait(false);
+            await share.Files.DeleteAsync("/docs/renamed.txt").ConfigureAwait(false);
+            await share.Directories.DeleteAsync("/docs").ConfigureAwait(false);
+            await client.DisconnectAsync().ConfigureAwait(false);
 
             if (!badCredentialRejected)
             {
@@ -432,6 +485,8 @@ internal static class Program
                 Port = port,
                 BadCredentialRejected = badCredentialRejected,
                 NonEmptyDirectoryDeleteRejected = nonEmptyDirectoryDeleteRejected,
+                ConfiguredShareName = configuredShareName,
+                ApplicationShareName = applicationShareName,
                 EndOfFile = endOfFile,
                 RoundTripText = roundTripText
             }, new JsonSerializerOptions
@@ -483,7 +538,7 @@ internal static class Program
 
 Set-Content -Path $consumerProgramPath -Value $consumerProgram -Encoding UTF8
 
-dotnet restore $consumerProjectPath --configfile $nuGetConfigPath
+dotnet restore $consumerProjectPath --configfile $nuGetConfigPath --packages $packageCacheRoot
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
@@ -493,7 +548,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-dotnet run --project $consumerProjectPath --configuration $Configuration --no-build --no-restore | Tee-Object -FilePath $resultPath
+dotnet run --project $consumerProjectPath --configuration $Configuration --framework $Framework --no-build --no-restore | Tee-Object -FilePath $resultPath
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

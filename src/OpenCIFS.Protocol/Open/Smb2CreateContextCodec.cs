@@ -118,9 +118,13 @@ namespace OpenCIFS.Protocol
                 }
 
                 int minimumContextLength = Math.Max(
+                    nameOffsetValue + nameLengthValue,
+                    dataLengthValue == 0 ? 0 : dataOffsetValue + dataLengthValue);
+                minimumContextLength = Math.Max(minimumContextLength, FixedHeaderLength);
+                int alignedContextLength = Math.Max(
                     AlignToEight(nameOffsetValue + nameLengthValue),
                     dataLengthValue == 0 ? 0 : AlignToEight(dataOffsetValue + dataLengthValue));
-                minimumContextLength = Math.Max(minimumContextLength, FixedHeaderLength);
+                alignedContextLength = Math.Max(alignedContextLength, FixedHeaderLength);
 
                 if (minimumContextLength > contextBuffer.Length)
                 {
@@ -128,12 +132,12 @@ namespace OpenCIFS.Protocol
                 }
 
                 int consumedLength = next == 0
-                    ? minimumContextLength
+                    ? (alignedContextLength <= contextBuffer.Length ? alignedContextLength : minimumContextLength)
                     : checked((int)next);
 
                 if (next != 0)
                 {
-                    if ((consumedLength % 8) != 0 || consumedLength < minimumContextLength)
+                    if ((consumedLength % 8) != 0 || consumedLength < alignedContextLength)
                     {
                         throw new ProtocolEncodingException("The SMB2 create-context Next offset is invalid.");
                     }

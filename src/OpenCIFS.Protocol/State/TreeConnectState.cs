@@ -38,11 +38,17 @@ namespace OpenCIFS.Protocol
         public bool IsConnected { get; private set; } = false;
 
         /// <summary>
+        /// Tree-connect share flags returned by the server.
+        /// </summary>
+        public Smb2ShareFlags ShareFlags { get; private set; } = Smb2ShareFlags.None;
+
+        /// <summary>
         /// Mark the tree as connected.
         /// </summary>
         /// <param name="treeId">Tree identifier.</param>
         /// <param name="shareName">Share name.</param>
-        public void Connect(uint treeId, string shareName)
+        /// <param name="shareFlags">Tree-connect share flags returned by the server.</param>
+        public void Connect(uint treeId, string shareName, Smb2ShareFlags shareFlags = Smb2ShareFlags.None)
         {
             EnsureNotDisposed();
 
@@ -53,6 +59,7 @@ namespace OpenCIFS.Protocol
 
             TreeId = treeId;
             ShareName = shareName;
+            ShareFlags = shareFlags;
             IsConnected = true;
         }
 
@@ -68,4 +75,3 @@ namespace OpenCIFS.Protocol
         private string _ShareName = String.Empty;
     }
 }
-

@@ -12,6 +12,14 @@ namespace OpenCIFS.Server
     {
         public ulong PersistentFileId { get; set; }
 
+        public bool UsesDurableHandleV2 { get; set; }
+
+        public Guid DurableCreateGuid { get; set; } = Guid.Empty;
+
+        public uint DurableTimeoutMs { get; set; }
+
+        public bool IsPersistent { get; set; }
+
         public string DurableOwnerUserName { get; set; } = string.Empty;
 
         public string DurableOwnerUserDomain { get; set; } = string.Empty;
@@ -42,6 +50,8 @@ namespace OpenCIFS.Server
 
         public Smb2OplockLevel GrantedOplockLevel { get; set; } = Smb2OplockLevel.None;
 
+        public OpenCifsServerLeaseRecord? LeaseRecord { get; set; }
+
         public bool IsDeletePending { get; set; }
 
         public bool SuppressAccessTimeUpdates { get; set; }
@@ -50,9 +60,21 @@ namespace OpenCIFS.Server
 
         public bool SuppressChangeTimeUpdates { get; set; }
 
+        public DateTimeOffset DetachedAtUtc { get; set; }
+
         public List<OpenCifsServerDetachedByteRangeLock> Locks { get; } = new List<OpenCifsServerDetachedByteRangeLock>();
 
         public FileStream? Stream { get; set; }
+
+        public bool IsExpired(DateTimeOffset utcNow)
+        {
+            if (DurableTimeoutMs == 0)
+            {
+                return false;
+            }
+
+            return utcNow >= DetachedAtUtc.AddMilliseconds(DurableTimeoutMs);
+        }
 
         public void Dispose()
         {

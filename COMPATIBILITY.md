@@ -52,82 +52,84 @@ The goal is not identical protocol nouns. The goal is identical consumer flow an
 
 ## Current gaps
 
-- The current CIFS client story is split between facade-style usage and lower-level connection/session/tree primitives.
-- Mutable client options are still part of the main public story instead of builder-produced immutable validated settings.
-- There is no public `OpenCifsShareSession` that makes share-scoped work the primary unit of consumption.
-- Common file operations still require too much share-specific or low-level context compared with the target OpenNFS flow.
-- Advanced SMB concepts are too close to the default public surface for common consumers.
-- The server application model is closer to the target than OpenNFS, but the documented primary surface still needs to align exactly with the shared northstar.
-- Error handling does not yet offer a consistent typed exception model with both NTSTATUS and normalized categories.
-- Documentation is spread across `README.md`, `OPENCIFS.md`, and `docs/`, but not yet organized around the same consumer journey OpenNFS should present.
-- Test projects do not yet enforce API-shape parity with OpenNFS at the API, docs, and sample levels.
+- The primary CIFS happy path is now aligned around builder -> client -> share session, and the advanced/raw layer now includes explicit bounded realistic compound helpers plus bounded SMB 2.1 lease-backed durable reconnect on `OpenCifsClientConnection`, but the older facade and lower-level connection/session/tree primitives still coexist and need long-term boundary cleanup.
+- Typed client and server failure hierarchies now exist through `OpenCifsClientException`, `OpenCifsClientStateException`, `OpenCifsClientProtocolException`, `OpenCifsStatusException`, `OpenCifsServerException`, `OpenCifsServerConfigurationException`, and `OpenCifsServerStateException`. The primary client happy path plus the bounded advanced/raw `OpenCifsClientConnection` surface now expose non-throwing `Try...Async` result envelopes through `OpenCifsClientResult` / `OpenCifsClientResult<T>`, and `OpenCifsServerApplication` now exposes bounded managed-lifecycle `TryRunAsync` / `TryStartAsync` / `TryStopAsync` companions through `OpenCifsServerResult`.
+- Documentation now leads with the aligned consumer journey and explicitly separates the advanced/raw surface, but final parity cleanup across every repo doc remains incomplete.
+- Test projects now pin the first-pass public shape, README snippets, dedicated client samples, normalized error-category behavior, bounded primary-client `Try...Async` result-envelope shape, bounded advanced/raw `OpenCifsClientConnection` `Try...Async` shape, and bounded managed-server lifecycle result-envelope shape, but they do not yet enforce mirrored OpenNFS parity work.
 
 ## Planned refactors
 
 ### 1. Client primary surface
 
-- [ ] Introduce or finalize `OpenCifsClientBuilder` as the only recommended client construction path.
-- [ ] Replace mutable-options-first guidance with validated immutable settings produced by the builder.
-- [ ] Promote `OpenCifsClient` as the primary public type and demote `OpenCifsClientFacade` to transitional or advanced status once the new surface exists.
-- [ ] Standardize `OpenCifsClient.ConnectAsync(OpenCifsClientCredential credential, CancellationToken)` and `DisconnectAsync(CancellationToken)` as the canonical client lifecycle methods.
-- [ ] Decide whether any existing low-level connect/session entry points should remain public but undocumented as happy-path APIs.
+- [x] Introduce or finalize `OpenCifsClientBuilder` as the only recommended client construction path.
+- [x] Replace mutable-options-first guidance with validated immutable settings produced by the builder.
+- [x] Promote `OpenCifsClient` as the primary public type and demote `OpenCifsClientFacade` to transitional or advanced status once the new surface exists.
+- [x] Standardize `OpenCifsClient.ConnectAsync(OpenCifsClientCredential credential, CancellationToken)` and `DisconnectAsync(CancellationToken)` as the canonical client lifecycle methods.
+- [x] Decide whether any existing low-level connect/session entry points should remain public but undocumented as happy-path APIs.
 
 ### 2. Namespace session and path-first operations
 
-- [ ] Introduce `OpenCifsShareSession` in `src/OpenCIFS.Client` as the primary share-scoped unit of work.
-- [ ] Standardize `OpenShareAsync(shareName, CancellationToken)` on the connected client as the primary session-open path.
-- [ ] Expose grouped session members with the same shape as OpenNFS: `Files`, `Directories`, `Metadata`, and `Locks`.
-- [ ] Add or reshape path-first operations so common usage does not require consumers to manage tree handles or repeat the share name on every call.
-- [ ] Preserve advanced connection/session/tree/open APIs as an explicit advanced layer rather than the default happy path.
-- [ ] Align parameter ordering and cancellation-token placement with OpenNFS for all comparable operations.
+- [x] Introduce `OpenCifsShareSession` in `src/OpenCIFS.Client` as the primary share-scoped unit of work.
+- [x] Standardize `OpenShareAsync(shareName, CancellationToken)` on the connected client as the primary session-open path.
+- [x] Expose grouped session members with the same shape as OpenNFS: `Files`, `Directories`, `Metadata`, and `Locks`.
+- [x] Add or reshape path-first operations so common usage does not require consumers to manage tree handles or repeat the share name on every call.
+- [x] Preserve advanced connection/session/tree/open APIs as an explicit advanced layer rather than the default happy path.
+- [x] Align parameter ordering and cancellation-token placement with OpenNFS for all comparable operations.
 
 ### 3. Result envelopes and exceptions
 
-- [ ] Introduce a typed exception hierarchy for OpenCIFS client and server surfaces.
-- [ ] Ensure every typed exception carries both a native SMB/NTSTATUS code and a normalized category such as `NotFound`, `AccessDenied`, `Conflict`, `Unsupported`, `IoError`, or `ProtocolError`.
-- [ ] Add a non-throwing result-envelope pattern for operations where protocol detail should be preserved instead of flattened into generic failure.
-- [ ] Standardize the naming convention for throwing and non-throwing method pairs with OpenNFS before implementation lands in either repo.
-- [ ] Ensure high-level exceptions still retain enough SMB command and context detail for diagnostics.
+- [x] Introduce a typed exception hierarchy for OpenCIFS client and server surfaces.
+- [x] Ensure every typed exception carries both a native SMB/NTSTATUS code and a normalized category such as `NotFound`, `AccessDenied`, `Conflict`, `Unsupported`, `IoError`, or `ProtocolError`.
+- [x] Add a non-throwing result-envelope pattern for operations where protocol detail should be preserved instead of flattened into generic failure.
+  Verified scope: the primary `OpenCifsClient` -> `OpenCifsShareSession` happy path plus the bounded advanced/raw `OpenCifsClientConnection` surface now expose `Try...Async` companions that return `OpenCifsClientResult` / `OpenCifsClientResult<T>` and preserve typed client exceptions, SMB2 command, NTSTATUS, and normalized error categories. The managed server lifecycle now also exposes bounded `OpenCifsServerApplication.TryRunAsync(...)`, `TryStartAsync(...)`, and `TryStopAsync(...)` companions returning `OpenCifsServerResult` with typed `OpenCifsServerException` detail.
+- [x] Standardize the naming convention for throwing and non-throwing method pairs with OpenNFS before implementation lands in either repo.
+  The current compatibility target is `MethodAsync(...)` for throwing APIs and `TryMethodAsync(...)` for non-throwing envelopes.
+- [x] Ensure high-level exceptions still retain enough SMB command and context detail for diagnostics.
 
 ### 4. Server application alignment
 
-- [ ] Confirm `OpenCifsServerBuilder.BuildApplication()` is the primary server construction path in `src/OpenCIFS.Server`.
-- [ ] Confirm `OpenCifsServerApplication` with `StartAsync`, `StopAsync`, and `RunAsync` is the primary documented server host surface.
-- [ ] Introduce a clearer `OpenCifsServer` configuration/runtime model if it materially improves parity with OpenNFS builder -> server -> application flow.
-- [ ] Refactor backend composition toward one mandatory filesystem contract plus an open-ended set of optional capability contracts and discoverable flags.
-- [ ] Keep built-in local filesystem-backed shares as a first-class setup path.
+- [x] Confirm `OpenCifsServerBuilder.BuildApplication()` is the primary server construction path in `src/OpenCIFS.Server`.
+- [x] Confirm `OpenCifsServerApplication` with `StartAsync`, `StopAsync`, and `RunAsync` is the primary documented server host surface.
+- [x] Introduce a clearer `OpenCifsServer` configuration/runtime model if it materially improves parity with OpenNFS builder -> server -> application flow.
+  `OpenCifsServerBuilder.BuildSettings()` now returns immutable `OpenCifsServerSettings`, `Build()` now returns a configured `OpenCifsServer`, and the documented server path now follows builder -> server -> application without removing the existing advanced host-builder surface.
+- [x] Keep the aligned primary server builder expressive enough for current managed-path feature slices without forcing consumers back to raw mutable options.
+  `OpenCifsServerBuilder` now exposes `WithSmb3EncryptionRequired(...)` so the bounded opt-in SMB 3.0 / SMB 3.0.2 negotiate and AES-CMAC signing slice is reachable from the aligned builder surface instead of only through manual option mutation.
+- [x] Refactor backend composition toward one mandatory filesystem contract plus an open-ended set of optional capability contracts and discoverable flags.
+- [x] Keep built-in local filesystem-backed shares as a first-class setup path.
 
 ### 5. Advanced surface boundaries
 
-- [ ] Define which namespaces, types, or builder options represent the advanced/raw surface.
-- [ ] Make raw connection/session/tree/open workflows discoverable but clearly secondary in quickstarts.
-- [ ] Ensure advanced APIs preserve full protocol fidelity and are not simplified into the high-level shape.
-- [ ] Document how high-level share-session operations map onto advanced SMB concepts for developers who need to drop down a layer.
+- [x] Define which namespaces, types, or builder options represent the advanced/raw surface.
+- [x] Make raw connection/session/tree/open workflows discoverable but clearly secondary in quickstarts.
+- [x] Ensure advanced APIs preserve full protocol fidelity and are not simplified into the high-level shape.
+- [x] Document how high-level share-session operations map onto advanced SMB concepts for developers who need to drop down a layer.
 
 ### 6. Documentation and samples
 
-- [ ] Update `README.md` so its first client example uses the aligned builder -> client -> share session -> grouped path API flow.
-- [ ] Update `README.md` so its first server example uses `OpenCifsServerBuilder.BuildApplication()` and `RunAsync`.
-- [ ] Update `OPENCIFS.md` to document the layered model: high-level share-session APIs first, advanced protocol APIs second.
-- [ ] Update `docs/coverage-matrix.md` and `docs/interop-matrix.md` where needed so they reference the aligned public surface rather than only lower-level primitives.
-- [ ] Add a short "OpenCIFS and OpenNFS usage parity" section to `README.md` or `OPENCIFS.md` so consumers see the intentional convergence.
-- [ ] Document credential injection point, exception/result-envelope behavior, and the advanced/raw escape hatches.
-- [ ] Update `src/Sample.OpenCifsServer` to use the aligned server application surface.
-- [ ] Update client-facing sample code in `src/OpenCIFS.Client.Tests.Console` or a dedicated sample so a consumer can copy one happy-path example without touching low-level primitives.
+- [x] Update `README.md` so its first client example uses the aligned builder -> client -> share session -> grouped path API flow.
+- [x] Update `README.md` so its first server example uses `OpenCifsServerBuilder.BuildApplication()` and `RunAsync`.
+- [x] Update `OPENCIFS.md` to document the layered model: high-level share-session APIs first, advanced protocol APIs second.
+- [x] Update `docs/coverage-matrix.md` and `docs/interop-matrix.md` where needed so they reference the aligned public surface rather than only lower-level primitives.
+- [x] Add a short "OpenCIFS and OpenNFS usage parity" section to `README.md` or `OPENCIFS.md` so consumers see the intentional convergence.
+- [x] Document credential injection point, exception/result-envelope behavior, and the advanced/raw escape hatches.
+  Credential injection, typed client/server exception behavior, the primary non-throwing `Try...Async` result-envelope path, the bounded advanced/raw `OpenCifsClientConnection` `Try...Async` surface, the managed `OpenCifsServerApplication` lifecycle result-envelope path, and the advanced/raw escape hatches, including the bounded realistic compound helpers on `OpenCifsClientConnection`, are now documented on the primary path.
+- [x] Update `src/Sample.OpenCifsServer` to use the aligned server application surface.
+- [x] Update client-facing sample code in `src/OpenCIFS.Client.Tests.Console` or a dedicated sample so a consumer can copy one happy-path example without touching low-level primitives.
 
 ### 7. Tests and approval gates
 
-- [ ] Add API-shape approval or reflection tests in `src/OpenCIFS.Client.Tests.Xunit`, `src/OpenCIFS.Server.Tests.Xunit`, or shared test projects that validate the aligned public naming:
-  - [ ] `OpenCifsClientBuilder`
-  - [ ] `OpenCifsClient`
-  - [ ] `ConnectAsync` / `DisconnectAsync`
-  - [ ] `OpenCifsShareSession`
-  - [ ] `Files` / `Directories` / `Metadata` / `Locks`
-  - [ ] `OpenCifsServerApplication`
-- [ ] Add tests for share-session path-first flows so common operations do not regress back toward tree-handle-centric usage.
-- [ ] Add tests for exception mapping and normalized category coverage.
-- [ ] Add tests for result-envelope behavior and parity with the OpenNFS naming convention.
-- [ ] Add smoke tests that compile and execute the canonical README client and server snippets, or equivalent sample-based verification if snippet tests are not practical.
+- [x] Add API-shape approval or reflection tests in `src/OpenCIFS.Client.Tests.Xunit`, `src/OpenCIFS.Server.Tests.Xunit`, or shared test projects that validate the aligned public naming:
+  - [x] `OpenCifsClientBuilder`
+  - [x] `OpenCifsClient`
+  - [x] `ConnectAsync` / `DisconnectAsync`
+  - [x] `OpenCifsShareSession`
+  - [x] `Files` / `Directories` / `Metadata` / `Locks`
+  - [x] `OpenCifsServerApplication`
+- [x] Add tests for share-session path-first flows so common operations do not regress back toward tree-handle-centric usage.
+- [x] Add tests for exception mapping and normalized category coverage.
+- [x] Add tests for result-envelope behavior and parity with the OpenNFS naming convention.
+  OpenCIFS shared client and server suites now pin the `Try...Async` naming convention plus positive and negative primary-surface, advanced/raw connection-surface, and managed-server lifecycle result-envelope behavior. Mirrored OpenNFS coverage remains deferred.
+- [x] Add smoke tests that compile and execute the canonical README client and server snippets, or equivalent sample-based verification if snippet tests are not practical.
 - [ ] Mirror the same acceptance-test concepts in OpenNFS so both repos can prove parity rather than just claim it.
 
 ## Acceptance criteria
@@ -141,7 +143,7 @@ The goal is not identical protocol nouns. The goal is identical consumer flow an
   - disconnect
 - `OpenCifsShareSession` exists and is the primary unit for common file operations.
 - Session members use the same names and parameter-order conventions as the OpenNFS session surface wherever protocol truth allows it.
-- Throwing APIs and result-envelope APIs exist in parallel, and both repos use the same naming convention for the pair.
+- Throwing APIs and result-envelope APIs exist in parallel on the primary client happy path, the bounded advanced/raw `OpenCifsClientConnection` surface, and the bounded managed `OpenCifsServerApplication` lifecycle surface, and both repos use `MethodAsync(...)` / `TryMethodAsync(...)` as the compatibility target naming convention for the pair.
 - Typed exceptions expose both NTSTATUS and normalized error categories.
 - `OpenCifsServerApplication` is the primary server host surface, and the builder/application story matches OpenNFS.
 - `README.md`, `OPENCIFS.md`, relevant `docs/` pages, and sample code all show the aligned usage pattern rather than the older low-level-first flow.
@@ -150,7 +152,6 @@ The goal is not identical protocol nouns. The goal is identical consumer flow an
 
 ## Open questions
 
-- What is the final name for the non-throwing result-envelope method pattern, and can both repos commit to it before implementation begins?
 - How much of `OpenCifsClientFacade` should remain public after `OpenCifsClient` and `OpenCifsShareSession` become the primary surface?
 - Should the compatibility approval tests live entirely in each repo, or should both repos read a shared manifest later once the shapes stabilize?
 - Which optional CIFS server capabilities should get first-class adapter contracts in the initial aligned pass versus later follow-up work?

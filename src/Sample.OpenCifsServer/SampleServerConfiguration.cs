@@ -71,6 +71,11 @@ namespace Sample.OpenCifsServer
         public bool RequireEncryptionForSmb3 { get; set; } = true;
 
         /// <summary>
+        /// Whether the bounded SMB 3.1.1 preview slice should be enabled on the sample server.
+        /// </summary>
+        public bool EnableSmb311Preview { get; set; } = false;
+
+        /// <summary>
         /// Test account user name.
         /// </summary>
         public string AccountUserName { get; set; } = "alice";
@@ -106,6 +111,7 @@ namespace Sample.OpenCifsServer
                 AllowAnonymous = options.AllowAnonymous ?? AllowAnonymous,
                 EnableSmb1 = options.EnableSmb1 ?? EnableSmb1,
                 RequireEncryptionForSmb3 = options.RequireEncryptionForSmb3 ?? RequireEncryptionForSmb3,
+                EnableSmb311Preview = options.EnableSmb311Preview ?? EnableSmb311Preview,
                 AccountUserName = options.AccountUserName ?? AccountUserName,
                 AccountUserDomain = options.AccountUserDomain ?? AccountUserDomain,
                 AccountPassword = options.AccountPassword ?? AccountPassword
@@ -140,7 +146,8 @@ namespace Sample.OpenCifsServer
                 RequireNtlmV2 = RequireNtlmV2,
                 AllowAnonymous = AllowAnonymous,
                 EnableSmb1 = EnableSmb1,
-                RequireEncryptionForSmb3 = RequireEncryptionForSmb3
+                RequireEncryptionForSmb3 = RequireEncryptionForSmb3,
+                EnableSmb311Preview = EnableSmb311Preview
             };
 
             options.Validate();

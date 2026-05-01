@@ -121,9 +121,9 @@ namespace OpenCIFS.Security
             {
                 case SmbDialect.Smb30:
                 case SmbDialect.Smb302:
-                    return Encoding.ASCII.GetBytes("SMB2AESCMAC");
+                    return Encoding.ASCII.GetBytes("SMB2AESCMAC\0");
                 case SmbDialect.Smb311:
-                    return Encoding.ASCII.GetBytes("SMBSigningKey");
+                    return Encoding.ASCII.GetBytes("SMBSigningKey\0");
                 default:
                     throw new NotSupportedException("Signing-key derivation is defined only for SMB 3.x dialects.");
             }
@@ -135,9 +135,9 @@ namespace OpenCIFS.Security
             {
                 case SmbDialect.Smb30:
                 case SmbDialect.Smb302:
-                    return Encoding.ASCII.GetBytes("SMB2APP");
+                    return Encoding.ASCII.GetBytes("SMB2APP\0");
                 case SmbDialect.Smb311:
-                    return Encoding.ASCII.GetBytes("SMBAppKey");
+                    return Encoding.ASCII.GetBytes("SMBAppKey\0");
                 default:
                     throw new NotSupportedException("Application-key derivation is defined only for SMB 3.x dialects.");
             }
@@ -149,9 +149,9 @@ namespace OpenCIFS.Security
             {
                 case SmbDialect.Smb30:
                 case SmbDialect.Smb302:
-                    return Encoding.ASCII.GetBytes("SMB2AESCCM");
+                    return Encoding.ASCII.GetBytes("SMB2AESCCM\0");
                 case SmbDialect.Smb311:
-                    return Encoding.ASCII.GetBytes("SMBS2CCipherKey");
+                    return Encoding.ASCII.GetBytes("SMBS2CCipherKey\0");
                 default:
                     throw new NotSupportedException("Encryption-key derivation is defined only for SMB 3.x dialects.");
             }
@@ -163,9 +163,9 @@ namespace OpenCIFS.Security
             {
                 case SmbDialect.Smb30:
                 case SmbDialect.Smb302:
-                    return Encoding.ASCII.GetBytes("SMB2AESCCM");
+                    return Encoding.ASCII.GetBytes("SMB2AESCCM\0");
                 case SmbDialect.Smb311:
-                    return Encoding.ASCII.GetBytes("SMBC2SCipherKey");
+                    return Encoding.ASCII.GetBytes("SMBC2SCipherKey\0");
                 default:
                     throw new NotSupportedException("Decryption-key derivation is defined only for SMB 3.x dialects.");
             }

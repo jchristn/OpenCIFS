@@ -105,10 +105,9 @@ namespace OpenCIFS.Protocol
 
             int durableRequestCount = 0;
             int durableReconnectCount = 0;
-            bool hasDurableV2Request = false;
-            bool hasDurableV2Reconnect = false;
+            int durableV2RequestCount = 0;
+            int durableV2ReconnectCount = 0;
             int leaseRequestCount = 0;
-            bool hasLeaseV2Request = false;
 
             for (int index = 0; index < contexts.Length; index++)
             {
@@ -130,13 +129,15 @@ namespace OpenCIFS.Protocol
 
                 if (IsCreateContextName(context, 0x44, 0x48, 0x32, 0x51))
                 {
-                    hasDurableV2Request = true;
+                    Smb2DurableHandleRequestV2Context.Validate(Smb2DurableHandleRequestV2Context.ReadFrom(context));
+                    durableV2RequestCount++;
                     continue;
                 }
 
                 if (IsCreateContextName(context, 0x44, 0x48, 0x32, 0x43))
                 {
-                    hasDurableV2Reconnect = true;
+                    Smb2DurableHandleReconnectV2Context.Validate(Smb2DurableHandleReconnectV2Context.ReadFrom(context));
+                    durableV2ReconnectCount++;
                     continue;
                 }
 
@@ -149,29 +150,27 @@ namespace OpenCIFS.Protocol
 
                 if (Smb2CreateRequestLeaseContext.HasLeaseContextName(context))
                 {
-                    hasLeaseV2Request = true;
                     continue;
                 }
             }
 
-            if (durableRequestCount > 1 || durableReconnectCount > 1)
+            if (durableRequestCount > 1 ||
+                durableReconnectCount > 1 ||
+                durableV2RequestCount > 1 ||
+                durableV2ReconnectCount > 1)
             {
                 throw new ProtocolValidationException("The SMB2 create request contains duplicate durable-handle contexts.", nameof(request));
             }
 
-            if (hasDurableV2Request || hasDurableV2Reconnect)
+            if ((durableRequestCount != 0 || durableReconnectCount != 0) &&
+                (durableV2RequestCount != 0 || durableV2ReconnectCount != 0))
             {
-                throw new ProtocolValidationException("SMB 3.x durable-handle v2 create contexts are not supported in the current SMB 2.0.2 slice.", nameof(request));
+                throw new ProtocolValidationException("The SMB2 create request cannot mix legacy durable-handle contexts with SMB 3.x durable-handle v2 contexts.", nameof(request));
             }
 
             if (leaseRequestCount > 1)
             {
                 throw new ProtocolValidationException("The SMB2 create request contains duplicate lease request contexts.", nameof(request));
-            }
-
-            if (hasLeaseV2Request)
-            {
-                throw new ProtocolValidationException("SMB 3.x lease-v2 create contexts are not supported in the current SMB 2.1 slice.", nameof(request));
             }
         }
 

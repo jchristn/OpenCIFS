@@ -1,4 +1,4 @@
-namespace OpenCIFS.Client
+﻿namespace OpenCIFS.Client
 {
     using System;
     using System.Collections.Generic;
@@ -167,7 +167,7 @@ namespace OpenCIFS.Client
 
                         if (writtenCount != bytesToWrite)
                         {
-                            throw new InvalidOperationException("The server did not acknowledge the full write length.");
+                            throw new OpenCifsClientProtocolException("The server did not acknowledge the full write length.");
                         }
 
                         offset += bytesToWrite;
@@ -657,3 +657,4 @@ namespace OpenCIFS.Client
         private readonly OpenCifsClientConnection _Connection;
     }
 }
+

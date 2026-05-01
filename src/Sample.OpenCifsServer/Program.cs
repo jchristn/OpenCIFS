@@ -29,7 +29,7 @@ namespace Sample.OpenCifsServer
             }
             catch (Exception exception)
             {
-                Console.Error.WriteLine("[sample-server] " + exception.GetType().Name + ": " + exception.Message);
+                Console.Error.WriteLine("[sample-server] " + FormatExceptionForConsole(exception));
                 return 1;
             }
         }
@@ -74,9 +74,10 @@ namespace Sample.OpenCifsServer
 
             try
             {
-                OpenCifsServerHostBuilder builder = CreateServerBuilder(options, configuration.ToServerAccount());
-                OpenCifsServerApplication server = builder.BuildApplication(
-                    exception => Console.Error.WriteLine("[sample-server] " + exception.GetType().Name + ": " + exception.Message));
+                OpenCifsServerBuilder builder = CreateServerBuilder(options, configuration.ToServerAccount());
+                OpenCifsServer serverDefinition = builder.Build();
+                OpenCifsServerApplication server = serverDefinition.BuildApplication(
+                    exception => Console.Error.WriteLine("[sample-server] " + FormatExceptionForConsole(exception)));
                 server.RunAsync(cancellationTokenSource.Token).GetAwaiter().GetResult();
                 return 0;
             }
@@ -114,20 +115,15 @@ namespace Sample.OpenCifsServer
             File.WriteAllText(configurationPath, json);
         }
 
-        private static OpenCifsServerHostBuilder CreateServerBuilder(OpenCifsServerOptions options, OpenCifsServerAccount account)
+        private static OpenCifsServerBuilder CreateServerBuilder(OpenCifsServerOptions options, OpenCifsServerAccount account)
         {
             options.DiagnosticLogger = message =>
             {
                 Console.Error.WriteLine("[sample-server] " + message);
                 Console.Error.Flush();
             };
-            OpenCifsServerHostBuilder builder = new OpenCifsServerHostBuilder(options);
-            builder.AddShare(new OpenCifsServerFileSystemShare
-            {
-                ShareName = options.ShareName,
-                RootPath = options.SharePath,
-                CreateRootIfMissing = true
-            });
+            OpenCifsServerBuilder builder = new OpenCifsServerBuilder(options);
+            builder.AddFileSystemShare(options.ShareName, options.SharePath, createRootIfMissing: true);
             builder.AddAccount(account);
             return builder;
         }
@@ -142,6 +138,18 @@ namespace Sample.OpenCifsServer
             serializerOptions.Converters.Add(new JsonStringEnumConverter());
 
             return serializerOptions;
+        }
+
+        private static string FormatExceptionForConsole(Exception exception)
+        {
+            string message = exception.GetType().Name + ": " + exception.Message;
+
+            if (exception.InnerException != null)
+            {
+                message += " | Inner: " + exception.InnerException.GetType().Name + ": " + exception.InnerException.Message;
+            }
+
+            return message;
         }
     }
 }

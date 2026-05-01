@@ -125,9 +125,11 @@ namespace OpenCIFS.Core.Tests.Shared
             "Connect",
             "Create",
             "Default",
+            "Encod",
             "Enumerat",
             "Exist",
             "Expose",
+            "Parse",
             "Follow",
             "Grant",
             "Handle",
@@ -140,6 +142,7 @@ namespace OpenCIFS.Core.Tests.Shared
             "Negotiat",
             "Preserve",
             "Present",
+            "Queri",
             "Query",
             "Remain",
             "Rename",
@@ -153,6 +156,7 @@ namespace OpenCIFS.Core.Tests.Shared
             "Stable",
             "Track",
             "Transfer",
+            "Transceive",
             "Overwrite"
         };
 

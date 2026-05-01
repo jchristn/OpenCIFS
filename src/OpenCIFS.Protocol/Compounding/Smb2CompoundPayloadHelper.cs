@@ -174,23 +174,46 @@ namespace OpenCIFS.Protocol
                 throw new ProtocolEncodingException("The SMB2 negotiate response structure size must be 65 bytes.");
             }
 
-            reader.Skip(54);
+            reader.Skip(2);
+            ushort dialectRevision = reader.ReadUInt16();
+            ushort negotiateContextCount = reader.ReadUInt16();
+            reader.Skip(48);
             ushort securityBufferOffset = reader.ReadUInt16();
             ushort securityBufferLength = reader.ReadUInt16();
+            uint negotiateContextOffset = reader.ReadUInt32();
+            int actualLength = fixedBodyLength;
 
-            if (securityBufferLength == 0)
+            if (securityBufferLength != 0)
             {
-                return fixedBodyLength;
+                int relativeSecurityBufferOffset = securityBufferOffset - ProtocolConstants.Smb2HeaderLength;
+                int securityEnd = GetVariableLengthPayloadEnd(
+                    payloadLength: payload.Length,
+                    fixedBodyLength: fixedBodyLength,
+                    relativeOffset: relativeSecurityBufferOffset,
+                    dataLength: securityBufferLength,
+                    invalidOffsetMessage: "The SMB2 negotiate response security-buffer offset is invalid.",
+                    exceedsPayloadMessage: "The SMB2 negotiate response security buffer exceeds the available payload.");
+                actualLength = Math.Max(actualLength, securityEnd);
             }
 
-            int relativeSecurityBufferOffset = securityBufferOffset - ProtocolConstants.Smb2HeaderLength;
-            return GetVariableLengthPayloadEnd(
-                payloadLength: payload.Length,
-                fixedBodyLength: fixedBodyLength,
-                relativeOffset: relativeSecurityBufferOffset,
-                dataLength: securityBufferLength,
-                invalidOffsetMessage: "The SMB2 negotiate response security-buffer offset is invalid.",
-                exceedsPayloadMessage: "The SMB2 negotiate response security buffer exceeds the available payload.");
+            if (dialectRevision == SmbDialectCatalog.ToSmb2WireDialect(SmbDialect.Smb311) && negotiateContextCount != 0)
+            {
+                if (negotiateContextOffset > Int32.MaxValue)
+                {
+                    throw new ProtocolEncodingException("The SMB 3.1.1 negotiate response negotiate-context offset is malformed.");
+                }
+
+                int relativeNegotiateContextOffset = checked((int)negotiateContextOffset - ProtocolConstants.Smb2HeaderLength);
+
+                if (relativeNegotiateContextOffset < fixedBodyLength || relativeNegotiateContextOffset > payload.Length)
+                {
+                    throw new ProtocolEncodingException("The SMB 3.1.1 negotiate response negotiate-context offset is malformed.");
+                }
+
+                actualLength = Math.Max(actualLength, payload.Length);
+            }
+
+            return actualLength;
         }
 
         private static int GetSessionSetupRequestLength(ReadOnlyMemory<byte> payload)

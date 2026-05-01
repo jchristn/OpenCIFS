@@ -59,6 +59,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenCIFS.Interop.Tests.Mste
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenCIFS.SambaInterop.Console", "OpenCIFS.SambaInterop.Console\OpenCIFS.SambaInterop.Console.csproj", "{E7CCF862-100A-4A3F-B34A-F4E5A5F10A64}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenCIFS.TestClient", "OpenCIFS.TestClient\OpenCIFS.TestClient.csproj", "{63821840-843B-41DA-BDCD-26B244BA8CE5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenCIFS.TestServer", "OpenCIFS.TestServer\OpenCIFS.TestServer.csproj", "{70472A8E-AC7A-4F7F-910A-A48667B8E505}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -393,6 +397,30 @@ Global
 		{E7CCF862-100A-4A3F-B34A-F4E5A5F10A64}.Release|x64.Build.0 = Release|Any CPU
 		{E7CCF862-100A-4A3F-B34A-F4E5A5F10A64}.Release|x86.ActiveCfg = Release|Any CPU
 		{E7CCF862-100A-4A3F-B34A-F4E5A5F10A64}.Release|x86.Build.0 = Release|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Debug|x64.Build.0 = Debug|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Debug|x86.Build.0 = Debug|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Release|x64.ActiveCfg = Release|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Release|x64.Build.0 = Release|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Release|x86.ActiveCfg = Release|Any CPU
+		{63821840-843B-41DA-BDCD-26B244BA8CE5}.Release|x86.Build.0 = Release|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Debug|x64.Build.0 = Debug|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Debug|x86.Build.0 = Debug|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Release|Any CPU.Build.0 = Release|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Release|x64.ActiveCfg = Release|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Release|x64.Build.0 = Release|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Release|x86.ActiveCfg = Release|Any CPU
+		{70472A8E-AC7A-4F7F-910A-A48667B8E505}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

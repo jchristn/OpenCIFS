@@ -1,4 +1,4 @@
-namespace OpenCIFS.Server
+﻿namespace OpenCIFS.Server
 {
     using System;
     using System.Collections.Generic;
@@ -39,7 +39,7 @@ namespace OpenCIFS.Server
         {
             if (_IsRunning)
             {
-                throw new InvalidOperationException("The direct-TCP server is already running.");
+                throw new OpenCifsServerStateException("The direct-TCP server is already running.");
             }
 
             _IsRunning = true;
@@ -120,8 +120,9 @@ namespace OpenCIFS.Server
             {
                 client.NoDelay = true;
                 using NetworkStream networkStream = client.GetStream();
-                await using FramedPipeConnection connection = FramedPipeConnection.Create(networkStream, new DirectTcpFrameProtocol());
+                FramedPipeConnection connection = FramedPipeConnection.Create(networkStream, new DirectTcpFrameProtocol());
                 OpenCifsServerHost host = _HostFactory();
+                bool connectionFaultHandled = false;
                 connection.Start();
 
                 try
@@ -198,14 +199,17 @@ namespace OpenCIFS.Server
                 }
                 catch (ProtocolEncodingException exception)
                 {
+                    connectionFaultHandled = true;
                     _ExceptionHandler(exception);
                 }
                 catch (ProtocolValidationException exception)
                 {
+                    connectionFaultHandled = true;
                     _ExceptionHandler(exception);
                 }
                 catch (Exception exception)
                 {
+                    connectionFaultHandled = true;
                     _ExceptionHandler(exception);
                 }
                 finally
@@ -227,6 +231,41 @@ namespace OpenCIFS.Server
                     catch (InvalidOperationException)
                     {
                     }
+
+                    try
+                    {
+                        await connection.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                    catch (IOException)
+                    {
+                    }
+                    catch (ProtocolEncodingException) when (connectionFaultHandled)
+                    {
+                    }
+                    catch (ProtocolValidationException) when (connectionFaultHandled)
+                    {
+                    }
+                    catch (Exception) when (connectionFaultHandled)
+                    {
+                    }
+                    catch (ProtocolEncodingException exception)
+                    {
+                        _ExceptionHandler(exception);
+                    }
+                    catch (ProtocolValidationException exception)
+                    {
+                        _ExceptionHandler(exception);
+                    }
+                    catch (Exception exception)
+                    {
+                        _ExceptionHandler(exception);
+                    }
                 }
             }
         }
@@ -243,43 +282,67 @@ namespace OpenCIFS.Server
 
         private static byte[]? DispatchRequest(OpenCifsServerHost host, ReadOnlyMemory<byte> requestPayload)
         {
-            if (LooksLikeSmb1Packet(requestPayload.Span))
+            try
             {
-                return DispatchSmb1MultiProtocolNegotiate(host, requestPayload);
-            }
-
-            Smb2CompoundPacket requestPacket = Smb2CompoundPacket.ReadFrom(requestPayload);
-            host.ValidateRequestPacket(requestPacket, requestPayload);
-
-            if (requestPacket.Entries.Count == 1)
-            {
-                Smb2CompoundPacketEntry requestEntry = requestPacket.Entries[0];
-                Smb2Header requestHeader = requestEntry.Header;
-                byte[] trimmedPayload = Smb2CompoundPayloadHelper.TrimRequestPayload(requestHeader.Command, requestEntry.Payload);
-
-                if (requestHeader.Command == Smb2Command.Cancel)
+                if (LooksLikeSmb1Packet(requestPayload.Span))
                 {
-                    Smb2CancelRequest cancelRequest = Smb2CancelRequest.ReadFrom(trimmedPayload);
-                    OpenCifsServerCancelResult cancelResult = host.HandleCancel(requestHeader, cancelRequest);
+                    return DispatchSmb1MultiProtocolNegotiate(host, requestPayload);
+                }
 
-                    if (!cancelResult.WasCancelled || cancelResult.TargetResponseHeader == null)
+                byte[] plainRequestPayload = host.UnwrapRequestPacket(requestPayload, out bool wasEncrypted);
+                Smb2CompoundPacket requestPacket = Smb2CompoundPacket.ReadFrom(plainRequestPayload);
+                host.ValidateRequestPacket(requestPacket, plainRequestPayload, wasEncrypted);
+
+                if (requestPacket.Entries.Count == 1)
+                {
+                    Smb2CompoundPacketEntry requestEntry = requestPacket.Entries[0];
+                    Smb2Header requestHeader = requestEntry.Header;
+                    byte[] trimmedPayload = Smb2CompoundPayloadHelper.TrimRequestPayload(requestHeader.Command, requestEntry.Payload);
+
+                    if (requestHeader.Command == Smb2Command.Cancel)
                     {
-                        return null;
+                        Smb2CancelRequest cancelRequest = Smb2CancelRequest.ReadFrom(trimmedPayload);
+                        OpenCifsServerCancelResult cancelResult = host.HandleCancel(requestHeader, cancelRequest);
+
+                        if (!cancelResult.WasCancelled || cancelResult.TargetResponseHeader == null)
+                        {
+                            return null;
+                        }
+
+                        return CreateSingleResponsePacket(host, cancelResult.TargetResponseHeader, cancelResult.TargetResponsePayload);
                     }
 
-                    return CreateSingleResponsePacket(host, cancelResult.TargetResponseHeader, cancelResult.TargetResponsePayload);
+                    if (requestHeader.Command == Smb2Command.ChangeNotify)
+                    {
+                        Smb2ChangeNotifyRequest changeNotifyRequest = Smb2ChangeNotifyRequest.ReadFrom(trimmedPayload);
+                        OpenCifsServerAsyncResponse asyncResponse = host.HandleChangeNotify(requestHeader, changeNotifyRequest);
+                        return CreateSingleResponsePacket(host, asyncResponse.Header, asyncResponse.Payload);
+                    }
                 }
 
-                if (requestHeader.Command == Smb2Command.ChangeNotify)
-                {
-                    Smb2ChangeNotifyRequest changeNotifyRequest = Smb2ChangeNotifyRequest.ReadFrom(trimmedPayload);
-                    OpenCifsServerAsyncResponse asyncResponse = host.HandleChangeNotify(requestHeader, changeNotifyRequest);
-                    return CreateSingleResponsePacket(host, asyncResponse.Header, asyncResponse.Payload);
-                }
+                Smb2CompoundPacket responsePacket = host.HandleCompoundRequestPacket(requestPacket);
+                return host.FinalizeResponsePacket(responsePacket);
             }
-
-            Smb2CompoundPacket responsePacket = host.HandleCompoundRequestPacket(requestPacket);
-            return host.FinalizeResponsePacket(responsePacket);
+            catch (ProtocolEncodingException)
+            {
+                throw;
+            }
+            catch (ProtocolValidationException)
+            {
+                throw;
+            }
+            catch (ArgumentException exception)
+            {
+                throw new ProtocolEncodingException("The inbound SMB request payload is malformed.", exception);
+            }
+            catch (OverflowException exception)
+            {
+                throw new ProtocolEncodingException("The inbound SMB request payload is malformed.", exception);
+            }
+            catch (FormatException exception)
+            {
+                throw new ProtocolEncodingException("The inbound SMB request payload is malformed.", exception);
+            }
         }
 
         private static byte[] DispatchSmb1MultiProtocolNegotiate(OpenCifsServerHost host, ReadOnlyMemory<byte> requestPayload)
@@ -291,15 +354,18 @@ namespace OpenCIFS.Server
                 throw new ProtocolValidationException("The bounded SMB1 multi-protocol negotiate bridge requires the SMB 2.002 dialect string.", nameof(requestPayload));
             }
 
+            SmbDialect[] advertisedDialects = host.GetAdvertisedDialects();
+
+            if (advertisedDialects.Length == 0)
+            {
+                throw new ProtocolValidationException("The bounded SMB1 multi-protocol negotiate bridge requires at least one currently implemented SMB2/3 dialect.", nameof(requestPayload));
+            }
+
             Smb2NegotiateRequest bridgedRequest = new Smb2NegotiateRequest
             {
                 SecurityMode = Smb2SecurityMode.SigningEnabled,
                 ClientGuid = new Guid("00000000-0000-0000-0000-000000000001"),
-                Dialects = new SmbDialect[]
-                {
-                    SmbDialect.Smb2002,
-                    SmbDialect.Smb21
-                }
+                Dialects = advertisedDialects
             };
 
             Smb2Header syntheticHeader = new Smb2Header
@@ -373,7 +439,7 @@ namespace OpenCIFS.Server
                 }
             }
 
-            throw new InvalidOperationException("The configured bind address could not be resolved to an IP endpoint.");
+            throw new OpenCifsServerConfigurationException("The configured bind address could not be resolved to an IP endpoint.");
         }
 
         private readonly object _ConnectionSync = new object();
@@ -384,3 +450,4 @@ namespace OpenCIFS.Server
         private bool _IsRunning;
     }
 }
+

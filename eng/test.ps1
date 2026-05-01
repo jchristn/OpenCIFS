@@ -29,3 +29,8 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
+
+& "$PSScriptRoot\run-test-console-smoke.ps1" -Configuration $Configuration -Framework $Framework
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}

@@ -88,6 +88,11 @@ namespace Sample.OpenCifsServer
         public bool? RequireEncryptionForSmb3 { get; set; }
 
         /// <summary>
+        /// Optional bounded SMB 3.1.1 preview opt-in override.
+        /// </summary>
+        public bool? EnableSmb311Preview { get; set; }
+
+        /// <summary>
         /// Optional account username override.
         /// </summary>
         public string? AccountUserName { get; set; }

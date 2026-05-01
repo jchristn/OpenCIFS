@@ -26,6 +26,10 @@ namespace OpenCIFS.Client
         /// <param name="createOptions">Original create options.</param>
         /// <param name="requestedOplockLevel">Original requested oplock level.</param>
         /// <param name="isDurable">Whether the server granted durable reconnect state for the open.</param>
+        /// <param name="usesDurableHandleV2">Whether the open uses SMB 3.x durable-handle v2 contexts.</param>
+        /// <param name="durableCreateGuid">SMB 3.x durable-handle create GUID when available.</param>
+        /// <param name="durableTimeoutMs">Granted durable reconnect timeout in milliseconds.</param>
+        /// <param name="isPersistent">Whether the durable open is persistent.</param>
         /// <param name="leaseKey">Lease key bytes for an SMB 2.1 lease-backed open.</param>
         /// <param name="leaseState">Current SMB 2.1 lease state.</param>
         internal OpenCifsClientOpenHandle(
@@ -44,6 +48,10 @@ namespace OpenCIFS.Client
             Smb2CreateOptions createOptions,
             Smb2OplockLevel requestedOplockLevel,
             bool isDurable,
+            bool usesDurableHandleV2,
+            Guid durableCreateGuid,
+            uint durableTimeoutMs,
+            bool isPersistent,
             byte[] leaseKey,
             Smb2LeaseState leaseState)
         {
@@ -72,7 +80,11 @@ namespace OpenCIFS.Client
             CreateOptions = createOptions;
             RequestedOplockLevel = requestedOplockLevel;
             IsDurable = isDurable;
-            CanReconnectDurably = isDurable;
+            UsesDurableHandleV2 = usesDurableHandleV2;
+            DurableCreateGuid = durableCreateGuid;
+            DurableTimeoutMs = durableTimeoutMs;
+            IsPersistent = isPersistent;
+            CanReconnectDurably = isDurable && (!usesDurableHandleV2 || durableCreateGuid != Guid.Empty);
             LeaseKey = leaseKey == null ? Array.Empty<byte>() : (byte[])leaseKey.Clone();
             LeaseState = leaseState;
         }
@@ -145,6 +157,21 @@ namespace OpenCIFS.Client
         public bool IsDurable { get; private set; }
 
         /// <summary>
+        /// Whether the open uses SMB 3.x durable-handle v2 contexts.
+        /// </summary>
+        public bool UsesDurableHandleV2 { get; }
+
+        /// <summary>
+        /// Granted durable reconnect timeout in milliseconds.
+        /// </summary>
+        public uint DurableTimeoutMs { get; }
+
+        /// <summary>
+        /// Whether the durable open is persistent.
+        /// </summary>
+        public bool IsPersistent { get; }
+
+        /// <summary>
         /// Whether this open can currently be used as a durable reconnect token.
         /// </summary>
         public bool CanReconnectDurably { get; private set; }
@@ -171,6 +198,8 @@ namespace OpenCIFS.Client
         internal Smb2CreateOptions CreateOptions { get; }
 
         internal Smb2OplockLevel RequestedOplockLevel { get; }
+
+        internal Guid DurableCreateGuid { get; }
 
         internal void MarkClosed()
         {

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <IsPackable>false</IsPackable>
+    <Description>Menu-driven manual test server for exercising OpenCIFS.Server with a temporary backing store.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenCIFS.Server\OpenCIFS.Server.csproj" />
+    <ProjectReference Include="..\OpenCIFS.Protocol\OpenCIFS.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>

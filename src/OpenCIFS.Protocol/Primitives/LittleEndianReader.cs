@@ -113,6 +113,15 @@ namespace OpenCIFS.Protocol
         }
 
         /// <summary>
+        /// Read a GUID using the Windows little-endian GUID binary layout.
+        /// </summary>
+        /// <returns>GUID value.</returns>
+        public Guid ReadGuid()
+        {
+            return new Guid(ReadBytes(16));
+        }
+
+        /// <summary>
         /// Read a fixed number of bytes.
         /// </summary>
         /// <param name="length">Byte count to read.</param>
@@ -157,4 +166,3 @@ namespace OpenCIFS.Protocol
         private int _Position = 0;
     }
 }
-

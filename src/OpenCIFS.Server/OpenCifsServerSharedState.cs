@@ -2,6 +2,7 @@ namespace OpenCIFS.Server
 {
     using System;
     using System.Collections.Generic;
+    using System.IO;
 
     /// <summary>
     /// Shared server-wide state used by connection-scoped direct-TCP hosts.
@@ -24,6 +25,7 @@ namespace OpenCIFS.Server
             {
                 lock (SyncRoot)
                 {
+                    PruneExpiredDetachedDurableOpens_NoLock(DateTimeOffset.UtcNow);
                     OpenCifsServerDurableOpenRecord[] snapshot = new OpenCifsServerDurableOpenRecord[_DetachedDurableOpens.Count];
                     _DetachedDurableOpens.Values.CopyTo(snapshot, 0);
                     return snapshot;
@@ -87,11 +89,13 @@ namespace OpenCIFS.Server
 
             lock (SyncRoot)
             {
+                PruneExpiredDetachedDurableOpens_NoLock(DateTimeOffset.UtcNow);
                 if (_DetachedDurableOpens.ContainsKey(durableOpenRecord.PersistentFileId))
                 {
                     throw new InvalidOperationException("A detached durable open with the same persistent file identifier is already registered.");
                 }
 
+                durableOpenRecord.DetachedAtUtc = DateTimeOffset.UtcNow;
                 _DetachedDurableOpens[durableOpenRecord.PersistentFileId] = durableOpenRecord;
             }
         }
@@ -100,6 +104,7 @@ namespace OpenCIFS.Server
         {
             lock (SyncRoot)
             {
+                PruneExpiredDetachedDurableOpens_NoLock(DateTimeOffset.UtcNow);
                 if (_DetachedDurableOpens.TryGetValue(persistentFileId, out durableOpenRecord))
                 {
                     _DetachedDurableOpens.Remove(persistentFileId);
@@ -178,6 +183,89 @@ namespace OpenCIFS.Server
         private readonly Dictionary<ulong, OpenCifsServerDurableOpenRecord> _DetachedDurableOpens = new Dictionary<ulong, OpenCifsServerDurableOpenRecord>();
         private readonly Dictionary<string, OpenCifsServerLeaseRecord> _LeaseRecords = new Dictionary<string, OpenCifsServerLeaseRecord>(StringComparer.Ordinal);
         private ulong _NextFileId = 1;
+
+        private void PruneExpiredDetachedDurableOpens_NoLock(DateTimeOffset utcNow)
+        {
+            List<ulong>? expiredPersistentFileIds = null;
+
+            foreach (KeyValuePair<ulong, OpenCifsServerDurableOpenRecord> entry in _DetachedDurableOpens)
+            {
+                if (!entry.Value.IsExpired(utcNow))
+                {
+                    continue;
+                }
+
+                expiredPersistentFileIds ??= new List<ulong>();
+                expiredPersistentFileIds.Add(entry.Key);
+            }
+
+            if (expiredPersistentFileIds == null)
+            {
+                return;
+            }
+
+            for (int index = 0; index < expiredPersistentFileIds.Count; index++)
+            {
+                ulong persistentFileId = expiredPersistentFileIds[index];
+
+                if (_DetachedDurableOpens.TryGetValue(persistentFileId, out OpenCifsServerDurableOpenRecord? durableOpenRecord))
+                {
+                    _DetachedDurableOpens.Remove(persistentFileId);
+                    ReleaseDetachedDurableOpen_NoLock(durableOpenRecord);
+                }
+            }
+        }
+
+        private void ReleaseDetachedDurableOpen_NoLock(OpenCifsServerDurableOpenRecord durableOpenRecord)
+        {
+            if (durableOpenRecord.LeaseRecord != null && durableOpenRecord.LeaseRecord.OpenCount > 0)
+            {
+                durableOpenRecord.LeaseRecord.OpenCount--;
+
+                if (durableOpenRecord.LeaseRecord.OpenCount == 0)
+                {
+                    _LeaseRecords.Remove(GetLeaseRecordKey(durableOpenRecord.LeaseRecord.ClientGuid, durableOpenRecord.LeaseRecord.LeaseKey));
+                }
+            }
+
+            durableOpenRecord.Dispose();
+
+            if (!durableOpenRecord.IsDeletePending)
+            {
+                return;
+            }
+
+            try
+            {
+                if (durableOpenRecord.Backend.FileExists(durableOpenRecord.FullPath))
+                {
+                    try
+                    {
+                        durableOpenRecord.Backend.SetAttributes(durableOpenRecord.FullPath, FileAttributes.Normal);
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                    }
+                    catch (IOException)
+                    {
+                    }
+
+                    durableOpenRecord.Backend.DeleteFileIfPresent(durableOpenRecord.FullPath);
+                    return;
+                }
+
+                if (durableOpenRecord.Backend.DirectoryExists(durableOpenRecord.FullPath))
+                {
+                    durableOpenRecord.Backend.DeleteDirectoryIfPresent(durableOpenRecord.FullPath, recursive: false);
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+            catch (IOException)
+            {
+            }
+        }
 
         private static string GetLeaseRecordKey(Guid clientGuid, byte[] leaseKey)
         {

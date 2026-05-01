@@ -100,6 +100,15 @@ namespace OpenCIFS.Protocol
         }
 
         /// <summary>
+        /// Write a GUID using the Windows little-endian GUID binary layout.
+        /// </summary>
+        /// <param name="value">GUID value.</param>
+        public void WriteGuid(Guid value)
+        {
+            WriteBytes(value.ToByteArray());
+        }
+
+        /// <summary>
         /// Write raw bytes.
         /// </summary>
         /// <param name="value">Bytes to write.</param>
@@ -136,4 +145,3 @@ namespace OpenCIFS.Protocol
         private int _Position = 0;
     }
 }
-

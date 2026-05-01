@@ -237,7 +237,16 @@ namespace OpenCIFS.Transport
             }
             finally
             {
-                await _InboundReader.CompleteAsync().ConfigureAwait(false);
+                try
+                {
+                    await _InboundReader.CompleteAsync().ConfigureAwait(false);
+                }
+                catch (IOException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
+                catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
             }
         }
 
@@ -270,7 +279,16 @@ namespace OpenCIFS.Transport
             }
             finally
             {
-                await _OutboundWriter.CompleteAsync().ConfigureAwait(false);
+                try
+                {
+                    await _OutboundWriter.CompleteAsync().ConfigureAwait(false);
+                }
+                catch (IOException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
+                catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
             }
         }
 

@@ -1,10 +1,16 @@
 param(
     [string]$Configuration = "Debug",
     [string]$Framework = "net8.0",
-    [int]$Port = 0
+    [int]$Port = 0,
+    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302"),
+    [int]$LargePayloadLength = 200000
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($LargePayloadLength -lt 65536) {
+    throw "LargePayloadLength must be at least 65536 bytes so the deeper interop path exercises bounded large-I/O behavior."
+}
 
 function Resolve-AvailableTcpPort {
     param(
@@ -64,14 +70,16 @@ function Stop-StaleSampleServerProcesses {
 function Wait-ServerReady {
     param(
         [System.Diagnostics.Process]$Process,
-        [int]$TcpPort
+        [int]$TcpPort,
+        [string]$ServerLogPath,
+        [string]$ServerErrorPath
     )
 
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         Start-Sleep -Milliseconds 500
 
         if ($Process.HasExited) {
-            throw "Sample.OpenCifsServer exited before the port opened. See $serverLogPath and $serverErrorPath."
+            throw "Sample.OpenCifsServer exited before the port opened. See $ServerLogPath and $ServerErrorPath."
         }
 
         $tcpClient = New-Object System.Net.Sockets.TcpClient
@@ -91,16 +99,50 @@ function Wait-ServerReady {
     throw "Timed out waiting for Sample.OpenCifsServer to open 127.0.0.1:$TcpPort."
 }
 
+function Get-DialectMetadata {
+    param([string]$Dialect)
+
+    switch ($Dialect) {
+        "Smb2002" {
+            return [pscustomobject]@{
+                Dialect = "Smb2002"
+                DialectId = "smb2002"
+                Label = "SMB 2.0.2"
+                PythonDialect = "smb2002"
+                RequireEncryptionForSmb3 = $false
+            }
+        }
+        "Smb21" {
+            return [pscustomobject]@{
+                Dialect = "Smb21"
+                DialectId = "smb21"
+                Label = "SMB 2.1"
+                PythonDialect = "smb21"
+                RequireEncryptionForSmb3 = $false
+            }
+        }
+        "Smb302" {
+            return [pscustomobject]@{
+                Dialect = "Smb302"
+                DialectId = "smb302"
+                Label = "SMB 3.0.2"
+                PythonDialect = "smb302"
+                RequireEncryptionForSmb3 = $true
+            }
+        }
+        default {
+            throw "Unsupported dialect '$Dialect'."
+        }
+    }
+}
+
 $artifactRoot = Join-Path $PSScriptRoot "..\artifacts\real-client-interop"
-$shareRoot = Join-Path $artifactRoot "share"
+$combinedConfigurationPath = Join-Path $artifactRoot "sample-server.config.txt"
+$combinedSmokeLogPath = Join-Path $artifactRoot "real-client-smoke.json"
 $venvRoot = Join-Path $artifactRoot ".venv"
-$printedConfigurationPath = Join-Path $artifactRoot "sample-server.config.txt"
-$serverLogPath = Join-Path $artifactRoot "sample-server.log"
-$serverErrorPath = Join-Path $artifactRoot "sample-server.err.log"
-$smokeLogPath = Join-Path $artifactRoot "real-client-smoke.json"
 
 New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
-New-Item -ItemType Directory -Force -Path $shareRoot | Out-Null
+Set-Content -Path $combinedConfigurationPath -Value ""
 
 if (-not (Test-Path $venvRoot)) {
     python -m venv $venvRoot
@@ -110,86 +152,125 @@ $venvPython = Join-Path $venvRoot "Scripts\python.exe"
 & $venvPython -m pip install --disable-pip-version-check smbprotocol==1.16.1 | Out-Null
 
 $projectPath = Join-Path $PSScriptRoot "..\src\Sample.OpenCifsServer\Sample.OpenCifsServer.csproj"
-$Port = Resolve-AvailableTcpPort -PreferredPort $Port
 Stop-StaleSampleServerProcesses -ProjectPath $projectPath
-$sampleServerArguments = @(
-    "--server-name", "127.0.0.1",
-    "--bind-address", "127.0.0.1",
-    "--bind-port", $Port.ToString(),
-    "--share-name", "share",
-    "--share-path", $shareRoot,
-    "--minimum-dialect", "Smb21",
-    "--maximum-dialect", "Smb21",
-    "--require-signing", "true",
-    "--require-ntlmv2", "true",
-    "--allow-anonymous", "false",
-    "--enable-smb1", "false",
-    "--require-encryption-for-smb3", "false",
-    "--account-username", "alice",
-    "--account-domain", "WORKGROUP",
-    "--account-password", "Password123!"
-)
-$printArguments = @(
-    "run",
-    "--project", $projectPath,
-    "--configuration", $Configuration,
-    "--framework", $Framework,
-    "--no-build",
-    "--",
-    "--print-config"
-) + $sampleServerArguments
 
-& dotnet $printArguments | Tee-Object -FilePath $printedConfigurationPath | Out-Null
+$results = New-Object System.Collections.Generic.List[object]
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to print the effective Sample.OpenCifsServer configuration."
-}
+foreach ($dialect in $Dialects) {
+    $dialectMetadata = Get-DialectMetadata -Dialect $dialect
+    $dialectArtifactRoot = Join-Path $artifactRoot $dialectMetadata.DialectId
+    $shareRoot = Join-Path $dialectArtifactRoot "share"
+    $printedConfigurationPath = Join-Path $dialectArtifactRoot "sample-server.config.txt"
+    $serverLogPath = Join-Path $dialectArtifactRoot "sample-server.log"
+    $serverErrorPath = Join-Path $dialectArtifactRoot "sample-server.err.log"
+    $smokeLogPath = Join-Path $dialectArtifactRoot "real-client-smoke.json"
 
-$serverArguments = @(
-    "run",
-    "--project", $projectPath,
-    "--configuration", $Configuration,
-    "--framework", $Framework,
-    "--no-build",
-    "--"
-) + $sampleServerArguments
+    New-Item -ItemType Directory -Force -Path $dialectArtifactRoot | Out-Null
+    New-Item -ItemType Directory -Force -Path $shareRoot | Out-Null
 
-$serverProcess = Start-Process `
-    -FilePath "dotnet" `
-    -ArgumentList $serverArguments `
-    -WorkingDirectory (Join-Path $PSScriptRoot "..") `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $serverLogPath `
-    -RedirectStandardError $serverErrorPath `
-    -PassThru
+    if (Test-Path $shareRoot) {
+        Get-ChildItem -Path $shareRoot -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
-try {
-    Wait-ServerReady -Process $serverProcess -TcpPort $Port
+    $Port = Resolve-AvailableTcpPort -PreferredPort $Port
 
-    & $venvPython `
-        (Join-Path $PSScriptRoot "real-client-smoke.py") `
-        --server 127.0.0.1 `
-        --port $Port `
-        --share share `
-        --username alice `
-        --password Password123! `
-        --domain WORKGROUP `
-        --large-payload-length 200000 `
-        | Tee-Object -FilePath $smokeLogPath
+    $sampleServerArguments = @(
+        "--server-name", "127.0.0.1",
+        "--bind-address", "127.0.0.1",
+        "--bind-port", $Port.ToString(),
+        "--share-name", "share",
+        "--share-path", $shareRoot,
+        "--minimum-dialect", $dialectMetadata.Dialect,
+        "--maximum-dialect", $dialectMetadata.Dialect,
+        "--require-signing", "true",
+        "--require-ntlmv2", "true",
+        "--allow-anonymous", "false",
+        "--enable-smb1", "false",
+        "--require-encryption-for-smb3", $dialectMetadata.RequireEncryptionForSmb3.ToString().ToLowerInvariant(),
+        "--account-username", "alice",
+        "--account-domain", "WORKGROUP",
+        "--account-password", "Password123!"
+    )
+    $printArguments = @(
+        "run",
+        "--project", $projectPath,
+        "--configuration", $Configuration,
+        "--framework", $Framework,
+        "--no-build",
+        "--",
+        "--print-config"
+    ) + $sampleServerArguments
+
+    & dotnet $printArguments | Tee-Object -FilePath $printedConfigurationPath | Out-Null
 
     if ($LASTEXITCODE -ne 0) {
-        throw "The real SMB client smoke run failed."
+        throw "Failed to print the effective Sample.OpenCifsServer configuration for $($dialectMetadata.Label)."
     }
-}
-finally {
-    if (-not $serverProcess.HasExited) {
-        Stop-Process -Id $serverProcess.Id -Force
-        $serverProcess.WaitForExit()
+
+    Add-Content -Path $combinedConfigurationPath -Value ("==== " + $dialectMetadata.Label + " ====")
+    Get-Content -Path $printedConfigurationPath | Add-Content -Path $combinedConfigurationPath
+    Add-Content -Path $combinedConfigurationPath -Value ""
+
+    $serverArguments = @(
+        "run",
+        "--project", $projectPath,
+        "--configuration", $Configuration,
+        "--framework", $Framework,
+        "--no-build",
+        "--"
+    ) + $sampleServerArguments
+
+    $serverProcess = Start-Process `
+        -FilePath "dotnet" `
+        -ArgumentList $serverArguments `
+        -WorkingDirectory (Join-Path $PSScriptRoot "..") `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $serverLogPath `
+        -RedirectStandardError $serverErrorPath `
+        -PassThru
+
+    try {
+        Wait-ServerReady -Process $serverProcess -TcpPort $Port -ServerLogPath $serverLogPath -ServerErrorPath $serverErrorPath
+
+        & $venvPython `
+            (Join-Path $PSScriptRoot "real-client-smoke.py") `
+            --server 127.0.0.1 `
+            --port $Port `
+            --share share `
+            --username alice `
+            --password Password123! `
+            --domain WORKGROUP `
+            --dialect $dialectMetadata.PythonDialect `
+            --large-payload-length $LargePayloadLength `
+            | Tee-Object -FilePath $smokeLogPath
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "The real SMB client smoke run failed for $($dialectMetadata.Label)."
+        }
+
+        $result = Get-Content -Path $smokeLogPath -Raw | ConvertFrom-Json
+        $results.Add([pscustomobject]@{
+            dialect_id = $dialectMetadata.DialectId
+            dialect = $dialectMetadata.Label
+            config_path = $printedConfigurationPath
+            server_log_path = $serverLogPath
+            server_error_path = $serverErrorPath
+            summary = $result
+        })
+    }
+    finally {
+        if (-not $serverProcess.HasExited) {
+            Stop-Process -Id $serverProcess.Id -Force
+            $serverProcess.WaitForExit()
+        }
     }
 }
 
+[pscustomobject]@{
+    generated_at_utc = [DateTime]::UtcNow.ToString("o", [System.Globalization.CultureInfo]::InvariantCulture)
+    runs = $results
+} | ConvertTo-Json -Depth 8 | Set-Content -Path $combinedSmokeLogPath -Encoding UTF8
+
 Write-Host "Real SMB client interop smoke completed. Evidence:"
-Write-Host "  $smokeLogPath"
-Write-Host "  $printedConfigurationPath"
-Write-Host "  $serverLogPath"
-Write-Host "  $serverErrorPath"
+Write-Host "  $combinedSmokeLogPath"
+Write-Host "  $combinedConfigurationPath"

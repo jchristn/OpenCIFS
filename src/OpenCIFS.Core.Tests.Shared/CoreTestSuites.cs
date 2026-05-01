@@ -46,10 +46,13 @@ namespace OpenCIFS.Core.Tests.Shared
                     Smb2OplockBreakSuite(),
                     Smb2LeaseSuite(),
                     Smb2IoctlSuite(),
+                    SrvsvcRpcSuite(),
+                    DfsReferralCodecSuite(),
                     MetadataSuite(),
                     NegotiateContextSuite(),
                     FsccCatalogSuite(),
                     StateLifecycleSuite(),
+                    ParserMutationSuite(),
                     SecurityFoundationSuite(),
                     TransportFoundationSuite()
                 };
@@ -104,8 +107,7 @@ namespace OpenCIFS.Core.Tests.Shared
                         {
                             token.ThrowIfCancellationRequested();
 
-                            string tempDirectory = Path.Combine(Path.GetTempPath(), "OpenCifsBootstrapAssertions_" + Guid.NewGuid().ToString("N"));
-                            Directory.CreateDirectory(tempDirectory);
+                            string tempDirectory = TestPathUtilities.CreateUniqueDirectory("OpenCifsBootstrapAssertions_");
 
                             try
                             {
@@ -122,10 +124,83 @@ namespace OpenCIFS.Core.Tests.Shared
                             }
                             finally
                             {
-                                if (Directory.Exists(tempDirectory))
-                                {
-                                    Directory.Delete(tempDirectory, recursive: true);
-                                }
+                                TestPathUtilities.DeleteDirectoryForcefully(tempDirectory);
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Bootstrap",
+                        caseId: "SharedTestUtilitiesExposeDeterministicRootsVectorsAndPacketTraces",
+                        displayName: "Shared test utilities expose deterministic roots, vectors, clocks, and packet traces",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string rootPath = TestPathUtilities.CreateUniqueDirectory("OpenCifsSharedUtilities_");
+
+                            try
+                            {
+                                TestAssertions.True(Directory.Exists(rootPath), "Expected the shared test path helper to create the requested directory.");
+                                TestAssertions.Equal(
+                                    DeterministicTestClock.GetUtc("Core.Bootstrap.UtilityClock"),
+                                    DeterministicTestClock.GetUtc("Core.Bootstrap.UtilityClock"),
+                                    "Expected the deterministic test clock to return the same timestamp for the same key.");
+                                TestAssertions.SequenceEqual(
+                                    Hex("31D6CFE0D16AE931B73C59D7E0C089C0"),
+                                    GoldenVectorStore.GetBytes("core.security.md4.empty"),
+                                    "Expected the golden-vector store to return the stored MD4 empty-string vector.");
+
+                                PacketCaptureTraceWriter traceWriter = new PacketCaptureTraceWriter(rootPath, "CoreBootstrapUtilityTrace");
+                                traceWriter.Capture("negotiate-request", new byte[] { 0x01, 0x02, 0x03 });
+                                traceWriter.Capture("negotiate-response", new byte[] { 0x11, 0x12 });
+                                string manifestPath = traceWriter.WriteManifest();
+
+                                FileAssertions.AssertExists(manifestPath);
+                                FileAssertions.AssertContains(manifestPath, "\"packet_count\": 2");
+                                FileAssertions.AssertContains(manifestPath, "negotiate-request");
+                                FileAssertions.AssertContains(manifestPath, "negotiate-response");
+                            }
+                            finally
+                            {
+                                TestPathUtilities.DeleteDirectoryForcefully(rootPath);
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Bootstrap",
+                        caseId: "SharedTestUtilitiesRejectInvalidArguments",
+                        displayName: "Shared test utilities reject invalid arguments and missing vectors",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string rootPath = TestPathUtilities.CreateUniqueDirectory("OpenCifsSharedUtilitiesNegative_");
+
+                            try
+                            {
+                                TestAssertions.Throws<ArgumentNullException>(
+                                    () => TestPathUtilities.CreateUniqueDirectory(" "),
+                                    "Expected the shared test path helper to reject empty prefixes.");
+                                TestAssertions.Throws<ArgumentNullException>(
+                                    () => DeterministicTestClock.GetUtc(" "),
+                                    "Expected the deterministic clock helper to reject empty keys.");
+                                TestAssertions.Throws<KeyNotFoundException>(
+                                    () => GoldenVectorStore.GetString("core.security.missing.vector"),
+                                    "Expected the golden-vector store to reject unknown vector names.");
+                                TestAssertions.Throws<ArgumentNullException>(
+                                    () => new PacketCaptureTraceWriter(rootPath, " "),
+                                    "Expected the packet-capture helper to reject empty trace names.");
+
+                                PacketCaptureTraceWriter traceWriter = new PacketCaptureTraceWriter(rootPath, "NegativeTrace");
+                                TestAssertions.Throws<ArgumentNullException>(
+                                    () => traceWriter.Capture(" ", new byte[] { 0x00 }),
+                                    "Expected the packet-capture helper to reject empty capture labels.");
+                            }
+                            finally
+                            {
+                                TestPathUtilities.DeleteDirectoryForcefully(rootPath);
                             }
 
                             return Task.CompletedTask;
@@ -764,6 +839,32 @@ namespace OpenCIFS.Core.Tests.Shared
                             TestAssertions.Equal(SmbDialect.Smb2002, parsedRequest.Dialects[0], "Unexpected first SMB2 negotiate dialect.");
                             TestAssertions.Equal(SmbDialect.Smb21, parsedRequest.Dialects[1], "Unexpected second SMB2 negotiate dialect.");
 
+                            byte[] negotiateContextData =
+                            {
+                                0x01, 0x00, 0x0A, 0x00, 0xAA, 0xBB, 0xCC, 0xDD,
+                                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
+                            };
+                            Smb2NegotiateRequest smb311ShapeRequest = new Smb2NegotiateRequest
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Encryption,
+                                ClientGuid = clientGuid,
+                                Dialects = new SmbDialect[] { SmbDialect.Smb21, SmbDialect.Smb302, SmbDialect.Smb311 },
+                                NegotiateContextCount = 1,
+                                NegotiateContextData = negotiateContextData
+                            };
+
+                            byte[] encodedSmb311ShapeRequest = smb311ShapeRequest.ToByteArray();
+                            Smb2NegotiateRequest parsedSmb311ShapeRequest = Smb2NegotiateRequest.ReadFrom(encodedSmb311ShapeRequest);
+                            TestAssertions.Equal(64, encodedSmb311ShapeRequest.Length, "Unexpected SMB 3.1.1-style negotiate request length.");
+                            TestAssertions.Equal((uint)112, parsedSmb311ShapeRequest.NegotiateContextOffset, "Unexpected SMB 3.1.1-style negotiate context offset.");
+                            TestAssertions.Equal((ushort)1, parsedSmb311ShapeRequest.NegotiateContextCount, "Unexpected SMB 3.1.1-style negotiate context count.");
+                            TestAssertions.Equal(SmbDialect.Smb311, parsedSmb311ShapeRequest.Dialects[2], "Expected the parser to preserve the SMB 3.1.1 dialect offer.");
+                            TestAssertions.SequenceEqual(
+                                negotiateContextData,
+                                parsedSmb311ShapeRequest.NegotiateContextData,
+                                "Expected the parser to preserve raw SMB 3.1.1-style negotiate context bytes.");
+
                             byte[] extendedRequest = new byte[encodedRequest.Length + 8];
                             Buffer.BlockCopy(encodedRequest, 0, extendedRequest, 0, encodedRequest.Length);
                             Buffer.BlockCopy(new byte[] { 0x44, 0x33, 0x22, 0x11, 0x02, 0x00, 0x00, 0x00 }, 0, extendedRequest, encodedRequest.Length, 8);
@@ -902,6 +1003,24 @@ namespace OpenCIFS.Core.Tests.Shared
                             TestAssertions.Throws<ProtocolEncodingException>(
                                 () => Smb2NegotiateRequest.ReadFrom(unknownDialectBytes),
                                 "An SMB2 negotiate request with an unknown dialect should fail to parse.");
+
+                            Smb2NegotiateRequest smb311ShapeRequest = new Smb2NegotiateRequest
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled,
+                                Capabilities = Smb2GlobalCapabilities.Encryption,
+                                ClientGuid = Guid.NewGuid(),
+                                Dialects = new SmbDialect[] { SmbDialect.Smb302, SmbDialect.Smb311 },
+                                NegotiateContextCount = 1,
+                                NegotiateContextData = new byte[]
+                                {
+                                    0x01, 0x00, 0x04, 0x00, 0xAA, 0xBB, 0xCC, 0xDD
+                                }
+                            };
+                            byte[] malformedContextOffsetBytes = smb311ShapeRequest.ToByteArray();
+                            Buffer.BlockCopy(new byte[] { 0x50, 0x00, 0x00, 0x00 }, 0, malformedContextOffsetBytes, 28, 4);
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb2NegotiateRequest.ReadFrom(malformedContextOffsetBytes),
+                                "An SMB 3.1.1-style negotiate request with a body-relative or too-small negotiate context offset should fail to parse.");
 
                             Smb2NegotiateRequest duplicateDialectRequest = new Smb2NegotiateRequest
                             {
@@ -1730,6 +1849,58 @@ namespace OpenCIFS.Core.Tests.Shared
                             };
                             Smb2CreateRequestValidator.Validate(createContextRequest);
 
+                            LittleEndianWriter unpaddedCreateContextWriter = new LittleEndianWriter();
+                            unpaddedCreateContextWriter.WriteUInt32(0);
+                            unpaddedCreateContextWriter.WriteUInt16(16);
+                            unpaddedCreateContextWriter.WriteUInt16(4);
+                            unpaddedCreateContextWriter.WriteUInt16(0);
+                            unpaddedCreateContextWriter.WriteUInt16(24);
+                            unpaddedCreateContextWriter.WriteUInt32(12);
+                            unpaddedCreateContextWriter.WriteBytes(Encoding.ASCII.GetBytes("ExtA"));
+                            while (unpaddedCreateContextWriter.Length < 24)
+                            {
+                                unpaddedCreateContextWriter.WriteByte(0);
+                            }
+
+                            unpaddedCreateContextWriter.WriteBytes(new byte[]
+                            {
+                                0x01, 0x02, 0x03, 0x04,
+                                0x05, 0x06, 0x07, 0x08,
+                                0x09, 0x0A, 0x0B, 0x0C
+                            });
+                            Smb2CreateRequest unpaddedCreateContextRequest = new Smb2CreateRequest
+                            {
+                                Name = "notes.txt",
+                                CreateOptions = Smb2CreateOptions.NonDirectoryFile,
+                                CreateDisposition = Smb2CreateDisposition.OpenIf,
+                                CreateContexts = unpaddedCreateContextWriter.ToArray()
+                            };
+                            Smb2CreateRequestValidator.Validate(unpaddedCreateContextRequest);
+
+                            Smb2CreateRequest toleratedSmb3HintContextRequest = new Smb2CreateRequest
+                            {
+                                Name = "directory",
+                                DesiredAccess = 0x00100081U,
+                                ShareAccess = 0x00000003U,
+                                CreateDisposition = Smb2CreateDisposition.Create,
+                                CreateOptions = Smb2CreateOptions.DirectoryFile | Smb2CreateOptions.OpenReparsePoint,
+                                CreateContexts = Smb2CreateContextCodec.Encode(new Smb2CreateContext[]
+                                {
+                                    new Smb2DurableHandleRequestV2Context
+                                    {
+                                        Timeout = 0,
+                                        Flags = Smb2DurableHandleFlags.None,
+                                        CreateGuid = Guid.NewGuid()
+                                    }.ToCreateContext(),
+                                    new Smb2CreateRequestLeaseContext
+                                    {
+                                        LeaseKey = new byte[16],
+                                        LeaseState = Smb2LeaseState.ReadCaching
+                                    }.ToCreateContext()
+                                })
+                            };
+                            Smb2CreateRequestValidator.Validate(toleratedSmb3HintContextRequest);
+
                             TestAssertions.Throws<ProtocolValidationException>(
                                 () => Smb2CreateRequestValidator.Validate(new Smb2CreateRequest
                                 {
@@ -1803,6 +1974,25 @@ namespace OpenCIFS.Core.Tests.Shared
                                     CreateContexts = Array.Empty<byte>()
                                 }),
                                 "FILE_SUPERSEDE should require DELETE access.");
+
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb2CreateRequestValidator.Validate(new Smb2CreateRequest
+                                {
+                                    Name = "notes.txt",
+                                    DesiredAccess = 0x80000080U,
+                                    ShareAccess = 0x00000007U,
+                                    CreateDisposition = Smb2CreateDisposition.Open,
+                                    CreateOptions = Smb2CreateOptions.NonDirectoryFile,
+                                    CreateContexts = Smb2CreateContextCodec.Encode(new Smb2CreateContext[]
+                                    {
+                                        new Smb2CreateContext
+                                        {
+                                            Name = Encoding.ASCII.GetBytes("DH2C"),
+                                            Data = new byte[32]
+                                        }
+                                    })
+                                }),
+                                "Malformed durable-handle v2 reconnect hints should be rejected when the payload does not match the bounded SMB 3.x wire shape.");
 
                             TestAssertions.Throws<ProtocolValidationException>(
                                 () => Smb2ReadResponseValidator.Validate(new Smb2ReadResponse
@@ -2591,7 +2781,7 @@ namespace OpenCIFS.Core.Tests.Shared
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb2Durable",
                         caseId: "DurableCreateContextValidationRejectsMalformedAndUnsupportedContexts",
-                        displayName: "Durable create-context validation rejects malformed, duplicate, and SMB 3.x-only durable contexts",
+                        displayName: "Durable create-context validation rejects malformed, duplicate, and durable reconnect contexts",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -2631,29 +2821,6 @@ namespace OpenCIFS.Core.Tests.Shared
                             TestAssertions.Throws<ProtocolValidationException>(
                                 () => Smb2CreateRequestValidator.Validate(duplicateDurableRequest),
                                 "Expected duplicate durable-handle request contexts to be rejected.");
-
-                            Smb2CreateRequest unsupportedDurableV2Request = new Smb2CreateRequest
-                            {
-                                RequestedOplockLevel = Smb2OplockLevel.Batch,
-                                ImpersonationLevel = Smb2ImpersonationLevel.Impersonation,
-                                DesiredAccess = 0xC0010000U,
-                                FileAttributes = ProtocolFileAttributes.Normal,
-                                ShareAccess = 0x00000007U,
-                                CreateDisposition = Smb2CreateDisposition.Open,
-                                CreateOptions = Smb2CreateOptions.NonDirectoryFile,
-                                Name = "docs\\sample.txt",
-                                CreateContexts = Smb2CreateContextCodec.Encode(new Smb2CreateContext[]
-                                {
-                                    new Smb2CreateContext
-                                    {
-                                        Name = new byte[] { 0x44, 0x48, 0x32, 0x51 },
-                                        Data = new byte[32]
-                                    }
-                                })
-                            };
-                            TestAssertions.Throws<ProtocolValidationException>(
-                                () => Smb2CreateRequestValidator.Validate(unsupportedDurableV2Request),
-                                "Expected SMB 3.x durable-handle v2 contexts to be rejected in the bounded SMB 2.0.2 slice.");
 
                             byte[] durableRequestBytes = Smb2CreateContextCodec.Encode(new Smb2CreateContext[]
                             {
@@ -3419,6 +3586,286 @@ namespace OpenCIFS.Core.Tests.Shared
         }
 
         /// <summary>
+        /// Build the bounded SRVSVC RPC suite.
+        /// </summary>
+        /// <returns>Suite descriptor.</returns>
+        public static TestSuiteDescriptor SrvsvcRpcSuite()
+        {
+            return new TestSuiteDescriptor(
+                suiteId: "Core.SrvsvcRpc",
+                displayName: "SRVSVC RPC messages",
+                cases: new List<TestCaseDescriptor>
+                {
+                    new TestCaseDescriptor(
+                        suiteId: "Core.SrvsvcRpc",
+                        caseId: "SrvsvcShareEnumMessagesEncodeAndParseBoundedLevel1Shapes",
+                        displayName: "SRVSVC share enumeration request and response encode bounded level 1 shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            SrvsvcNetrShareEnumRequest request = new SrvsvcNetrShareEnumRequest
+                            {
+                                ServerName = string.Empty,
+                                Level = 1,
+                                PreferredMaximumLength = 0xFFFFFFFFU,
+                                ResumeHandle = 9
+                            };
+                            byte[] requestBytes = request.ToByteArray();
+                            LittleEndianReader requestReader = new LittleEndianReader(requestBytes);
+
+                            TestAssertions.Equal((uint)0x00010000, requestReader.ReadUInt32(), "Expected the SRVSVC server-name pointer to remain non-null in the bounded request shape.");
+                            TestAssertions.Equal((uint)1, requestReader.ReadUInt32(), "Unexpected SRVSVC server-name maximum count.");
+                            TestAssertions.Equal((uint)0, requestReader.ReadUInt32(), "Unexpected SRVSVC server-name offset.");
+                            TestAssertions.Equal((uint)1, requestReader.ReadUInt32(), "Unexpected SRVSVC server-name actual count.");
+                            TestAssertions.Equal((ushort)0x0000, requestReader.ReadUInt16(), "Expected the bounded SRVSVC server-name string to be empty and null terminated.");
+                            requestReader.Skip(2);
+                            TestAssertions.Equal((uint)1, requestReader.ReadUInt32(), "Unexpected SRVSVC level value.");
+                            TestAssertions.Equal((uint)1, requestReader.ReadUInt32(), "Unexpected SRVSVC union tag value.");
+                            TestAssertions.Equal((uint)0x00020000, requestReader.ReadUInt32(), "Unexpected SRVSVC level-1 container pointer value.");
+                            TestAssertions.Equal((uint)0, requestReader.ReadUInt32(), "Unexpected SRVSVC level-1 entries-read seed value.");
+                            TestAssertions.Equal((uint)0, requestReader.ReadUInt32(), "Unexpected SRVSVC level-1 buffer pointer seed value.");
+                            TestAssertions.Equal((uint)0xFFFFFFFFU, requestReader.ReadUInt32(), "Unexpected SRVSVC preferred maximum length.");
+                            TestAssertions.Equal((uint)0x00030000, requestReader.ReadUInt32(), "Unexpected SRVSVC resume-handle pointer value.");
+                            TestAssertions.Equal((uint)9, requestReader.ReadUInt32(), "Unexpected SRVSVC resume-handle seed value.");
+
+                            LittleEndianWriter responseWriter = new LittleEndianWriter();
+                            responseWriter.WriteUInt32(1);
+                            responseWriter.WriteUInt32(1);
+                            DceRpcEncoding.WriteUniquePointer(responseWriter, 0x00020000);
+                            responseWriter.WriteUInt32(2);
+                            DceRpcEncoding.WriteUniquePointer(responseWriter, 0x00030000);
+                            responseWriter.WriteUInt32(2);
+                            DceRpcEncoding.WriteUniquePointer(responseWriter, 0x00040000);
+                            responseWriter.WriteUInt32(0);
+                            DceRpcEncoding.WriteUniquePointer(responseWriter, 0x00050000);
+                            DceRpcEncoding.WriteUniquePointer(responseWriter, 0x00060000);
+                            responseWriter.WriteUInt32(0x80000003U);
+                            DceRpcEncoding.WriteUniquePointer(responseWriter, 0x00070000);
+                            DceRpcEncoding.WriteNdrUtf16String(responseWriter, "share");
+                            DceRpcEncoding.WriteNdrUtf16String(responseWriter, "sample share");
+                            DceRpcEncoding.WriteNdrUtf16String(responseWriter, "IPC$");
+                            DceRpcEncoding.WriteNdrUtf16String(responseWriter, "remote ipc");
+                            responseWriter.WriteUInt32(2);
+                            DceRpcEncoding.WriteUniquePointer(responseWriter, 0x00080000);
+                            responseWriter.WriteUInt32(4);
+                            responseWriter.WriteUInt32(0);
+
+                            SrvsvcNetrShareEnumResponse response = SrvsvcNetrShareEnumResponse.ReadFrom(responseWriter.ToArray());
+                            TestAssertions.Equal((uint)1, response.Level, "Unexpected SRVSVC response level.");
+                            TestAssertions.Equal((uint)2, response.TotalEntries, "Unexpected SRVSVC total entry count.");
+                            TestAssertions.Equal((uint)4, response.ResumeHandle!.Value, "Unexpected SRVSVC resume handle value.");
+                            TestAssertions.Equal((uint)0, response.ReturnCode, "Unexpected SRVSVC return code.");
+                            TestAssertions.Equal(2, response.Shares.Length, "Unexpected SRVSVC share count.");
+                            TestAssertions.Equal("share", response.Shares[0].Name, "Unexpected first SRVSVC share name.");
+                            TestAssertions.Equal("sample share", response.Shares[0].Remark, "Unexpected first SRVSVC share remark.");
+                            TestAssertions.Equal((uint)0, response.Shares[0].Type, "Unexpected first SRVSVC share type.");
+                            TestAssertions.Equal("IPC$", response.Shares[1].Name, "Unexpected second SRVSVC share name.");
+                            TestAssertions.Equal("remote ipc", response.Shares[1].Remark, "Unexpected second SRVSVC share remark.");
+                            TestAssertions.Equal((uint)0x80000003U, response.Shares[1].Type, "Unexpected second SRVSVC share type.");
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.SrvsvcRpc",
+                        caseId: "SrvsvcShareEnumReadersRejectMalformedInputs",
+                        displayName: "SRVSVC share enumeration readers reject malformed request and response inputs",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            TestAssertions.Throws<ArgumentOutOfRangeException>(
+                                () => new SrvsvcNetrShareEnumRequest
+                                {
+                                    Level = 2
+                                }.ToByteArray(),
+                                "The bounded SRVSVC request slice should reject unsupported levels.");
+
+                            LittleEndianWriter invalidResponseWriter = new LittleEndianWriter();
+                            invalidResponseWriter.WriteUInt32(1);
+                            invalidResponseWriter.WriteUInt32(2);
+                            DceRpcEncoding.WriteUniquePointer(invalidResponseWriter, 0);
+                            invalidResponseWriter.WriteUInt32(0);
+                            DceRpcEncoding.WriteUniquePointer(invalidResponseWriter, 0);
+                            invalidResponseWriter.WriteUInt32(0);
+
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => SrvsvcNetrShareEnumResponse.ReadFrom(invalidResponseWriter.ToArray()),
+                                "The bounded SRVSVC response reader should reject mismatched union tags.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => SrvsvcNetrShareEnumResponse.ReadFrom(new byte[7]),
+                                "The bounded SRVSVC response reader should reject truncated payloads.");
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.SrvsvcRpc",
+                        caseId: "SrvsvcShareGetInfoMessagesEncodeAndParseBoundedLevel2Shapes",
+                        displayName: "SRVSVC share-info request and response encode bounded level 2 shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            SrvsvcNetrShareGetInfoRequest request = new SrvsvcNetrShareGetInfoRequest
+                            {
+                                ServerName = string.Empty,
+                                ShareName = "public",
+                                Level = 2
+                            };
+                            byte[] requestBytes = request.ToByteArray();
+                            SrvsvcNetrShareGetInfoRequest parsedRequest = SrvsvcNetrShareGetInfoRequest.ReadFrom(requestBytes);
+                            TestAssertions.Equal(string.Empty, parsedRequest.ServerName, "Unexpected SRVSVC get-info server name.");
+                            TestAssertions.Equal("public", parsedRequest.ShareName, "Unexpected SRVSVC get-info share name.");
+                            TestAssertions.Equal((uint)2, parsedRequest.Level, "Unexpected SRVSVC get-info level.");
+
+                            SrvsvcNetrShareGetInfoResponse successResponse = SrvsvcNetrShareGetInfoResponse.Create(
+                                new SrvsvcShareInfo2
+                                {
+                                    Name = "public",
+                                    Type = 0,
+                                    Remark = "sample share",
+                                    Permissions = 0,
+                                    MaximumUses = UInt32.MaxValue,
+                                    CurrentUses = 3,
+                                    Path = @"C:\shares\public",
+                                    Password = string.Empty
+                                },
+                                SrvsvcNetrShareGetInfoResponse.ErrorSuccess);
+                            SrvsvcNetrShareGetInfoResponse parsedSuccessResponse = SrvsvcNetrShareGetInfoResponse.ReadFrom(successResponse.ToByteArray());
+                            TestAssertions.Equal((uint)0, parsedSuccessResponse.ReturnCode, "Unexpected SRVSVC get-info success return code.");
+                            TestAssertions.True(parsedSuccessResponse.Share != null, "Expected SRVSVC get-info success responses to carry share details.");
+                            TestAssertions.Equal("public", parsedSuccessResponse.Share!.Name, "Unexpected SRVSVC get-info share name.");
+                            TestAssertions.Equal("sample share", parsedSuccessResponse.Share.Remark, "Unexpected SRVSVC get-info share remark.");
+                            TestAssertions.Equal((uint)3, parsedSuccessResponse.Share.CurrentUses, "Unexpected SRVSVC get-info current use count.");
+                            TestAssertions.Equal(@"C:\shares\public", parsedSuccessResponse.Share.Path, "Unexpected SRVSVC get-info share path.");
+
+                            SrvsvcNetrShareGetInfoResponse missingResponse = SrvsvcNetrShareGetInfoResponse.Create(
+                                share: null,
+                                returnCode: SrvsvcNetrShareGetInfoResponse.NerrNetNameNotFound);
+                            SrvsvcNetrShareGetInfoResponse parsedMissingResponse = SrvsvcNetrShareGetInfoResponse.ReadFrom(missingResponse.ToByteArray());
+                            TestAssertions.Equal(SrvsvcNetrShareGetInfoResponse.NerrNetNameNotFound, parsedMissingResponse.ReturnCode, "Unexpected SRVSVC get-info missing-share return code.");
+                            TestAssertions.True(parsedMissingResponse.Share == null, "Expected SRVSVC get-info missing-share responses not to carry share details.");
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.SrvsvcRpc",
+                        caseId: "SrvsvcShareGetInfoReadersRejectMalformedInputs",
+                        displayName: "SRVSVC share-info readers reject malformed request and response inputs",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            TestAssertions.Throws<ArgumentNullException>(
+                                () => new SrvsvcNetrShareGetInfoRequest
+                                {
+                                    ShareName = string.Empty
+                                }.ToByteArray(),
+                                "The bounded SRVSVC get-info request slice should reject missing share names.");
+                            TestAssertions.Throws<ArgumentOutOfRangeException>(
+                                () => new SrvsvcNetrShareGetInfoRequest
+                                {
+                                    ShareName = "public",
+                                    Level = 1
+                                }.ToByteArray(),
+                                "The bounded SRVSVC get-info request slice should reject unsupported levels.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => SrvsvcNetrShareGetInfoRequest.ReadFrom(new byte[7]),
+                                "The bounded SRVSVC get-info request reader should reject truncated payloads.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => SrvsvcNetrShareGetInfoResponse.ReadFrom(new byte[7]),
+                                "The bounded SRVSVC get-info response reader should reject truncated payloads.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => SrvsvcNetrShareGetInfoResponse.ReadFrom(new byte[]
+                                {
+                                    0x00, 0x00, 0x00, 0x00,
+                                    0x00, 0x00, 0x00, 0x00
+                                }),
+                                "The bounded SRVSVC get-info response reader should reject success without share details.");
+
+                            return Task.CompletedTask;
+                        })
+                });
+        }
+
+        /// <summary>
+        /// Build the bounded DFS referral codec suite.
+        /// </summary>
+        /// <returns>Suite descriptor.</returns>
+        public static TestSuiteDescriptor DfsReferralCodecSuite()
+        {
+            return new TestSuiteDescriptor(
+                suiteId: "Core.DfsReferral",
+                displayName: "Bounded DFS referral codecs",
+                cases: new List<TestCaseDescriptor>
+                {
+                    new TestCaseDescriptor(
+                        suiteId: "Core.DfsReferral",
+                        caseId: "DfsReferralRequestAndResponseRoundTripBoundedV2Entries",
+                        displayName: "Bounded DFS referral request and response round-trip a representative v2 entry",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            DfsReferralRequest request = new DfsReferralRequest
+                            {
+                                MaxReferralLevel = 2,
+                                RequestPath = @"\labserver\namespace\link"
+                            };
+                            byte[] requestBytes = request.ToByteArray();
+                            DfsReferralRequest parsedRequest = DfsReferralRequest.ReadFrom(requestBytes);
+                            TestAssertions.Equal((ushort)2, parsedRequest.MaxReferralLevel, "Unexpected DFS referral request maximum level.");
+                            TestAssertions.Equal(@"\labserver\namespace\link", parsedRequest.RequestPath, "Unexpected DFS referral request path.");
+
+                            DfsReferralResponse response = new DfsReferralResponse
+                            {
+                                PathConsumed = (ushort)(@"\labserver\namespace".Length * 2),
+                                HeaderFlags = DfsReferralHeaderFlags.StorageServers,
+                                Entries = new[]
+                                {
+                                    new DfsReferralEntryV2
+                                    {
+                                        IsRootTarget = false,
+                                        TimeToLive = 600,
+                                        DfsPath = @"\labserver\namespace",
+                                        NetworkAddress = @"\target\share"
+                                    }
+                                }
+                            };
+                            byte[] responseBytes = response.ToByteArray();
+                            DfsReferralResponse parsedResponse = DfsReferralResponse.ReadFrom(responseBytes);
+                            TestAssertions.Equal(response.PathConsumed, parsedResponse.PathConsumed, "Unexpected DFS referral response path-consumed value.");
+                            TestAssertions.Equal(DfsReferralHeaderFlags.StorageServers, parsedResponse.HeaderFlags, "Unexpected DFS referral response header flags.");
+                            TestAssertions.Equal(1, parsedResponse.Entries.Length, "Unexpected DFS referral entry count.");
+                            TestAssertions.Equal(@"\labserver\namespace", parsedResponse.Entries[0].DfsPath, "Unexpected DFS referral entry DFS path.");
+                            TestAssertions.Equal(@"\target\share", parsedResponse.Entries[0].NetworkAddress, "Unexpected DFS referral entry network address.");
+                            TestAssertions.Equal((uint)600, parsedResponse.Entries[0].TimeToLive, "Unexpected DFS referral entry TTL.");
+                            TestAssertions.False(parsedResponse.Entries[0].IsRootTarget, "Unexpected DFS referral root-target flag.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.DfsReferral",
+                        caseId: "DfsReferralReadersRejectMalformedInputs",
+                        displayName: "Bounded DFS referral readers reject malformed inputs",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => DfsReferralRequest.ReadFrom(new byte[] { 0x02, 0x00, 0x5C }),
+                                "The DFS referral request reader should reject odd-length buffers.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => DfsReferralRequest.ReadFrom(new byte[] { 0x02, 0x00, 0x00, 0x00 }),
+                                "The DFS referral request reader should reject empty paths.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => DfsReferralResponse.ReadFrom(new byte[] { 0x00, 0x00, 0x00 }),
+                                "The DFS referral response reader should reject truncated headers.");
+                            return Task.CompletedTask;
+                        })
+                });
+        }
+
+        /// <summary>
         /// Build the negotiate context suite.
         /// </summary>
         /// <returns>Suite descriptor.</returns>
@@ -3475,6 +3922,39 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Negotiate",
+                        caseId: "EncryptionAndNetnameNegotiateContextsRoundTripDeterministicPayloads",
+                        displayName: "Encryption and NETNAME negotiate context models round-trip deterministic payloads",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            EncryptionCapabilities encryption = new EncryptionCapabilities
+                            {
+                                Ciphers = new SmbCipherAlgorithmId[]
+                                {
+                                    SmbCipherAlgorithmId.Aes256Gcm,
+                                    SmbCipherAlgorithmId.Aes128Gcm,
+                                    SmbCipherAlgorithmId.Aes128Ccm
+                                }
+                            };
+                            byte[] encryptionBytes = encryption.ToByteArray();
+                            EncryptionCapabilities parsedEncryption = EncryptionCapabilities.ReadFrom(encryptionBytes);
+                            TestAssertions.Equal(3, parsedEncryption.Ciphers.Length, "Unexpected encryption cipher count.");
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes256Gcm, parsedEncryption.Ciphers[0], "Unexpected first cipher.");
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes128Gcm, parsedEncryption.Ciphers[1], "Unexpected second cipher.");
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes128Ccm, parsedEncryption.Ciphers[2], "Unexpected third cipher.");
+
+                            NetnameNegotiateContext netname = new NetnameNegotiateContext
+                            {
+                                ServerName = "files.example.test"
+                            };
+                            byte[] netnameBytes = netname.ToByteArray();
+                            NetnameNegotiateContext parsedNetname = NetnameNegotiateContext.ReadFrom(netnameBytes);
+                            TestAssertions.Equal("files.example.test", parsedNetname.ServerName, "Unexpected NETNAME server name.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Negotiate",
                         caseId: "NegotiateContextReadersRejectMalformedInputs",
                         displayName: "Negotiate context readers reject malformed inputs",
                         executeAsync: token =>
@@ -3490,6 +3970,335 @@ namespace OpenCIFS.Core.Tests.Shared
                             TestAssertions.Throws<ProtocolEncodingException>(
                                 () => SigningCapabilities.ReadFrom(new byte[] { 0x00, 0x00, 0x00, 0x00 }),
                                 "Signing capabilities without algorithms should fail to parse.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => EncryptionCapabilities.ReadFrom(new byte[] { 0x00, 0x00 }),
+                                "Encryption capabilities without ciphers should fail to parse.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => EncryptionCapabilities.ReadFrom(new byte[] { 0x02, 0x00, 0x01, 0x00 }),
+                                "Encryption capabilities truncated for the declared cipher count should fail to parse.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => NetnameNegotiateContext.ReadFrom(new byte[] { 0x00, 0x00, 0x00 }),
+                                "NETNAME negotiate context with an odd-length payload should fail to parse.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Negotiate",
+                        caseId: "Smb311NegotiateContextListEncodesAndDecodesAlignedTypedEntries",
+                        displayName: "SMB 3.1.1 negotiate context list encodes and decodes 8-byte aligned typed entries",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] preauthPayload = new PreauthIntegrityCapabilities
+                            {
+                                HashAlgorithms = new HashAlgorithmId[] { HashAlgorithmId.Sha512 },
+                                Salt = new byte[] { 0x11, 0x22, 0x33 }
+                            }.ToByteArray();
+                            byte[] encryptionPayload = new EncryptionCapabilities
+                            {
+                                Ciphers = new SmbCipherAlgorithmId[]
+                                {
+                                    SmbCipherAlgorithmId.Aes256Gcm,
+                                    SmbCipherAlgorithmId.Aes128Gcm,
+                                    SmbCipherAlgorithmId.Aes128Ccm
+                                }
+                            }.ToByteArray();
+                            byte[] signingPayload = new SigningCapabilities
+                            {
+                                SigningAlgorithms = new SigningAlgorithmId[] { SigningAlgorithmId.AesGmac, SigningAlgorithmId.AesCmac, SigningAlgorithmId.HmacSha256 }
+                            }.ToByteArray();
+
+                            Smb2NegotiateContextEntry[] entries = new[]
+                            {
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.PreauthIntegrityCapabilities, Payload = preauthPayload },
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.EncryptionCapabilities, Payload = encryptionPayload },
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.SigningCapabilities, Payload = signingPayload }
+                            };
+
+                            byte[] encoded = Smb2NegotiateContextList.Encode(entries);
+
+                            int firstEntrySize = ((8 + preauthPayload.Length + 7) / 8) * 8;
+                            int secondEntrySize = ((8 + encryptionPayload.Length + 7) / 8) * 8;
+                            int thirdEntrySize = 8 + signingPayload.Length;
+                            int expectedLength = firstEntrySize + secondEntrySize + thirdEntrySize;
+                            TestAssertions.Equal(expectedLength, encoded.Length, "Encoded SMB 3.1.1 negotiate context list length should reflect 8-byte padding between entries and no required padding after the final entry.");
+
+                            Smb2NegotiateContextEntry[] decoded = Smb2NegotiateContextList.Decode(encoded, entries.Length);
+                            TestAssertions.Equal(3, decoded.Length, "Unexpected decoded negotiate context count.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.PreauthIntegrityCapabilities, decoded[0].ContextType, "Unexpected first decoded context type.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.EncryptionCapabilities, decoded[1].ContextType, "Unexpected second decoded context type.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.SigningCapabilities, decoded[2].ContextType, "Unexpected third decoded context type.");
+                            TestAssertions.SequenceEqual(preauthPayload, decoded[0].Payload, "Unexpected preauth payload bytes.");
+                            TestAssertions.SequenceEqual(encryptionPayload, decoded[1].Payload, "Unexpected encryption payload bytes.");
+                            TestAssertions.SequenceEqual(signingPayload, decoded[2].Payload, "Unexpected signing payload bytes.");
+
+                            PreauthIntegrityCapabilities parsedPreauth = PreauthIntegrityCapabilities.ReadFrom(decoded[0].Payload);
+                            TestAssertions.Equal(HashAlgorithmId.Sha512, parsedPreauth.HashAlgorithms[0], "Decoded preauth payload should round-trip through PreauthIntegrityCapabilities.ReadFrom.");
+                            EncryptionCapabilities parsedEncryption = EncryptionCapabilities.ReadFrom(decoded[1].Payload);
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes256Gcm, parsedEncryption.Ciphers[0], "Decoded encryption payload should round-trip through EncryptionCapabilities.ReadFrom.");
+                            SigningCapabilities parsedSigning = SigningCapabilities.ReadFrom(decoded[2].Payload);
+                            TestAssertions.Equal(SigningAlgorithmId.AesGmac, parsedSigning.SigningAlgorithms[0], "Decoded signing payload should round-trip through SigningCapabilities.ReadFrom.");
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Negotiate",
+                        caseId: "Smb311NegotiateRequestRoundTripsTypedNegotiateContextEntries",
+                        displayName: "SMB 3.1.1 negotiate request round-trips typed negotiate-context entries",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] preauthPayload = new PreauthIntegrityCapabilities
+                            {
+                                HashAlgorithms = new HashAlgorithmId[] { HashAlgorithmId.Sha512 },
+                                Salt = new byte[] { 0x42 }
+                            }.ToByteArray();
+                            byte[] encryptionPayload = new EncryptionCapabilities
+                            {
+                                Ciphers = new SmbCipherAlgorithmId[] { SmbCipherAlgorithmId.Aes128Gcm }
+                            }.ToByteArray();
+
+                            Smb2NegotiateRequest request = new Smb2NegotiateRequest
+                            {
+                                ClientGuid = Guid.Parse("9F2A4D58-1F00-4D44-8E76-7F7B5F4F8B72"),
+                                Dialects = new SmbDialect[] { SmbDialect.Smb2002, SmbDialect.Smb21, SmbDialect.Smb30, SmbDialect.Smb302, SmbDialect.Smb311 }
+                            };
+                            request.SetNegotiateContextEntries(new[]
+                            {
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.PreauthIntegrityCapabilities, Payload = preauthPayload },
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.EncryptionCapabilities, Payload = encryptionPayload }
+                            });
+
+                            byte[] requestBytes = request.ToByteArray();
+                            Smb2NegotiateRequest parsedRequest = Smb2NegotiateRequest.ReadFrom(requestBytes);
+                            TestAssertions.Equal((ushort)2, parsedRequest.NegotiateContextCount, "Unexpected SMB 3.1.1 negotiate context count after round-trip.");
+                            Smb2NegotiateContextEntry[] decodedEntries = parsedRequest.DecodeNegotiateContextEntries();
+                            TestAssertions.Equal(2, decodedEntries.Length, "Unexpected decoded negotiate-context entry count.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.PreauthIntegrityCapabilities, decodedEntries[0].ContextType, "Unexpected first decoded context type.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.EncryptionCapabilities, decodedEntries[1].ContextType, "Unexpected second decoded context type.");
+                            PreauthIntegrityCapabilities decodedPreauth = PreauthIntegrityCapabilities.ReadFrom(decodedEntries[0].Payload);
+                            TestAssertions.Equal(HashAlgorithmId.Sha512, decodedPreauth.HashAlgorithms[0], "Decoded preauth hash algorithm should round-trip.");
+                            EncryptionCapabilities decodedEncryption = EncryptionCapabilities.ReadFrom(decodedEntries[1].Payload);
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes128Gcm, decodedEncryption.Ciphers[0], "Decoded encryption cipher should round-trip.");
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Negotiate",
+                        caseId: "Smb311NegotiateResponseRoundTripsTypedNegotiateContextEntries",
+                        displayName: "SMB 3.1.1 negotiate response round-trips typed negotiate-context entries",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] preauthPayload = new PreauthIntegrityCapabilities
+                            {
+                                HashAlgorithms = new HashAlgorithmId[] { HashAlgorithmId.Sha512 },
+                                Salt = new byte[] { 0x55, 0x66, 0x77, 0x88 }
+                            }.ToByteArray();
+                            byte[] encryptionPayload = new EncryptionCapabilities
+                            {
+                                Ciphers = new SmbCipherAlgorithmId[] { SmbCipherAlgorithmId.Aes256Gcm }
+                            }.ToByteArray();
+
+                            Smb2NegotiateResponse response = new Smb2NegotiateResponse
+                            {
+                                Dialect = SmbDialect.Smb311,
+                                ServerGuid = Guid.Parse("0F11D8A6-3344-4F2C-8FB0-1A6E6F7B9C50"),
+                                Capabilities = Smb2GlobalCapabilities.Encryption,
+                                MaxTransactSize = 1048576,
+                                MaxReadSize = 1048576,
+                                MaxWriteSize = 1048576,
+                                SystemTime = 0x01D8112233445566UL,
+                                ServerStartTime = 0x01D811223344AABBUL,
+                                SecurityBuffer = new byte[] { 0xA0, 0x60, 0x82, 0x01, 0x00, 0x06, 0x06, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x02 }
+                            };
+                            response.SetNegotiateContextEntries(new[]
+                            {
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.PreauthIntegrityCapabilities, Payload = preauthPayload },
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.EncryptionCapabilities, Payload = encryptionPayload }
+                            });
+
+                            byte[] responseBytes = response.ToByteArray();
+                            Smb2NegotiateResponse parsedResponse = Smb2NegotiateResponse.ReadFrom(responseBytes);
+                            TestAssertions.Equal(SmbDialect.Smb311, parsedResponse.Dialect, "Unexpected SMB 3.1.1 negotiate response dialect after round-trip.");
+                            TestAssertions.Equal((ushort)2, parsedResponse.NegotiateContextCount, "Unexpected SMB 3.1.1 negotiate context count after round-trip.");
+                            TestAssertions.SequenceEqual(response.SecurityBuffer, parsedResponse.SecurityBuffer, "SecurityBuffer should round-trip on the SMB 3.1.1 negotiate response.");
+
+                            Smb2NegotiateContextEntry[] decodedEntries = parsedResponse.DecodeNegotiateContextEntries();
+                            TestAssertions.Equal(2, decodedEntries.Length, "Unexpected decoded negotiate-context entry count.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.PreauthIntegrityCapabilities, decodedEntries[0].ContextType, "Unexpected first decoded context type.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.EncryptionCapabilities, decodedEntries[1].ContextType, "Unexpected second decoded context type.");
+                            PreauthIntegrityCapabilities decodedPreauth = PreauthIntegrityCapabilities.ReadFrom(decodedEntries[0].Payload);
+                            TestAssertions.Equal(HashAlgorithmId.Sha512, decodedPreauth.HashAlgorithms[0], "Decoded preauth hash algorithm should round-trip on the response.");
+                            EncryptionCapabilities decodedEncryption = EncryptionCapabilities.ReadFrom(decodedEntries[1].Payload);
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes256Gcm, decodedEncryption.Ciphers[0], "Decoded encryption cipher should round-trip on the response.");
+
+                            Smb2NegotiateResponse smb302Response = new Smb2NegotiateResponse
+                            {
+                                Dialect = SmbDialect.Smb302,
+                                SecurityBuffer = new byte[] { 0x01, 0x02, 0x03 }
+                            };
+                            byte[] smb302ResponseBytes = smb302Response.ToByteArray();
+                            Smb2NegotiateResponse parsedSmb302Response = Smb2NegotiateResponse.ReadFrom(smb302ResponseBytes);
+                            TestAssertions.Equal((ushort)0, parsedSmb302Response.NegotiateContextCount, "SMB 3.0.2 negotiate responses should not carry SMB 3.1.1 negotiate-context counts.");
+                            TestAssertions.Equal(0, parsedSmb302Response.NegotiateContextData.Length, "SMB 3.0.2 negotiate responses should not carry SMB 3.1.1 negotiate-context bytes.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Negotiate",
+                        caseId: "Smb311NegotiateContextListRejectsTruncatedAndOversizedInputs",
+                        displayName: "SMB 3.1.1 negotiate context list rejects truncated headers and payloads",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb2NegotiateContextList.Decode(new byte[] { 0x01, 0x00, 0x04, 0x00, 0x00, 0x00 }, 1),
+                                "Truncated context-header buffers should fail to decode.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb2NegotiateContextList.Decode(new byte[] { 0x01, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAA }, 1),
+                                "Context payloads truncated below the declared length should fail to decode.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Negotiate",
+                        caseId: "Smb311NegotiateContextSelectorPicksSupportedAlgorithmsAndRejectsUnsupportedClientOffers",
+                        displayName: "SMB 3.1.1 negotiate-context selector picks supported algorithms and rejects unsupported client offers",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            HashAlgorithmId selectedHash = Smb311NegotiateContextSelector.SelectPreauthHashAlgorithm(
+                                new PreauthIntegrityCapabilities
+                                {
+                                    HashAlgorithms = new HashAlgorithmId[] { HashAlgorithmId.Sha512 },
+                                    Salt = new byte[] { 0xAA }
+                                });
+                            TestAssertions.Equal(HashAlgorithmId.Sha512, selectedHash, "Selector should pick SHA-512 when offered.");
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb311NegotiateContextSelector.SelectPreauthHashAlgorithm(new PreauthIntegrityCapabilities
+                                {
+                                    HashAlgorithms = new HashAlgorithmId[] { (HashAlgorithmId)0x9999 },
+                                    Salt = Array.Empty<byte>()
+                                }),
+                                "Selector should reject SMB 3.1.1 client preauth offers without a supported hash algorithm.");
+                            TestAssertions.Throws<ArgumentNullException>(
+                                () => Smb311NegotiateContextSelector.SelectPreauthHashAlgorithm(null!),
+                                "Selector should reject null preauth-capability inputs.");
+
+                            SigningAlgorithmId defaultSigning = Smb311NegotiateContextSelector.SelectSigningAlgorithm(null);
+                            TestAssertions.Equal(SigningAlgorithmId.HmacSha256, defaultSigning, "Selector should default to HMAC-SHA256 when no signing context is present.");
+
+                            SigningAlgorithmId gmacFromMixed = Smb311NegotiateContextSelector.SelectSigningAlgorithm(new SigningCapabilities
+                            {
+                                SigningAlgorithms = new SigningAlgorithmId[] { SigningAlgorithmId.AesGmac, SigningAlgorithmId.AesCmac, SigningAlgorithmId.HmacSha256 }
+                            });
+                            TestAssertions.Equal(SigningAlgorithmId.AesGmac, gmacFromMixed, "Selector should prefer AES-GMAC over AES-CMAC and HMAC-SHA256 when offered.");
+
+                            SigningAlgorithmId aesCmacFromCmacAndHmac = Smb311NegotiateContextSelector.SelectSigningAlgorithm(new SigningCapabilities
+                            {
+                                SigningAlgorithms = new SigningAlgorithmId[] { SigningAlgorithmId.AesCmac, SigningAlgorithmId.HmacSha256 }
+                            });
+                            TestAssertions.Equal(SigningAlgorithmId.AesCmac, aesCmacFromCmacAndHmac, "Selector should fall back to AES-CMAC when AES-GMAC is not offered.");
+
+                            SigningAlgorithmId gmacOnlyAccepted = Smb311NegotiateContextSelector.SelectSigningAlgorithm(new SigningCapabilities
+                            {
+                                SigningAlgorithms = new SigningAlgorithmId[] { SigningAlgorithmId.AesGmac }
+                            });
+                            TestAssertions.Equal(SigningAlgorithmId.AesGmac, gmacOnlyAccepted, "Selector should accept SMB 3.1.1 signing offers that contain only AES-GMAC now that per-message GMAC signing is wired.");
+
+                            SigningAlgorithmId hmacFromHmacOnly = Smb311NegotiateContextSelector.SelectSigningAlgorithm(new SigningCapabilities
+                            {
+                                SigningAlgorithms = new SigningAlgorithmId[] { SigningAlgorithmId.HmacSha256 }
+                            });
+                            TestAssertions.Equal(SigningAlgorithmId.HmacSha256, hmacFromHmacOnly, "Selector should fall back to HMAC-SHA256 when neither AES-GMAC nor AES-CMAC is offered.");
+
+                            SmbCipherAlgorithmId? noCipherSelected = Smb311NegotiateContextSelector.SelectCipher(null);
+                            TestAssertions.True(noCipherSelected == null, "Selector should return null when no encryption context is offered.");
+
+                            SmbCipherAlgorithmId? gcmPreferredSelected = Smb311NegotiateContextSelector.SelectCipher(new EncryptionCapabilities
+                            {
+                                Ciphers = new SmbCipherAlgorithmId[] { SmbCipherAlgorithmId.Aes256Gcm, SmbCipherAlgorithmId.Aes128Gcm, SmbCipherAlgorithmId.Aes128Ccm }
+                            });
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes128Gcm, gcmPreferredSelected!.Value, "Selector should prefer AES-128-GCM over AES-128-CCM when both are offered.");
+
+                            SmbCipherAlgorithmId? aes128CcmFallback = Smb311NegotiateContextSelector.SelectCipher(new EncryptionCapabilities
+                            {
+                                Ciphers = new SmbCipherAlgorithmId[] { SmbCipherAlgorithmId.Aes256Gcm, SmbCipherAlgorithmId.Aes128Ccm }
+                            });
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes128Ccm, aes128CcmFallback!.Value, "Selector should fall back to AES-128-CCM when AES-128-GCM is not offered.");
+
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb311NegotiateContextSelector.SelectCipher(new EncryptionCapabilities
+                                {
+                                    Ciphers = new SmbCipherAlgorithmId[] { SmbCipherAlgorithmId.Aes256Gcm }
+                                }),
+                                "Selector should reject encryption offers without AES-128-GCM or AES-128-CCM until AES-256 ciphers are wired.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Negotiate",
+                        caseId: "Smb311NegotiateContextListRejectsTamperedCountAndPayloads",
+                        displayName: "SMB 3.1.1 negotiate context list rejects tampered context counts and tampered payloads",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] preauthPayload = new PreauthIntegrityCapabilities
+                            {
+                                HashAlgorithms = new HashAlgorithmId[] { HashAlgorithmId.Sha512 },
+                                Salt = new byte[] { 0xAA, 0xBB }
+                            }.ToByteArray();
+                            byte[] signingPayload = new SigningCapabilities
+                            {
+                                SigningAlgorithms = new SigningAlgorithmId[] { SigningAlgorithmId.AesGmac }
+                            }.ToByteArray();
+
+                            Smb2NegotiateContextEntry[] entries = new[]
+                            {
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.PreauthIntegrityCapabilities, Payload = preauthPayload },
+                                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.SigningCapabilities, Payload = signingPayload }
+                            };
+
+                            byte[] encoded = Smb2NegotiateContextList.Encode(entries);
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb2NegotiateContextList.Decode(encoded, entries.Length + 1),
+                                "Decoding with an inflated entry count beyond the carried payload should be rejected.");
+
+                            byte[] tamperedHashCount = (byte[])encoded.Clone();
+                            tamperedHashCount[8] = 0x00;
+                            tamperedHashCount[9] = 0x00;
+                            Smb2NegotiateContextEntry[] decodedAfterTamper = Smb2NegotiateContextList.Decode(tamperedHashCount, entries.Length);
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => PreauthIntegrityCapabilities.ReadFrom(decodedAfterTamper[0].Payload),
+                                "A preauth context with a zeroed hash-algorithm count should be rejected by the typed reader after decode.");
+
+                            byte[] tamperedHashAlgorithm = (byte[])encoded.Clone();
+                            tamperedHashAlgorithm[12] = 0xFF;
+                            tamperedHashAlgorithm[13] = 0xFF;
+                            Smb2NegotiateContextEntry[] decodedTamperedAlgorithm = Smb2NegotiateContextList.Decode(tamperedHashAlgorithm, entries.Length);
+                            PreauthIntegrityCapabilities tamperedPreauth = PreauthIntegrityCapabilities.ReadFrom(decodedTamperedAlgorithm[0].Payload);
+                            TestAssertions.True(
+                                tamperedPreauth.HashAlgorithms[0] != HashAlgorithmId.Sha512,
+                                "A bytewise-tampered preauth payload should not match the original hash-algorithm identifier.");
+
+                            Smb2NegotiateRequest request = new Smb2NegotiateRequest
+                            {
+                                Dialects = new SmbDialect[] { SmbDialect.Smb311 }
+                            };
+                            request.SetNegotiateContextEntries(entries);
+                            byte[] requestBytes = request.ToByteArray();
+                            byte[] tamperedRequestBytes = (byte[])requestBytes.Clone();
+                            int contextOffsetField = 28;
+                            tamperedRequestBytes[contextOffsetField] = 0x00;
+                            tamperedRequestBytes[contextOffsetField + 1] = 0x00;
+                            tamperedRequestBytes[contextOffsetField + 2] = 0x00;
+                            tamperedRequestBytes[contextOffsetField + 3] = 0x00;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb2NegotiateRequest.ReadFrom(tamperedRequestBytes),
+                                "Tampering an SMB 3.1.1 negotiate request to point its negotiate-context offset below the fixed header should be rejected.");
                             return Task.CompletedTask;
                         })
                 });
@@ -3712,6 +4521,114 @@ namespace OpenCIFS.Core.Tests.Shared
         }
 
         /// <summary>
+        /// Build the bounded deterministic parser-mutation suite.
+        /// </summary>
+        /// <returns>Suite descriptor.</returns>
+        public static TestSuiteDescriptor ParserMutationSuite()
+        {
+            return new TestSuiteDescriptor(
+                suiteId: "Core.Mutation",
+                displayName: "Deterministic parser mutation smoke",
+                cases: new List<TestCaseDescriptor>
+                {
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Mutation",
+                        caseId: "BaselineProtocolCorpusParsesBeforeMutation",
+                        displayName: "Baseline protocol corpus parses before mutation",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            foreach ((string _, byte[] baseline, Action<byte[]> parser) in BuildProtocolMutationCorpus())
+                            {
+                                parser(baseline);
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Mutation",
+                        caseId: "DeterministicProtocolMutationsRejectOrContainMalformedInputs",
+                        displayName: "Deterministic protocol mutations reject or contain malformed inputs without unexpected parser failures",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            int totalMutations = 0;
+                            int totalAccepted = 0;
+                            int totalRejected = 0;
+
+                            foreach ((string name, byte[] baseline, Action<byte[]> parser) in BuildProtocolMutationCorpus())
+                            {
+                                IReadOnlyList<byte[]> mutations = MutationTestUtilities.CreateDeterministicMutationCorpus(
+                                    baseline,
+                                    randomSeed: 0x43494653 ^ DeterministicTestHash.ComputeInt32(name),
+                                    randomCount: 48);
+                                MutationOutcomeSummary summary = MutationTestUtilities.ExecuteMutationCorpus(
+                                    name,
+                                    mutations,
+                                    parser,
+                                    MutationTestUtilities.IsExpectedMalformedInputException);
+
+                                TestAssertions.True(summary.RejectedCount > 0, "Expected mutation corpus '" + name + "' to reject at least one malformed payload.");
+                                totalMutations += summary.TotalCount;
+                                totalAccepted += summary.AcceptedCount;
+                                totalRejected += summary.RejectedCount;
+                            }
+
+                            TestAssertions.True(totalMutations >= 300, "Expected the deterministic parser-mutation corpus to execute at least 300 mutated payloads.");
+                            TestAssertions.True(totalRejected >= 100, "Expected the deterministic parser-mutation corpus to reject a meaningful number of malformed payloads.");
+                            TestAssertions.True(totalAccepted > 0, "Expected at least one deterministic mutation to remain structurally parseable.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Mutation",
+                        caseId: "ReplayAttemptHelpersBuildAndPreserveSignedRequestBytesAndRejectInvalidInputs",
+                        displayName: "Replay-attempt helpers build and preserve signed-request bytes and reject invalid inputs",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] capturedSignedRequest = new byte[]
+                            {
+                                0xFE, 0x53, 0x4D, 0x42, 0x40, 0x00, 0x01, 0x00,
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+                                0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+                                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                                0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00,
+                                0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80
+                            };
+
+                            byte[] firstReplay = ReplayAttemptUtilities.CreateReplayCopy(capturedSignedRequest);
+                            byte[] secondReplay = ReplayAttemptUtilities.CreateReplayCopy(capturedSignedRequest);
+                            TestAssertions.SequenceEqual(capturedSignedRequest, firstReplay, "Replay copies should preserve the captured signed-request bytes.");
+                            TestAssertions.SequenceEqual(firstReplay, secondReplay, "Repeated replay copies should be deterministic.");
+
+                            firstReplay[0] = 0x00;
+                            TestAssertions.True(capturedSignedRequest[0] == 0xFE, "Mutating a replay copy should not affect the captured signed-request bytes.");
+
+                            IReadOnlyList<byte[]> replayBurst = ReplayAttemptUtilities.CreateReplayBurst(capturedSignedRequest, replayCount: 4);
+                            TestAssertions.Equal(4, replayBurst.Count, "Unexpected replay-burst count.");
+
+                            for (int index = 0; index < replayBurst.Count; index++)
+                            {
+                                TestAssertions.SequenceEqual(capturedSignedRequest, replayBurst[index], "Each replay-burst entry should match the captured signed request.");
+                            }
+
+                            TestAssertions.Throws<ArgumentNullException>(
+                                () => ReplayAttemptUtilities.CreateReplayCopy(null!),
+                                "Replay-copy helpers should reject null input.");
+                            TestAssertions.Throws<ArgumentOutOfRangeException>(
+                                () => ReplayAttemptUtilities.CreateReplayBurst(capturedSignedRequest, replayCount: 0),
+                                "Replay-burst helpers should reject non-positive counts.");
+                            return Task.CompletedTask;
+                        })
+                });
+        }
+
+        /// <summary>
         /// Build the security foundation suite.
         /// </summary>
         /// <returns>Suite descriptor.</returns>
@@ -3783,6 +4700,57 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Security",
+                        caseId: "Smb3TransformPacketsRoundTripWithAes128Ccm",
+                        displayName: "SMB3 transform packets round-trip with AES-128-CCM and preserve the declared session identifier",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] key = Hex("00112233445566778899AABBCCDDEEFF");
+                            byte[] plaintextPacket = Hex("FE534D424000000000000000030000000100000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000400000000000000");
+                            byte[] encryptedPacket = Smb3MessageTransform.EncryptPacket(plaintextPacket, 0x0102030405060708UL, key);
+                            Smb2TransformHeader header = Smb2TransformHeader.ReadFrom(encryptedPacket);
+
+                            TestAssertions.True(Smb2TransformHeader.LooksLikeTransformHeader(encryptedPacket), "Expected the encrypted SMB3 packet to begin with a transform header.");
+                            TestAssertions.Equal(0x0102030405060708UL, header.SessionId, "Expected the SMB3 transform header to preserve the supplied session identifier.");
+                            TestAssertions.Equal((uint)plaintextPacket.Length, header.OriginalMessageSize, "Expected the SMB3 transform header to preserve the plaintext packet length.");
+                            TestAssertions.Equal((ushort)0x0001, header.Flags, "Expected the bounded SMB3 transform header to preserve the fixed transform-flag value.");
+                            TestAssertions.SequenceEqual(
+                                plaintextPacket,
+                                Smb3MessageTransform.DecryptPacket(encryptedPacket, key, expectedSessionId: 0x0102030405060708UL),
+                                "Expected the SMB3 transform packet to decrypt back to the original plaintext bytes.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Security",
+                        caseId: "Smb3TransformPacketsRejectTamperingAndMalformedLengths",
+                        displayName: "SMB3 transform packets reject tampering and malformed declared lengths",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] key = Hex("00112233445566778899AABBCCDDEEFF");
+                            byte[] plaintextPacket = Hex("FE534D424000000000000000030000000100000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000400000000000000");
+                            byte[] encryptedPacket = Smb3MessageTransform.EncryptPacket(plaintextPacket, 0x0102030405060708UL, key);
+
+                            byte[] tamperedPacket = (byte[])encryptedPacket.Clone();
+                            tamperedPacket[tamperedPacket.Length - 1] ^= 0x01;
+                            TestAssertions.Throws<ProtocolValidationException>(
+                                () => Smb3MessageTransform.DecryptPacket(tamperedPacket, key, expectedSessionId: 0x0102030405060708UL),
+                                "Expected SMB3 transform packet tampering to fail authentication-tag validation.");
+
+                            byte[] malformedLengthPacket = (byte[])encryptedPacket.Clone();
+                            LittleEndianWriter writer = new LittleEndianWriter();
+                            writer.WriteUInt32(checked((uint)plaintextPacket.Length + 1));
+                            byte[] invalidLengthBytes = writer.ToArray();
+                            Buffer.BlockCopy(invalidLengthBytes, 0, malformedLengthPacket, 36, 4);
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb3MessageTransform.DecryptPacket(malformedLengthPacket, key, expectedSessionId: 0x0102030405060708UL),
+                                "Expected malformed SMB3 transform packet lengths to be rejected before decryption.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Security",
                         caseId: "Md4AndHmacMd5MatchKnownVectors",
                         displayName: "MD4 and HMAC-MD5 match known-answer vectors",
                         executeAsync: token =>
@@ -3790,15 +4758,15 @@ namespace OpenCIFS.Core.Tests.Shared
                             token.ThrowIfCancellationRequested();
 
                             TestAssertions.SequenceEqual(
-                                Hex("31D6CFE0D16AE931B73C59D7E0C089C0"),
+                                GoldenVectorStore.GetBytes("core.security.md4.empty"),
                                 Md4.HashData(Array.Empty<byte>()),
                                 "The MD4 digest for the empty string changed.");
                             TestAssertions.SequenceEqual(
-                                Hex("A448017AAF21D8525FC10AE87AA6729D"),
+                                GoldenVectorStore.GetBytes("core.security.md4.abc"),
                                 Md4.HashData(Encoding.ASCII.GetBytes("abc")),
                                 "The MD4 digest for 'abc' changed.");
                             TestAssertions.SequenceEqual(
-                                Hex("9294727A3638BB1C13F48EF8158BFC9D"),
+                                GoldenVectorStore.GetBytes("core.security.hmac-md5.hi-there"),
                                 HmacMd5.HashData(CreateRepeatedByteArray(0x0B, 16), Encoding.ASCII.GetBytes("Hi There")),
                                 "The HMAC-MD5 known-answer vector changed.");
                             return Task.CompletedTask;
@@ -3811,7 +4779,7 @@ namespace OpenCIFS.Core.Tests.Shared
                         {
                             token.ThrowIfCancellationRequested();
 
-                            byte[] expectedResponseKey = Hex("0C868A403BFD7A93A3001EF22EF02E3F");
+                            byte[] expectedResponseKey = GoldenVectorStore.GetBytes("core.security.ntlm.response-key");
                             NtlmV2ClientChallenge clientChallenge = CreateMicrosoftNtlmV2ClientChallenge();
                             NtlmV2ChallengeResponseSet responseSet = NtlmV2Authentication.CreateChallengeResponseSet(
                                 password: "Password",
@@ -3823,15 +4791,15 @@ namespace OpenCIFS.Core.Tests.Shared
                             TestAssertions.SequenceEqual(expectedResponseKey, responseSet.ResponseKeyNt, "The NTLMv2 response key changed.");
                             TestAssertions.SequenceEqual(expectedResponseKey, responseSet.ResponseKeyLm, "The LMv2 response key changed.");
                             TestAssertions.SequenceEqual(
-                                Hex("68CD0AB851E51C96AABC927BEBEF6A1C01010000000000000000000000000000AAAAAAAAAAAAAAAA0000000002000C0044006F006D00610069006E0001000C005300650072007600650072000000000000000000"),
+                                GoldenVectorStore.GetBytes("core.security.ntlm.nt-challenge-response"),
                                 responseSet.NtChallengeResponse.ToByteArray(),
                                 "The NTLMv2 NT challenge response changed.");
                             TestAssertions.SequenceEqual(
-                                Hex("86C35097AC9CEC102554764A57CCCC19AAAAAAAAAAAAAAAA"),
+                                GoldenVectorStore.GetBytes("core.security.ntlm.lm-challenge-response"),
                                 responseSet.LmChallengeResponse,
                                 "The LMv2 challenge response changed.");
                             TestAssertions.SequenceEqual(
-                                Hex("8DE40CCADBC14A82F15CB0AD0DE95CA3"),
+                                GoldenVectorStore.GetBytes("core.security.ntlm.session-base-key"),
                                 responseSet.SessionBaseKey,
                                 "The NTLMv2 session-base key changed.");
 
@@ -3867,7 +4835,7 @@ namespace OpenCIFS.Core.Tests.Shared
                                 verifiedResponseSet: out _);
                             TestAssertions.True(verifiedWithZeroLm, "NTLMv2 verification should accept a zeroed LM response when the NT response is valid.");
 
-                            byte[] expectedMic = Hex("F2CCE61ACADE63AEBD48D882669DD141");
+                            byte[] expectedMic = GoldenVectorStore.GetBytes("core.security.ntlm.mic");
                             byte[] mic = NtlmMessageIntegrityCode.Compute(
                                 exportedSessionKey: CreateRepeatedByteArray(0x55, 16),
                                 negotiateMessage: new byte[] { 0x01, 0x02, 0x03 },
@@ -3949,7 +4917,7 @@ namespace OpenCIFS.Core.Tests.Shared
                             TestAssertions.Equal(SigningAlgorithmId.HmacSha256, hmacSigner.AlgorithmId, "Unexpected HMAC-SHA256 signer algorithm identifier.");
                             TestAssertions.False(hmacSigner.RequiresNonce, "The HMAC-SHA256 signer should not require a nonce.");
                             TestAssertions.SequenceEqual(
-                                Hex("B0344C61D8DB38535CA8AFCEAF0BF12B"),
+                                GoldenVectorStore.GetBytes("core.security.signing.hmac-sha256"),
                                 hmacSignature,
                                 "The SMB HMAC-SHA256 signature vector changed.");
                             TestAssertions.True(
@@ -3960,7 +4928,7 @@ namespace OpenCIFS.Core.Tests.Shared
                             byte[] aesCmacMessage = Hex("6BC1BEE22E409F96E93D7E117393172AAE2D8A571E03AC9C9EB76FAC45AF8E5130C81C46A35CE411E5FBC1191A0A52EFF69F2445DF4F9B17AD2B417BE66C3710");
                             byte[] aesCmacSignature = AesCmac.ComputeMac(aesCmacKey, aesCmacMessage);
                             TestAssertions.SequenceEqual(
-                                Hex("51F0BEBF7E3B9D92FC49741779363CFE"),
+                                GoldenVectorStore.GetBytes("core.security.signing.aes-cmac"),
                                 aesCmacSignature,
                                 "The AES-CMAC known-answer vector changed.");
 
@@ -3986,8 +4954,8 @@ namespace OpenCIFS.Core.Tests.Shared
                             byte[] hkdfInputKeyMaterial = Hex("0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B");
                             byte[] hkdfSalt = Hex("000102030405060708090A0B0C");
                             byte[] hkdfInfo = Hex("F0F1F2F3F4F5F6F7F8F9");
-                            byte[] expectedPrk = Hex("077709362C2E32DF0DDC3F0DC47BBA6390B6C73BB50F9C3122EC844AD7C2B3E5");
-                            byte[] expectedOkm = Hex("3CB25F25FAACD57A90434F64D0362F2A2D2D0A90CF1A5A4C5DB02D56ECC4C5BF34007208D5B887185865");
+                            byte[] expectedPrk = GoldenVectorStore.GetBytes("core.security.hkdf.prk");
+                            byte[] expectedOkm = GoldenVectorStore.GetBytes("core.security.hkdf.okm");
 
                             byte[] actualPrk = HkdfSha256.Extract(hkdfInputKeyMaterial, hkdfSalt);
                             byte[] actualOkmFromExpand = HkdfSha256.Expand(expectedPrk, hkdfInfo, 42);
@@ -4000,11 +4968,11 @@ namespace OpenCIFS.Core.Tests.Shared
                             CounterModeKeyDerivationProvider provider = new CounterModeKeyDerivationProvider();
                             byte[] smb30SigningKey = provider.DeriveKey(
                                 sessionSecret: CreateRepeatedByteArray(0x55, 16),
-                                label: Encoding.ASCII.GetBytes("SMB2AESCMAC"),
+                                label: Encoding.ASCII.GetBytes("SMB2AESCMAC\0"),
                                 context: Encoding.ASCII.GetBytes("SmbSign\0"),
                                 outputLength: 16);
                             TestAssertions.SequenceEqual(
-                                Hex("CC5882948C01CF4113FE6B23F837E5C6"),
+                                GoldenVectorStore.GetBytes("core.security.hkdf.smb30-signing-key"),
                                 smb30SigningKey,
                                 "The SMB counter-mode signing-key vector changed.");
                             return Task.CompletedTask;
@@ -4024,10 +4992,10 @@ namespace OpenCIFS.Core.Tests.Shared
                                     Dialect = SmbDialect.Smb30,
                                     CipherAlgorithmId = SmbCipherAlgorithmId.Aes128Ccm
                                 });
-                            TestAssertions.SequenceEqual(Hex("CC5882948C01CF4113FE6B23F837E5C6"), smb30KeySet.SigningKey, "The SMB 3.0 signing key changed.");
-                            TestAssertions.SequenceEqual(Hex("8BDE26964343909C5BEEDEF44616B439"), smb30KeySet.ApplicationKey, "The SMB 3.0 application key changed.");
-                            TestAssertions.SequenceEqual(Hex("4097A41BD554D09508A24593861C5201"), smb30KeySet.EncryptionKey, "The SMB 3.0 encryption key changed.");
-                            TestAssertions.SequenceEqual(Hex("BC3F97DFEA81ACFCA1642AD0A10307FE"), smb30KeySet.DecryptionKey, "The SMB 3.0 decryption key changed.");
+                            TestAssertions.SequenceEqual(Hex("A2F3731F7E58FDAF7E6DE4871BB7D7D3"), smb30KeySet.SigningKey, "The SMB 3.0 signing key changed.");
+                            TestAssertions.SequenceEqual(Hex("E88F948B20805C86BEB4584CB58DC16A"), smb30KeySet.ApplicationKey, "The SMB 3.0 application key changed.");
+                            TestAssertions.SequenceEqual(Hex("A91ADF01E344C4319BF664CFA7C70905"), smb30KeySet.EncryptionKey, "The SMB 3.0 encryption key changed.");
+                            TestAssertions.SequenceEqual(Hex("FC74A0A2CA6E60B65E2B93CD6863B138"), smb30KeySet.DecryptionKey, "The SMB 3.0 decryption key changed.");
 
                             SmbSessionKeySet smb311Aes128KeySet = SmbSessionKeyDerivation.DeriveKeys(
                                 new SmbKeyDerivationInputs
@@ -4037,10 +5005,10 @@ namespace OpenCIFS.Core.Tests.Shared
                                     CipherAlgorithmId = SmbCipherAlgorithmId.Aes128Gcm,
                                     PreauthIntegrityHash = CreateSequentialByteArray(64)
                                 });
-                            TestAssertions.SequenceEqual(Hex("FA529798C8B192CC350748F07544A2B6"), smb311Aes128KeySet.SigningKey, "The SMB 3.1.1 AES-128 signing key changed.");
-                            TestAssertions.SequenceEqual(Hex("A02D679BF716F0A48C49ECE4ADEA523B"), smb311Aes128KeySet.ApplicationKey, "The SMB 3.1.1 AES-128 application key changed.");
-                            TestAssertions.SequenceEqual(Hex("6E3F5D0F59DD682386E54BF7B65726A1"), smb311Aes128KeySet.EncryptionKey, "The SMB 3.1.1 AES-128 encryption key changed.");
-                            TestAssertions.SequenceEqual(Hex("9405E0CF422A6576EFE74A05108E883D"), smb311Aes128KeySet.DecryptionKey, "The SMB 3.1.1 AES-128 decryption key changed.");
+                            TestAssertions.SequenceEqual(Hex("2826DB04880B2879DDC7CE91EC5277A7"), smb311Aes128KeySet.SigningKey, "The SMB 3.1.1 AES-128 signing key changed.");
+                            TestAssertions.SequenceEqual(Hex("91C53D0EED81519D539D2800434A2293"), smb311Aes128KeySet.ApplicationKey, "The SMB 3.1.1 AES-128 application key changed.");
+                            TestAssertions.SequenceEqual(Hex("89479974D6E3217E9185FD27E39C8DA2"), smb311Aes128KeySet.EncryptionKey, "The SMB 3.1.1 AES-128 encryption key changed.");
+                            TestAssertions.SequenceEqual(Hex("1974E6587A668A8F215393970CECF616"), smb311Aes128KeySet.DecryptionKey, "The SMB 3.1.1 AES-128 decryption key changed.");
 
                             SmbSessionKeySet smb311Aes256KeySet = SmbSessionKeyDerivation.DeriveKeys(
                                 new SmbKeyDerivationInputs
@@ -4051,10 +5019,10 @@ namespace OpenCIFS.Core.Tests.Shared
                                     CipherAlgorithmId = SmbCipherAlgorithmId.Aes256Gcm,
                                     PreauthIntegrityHash = CreateSequentialByteArray(64)
                                 });
-                            TestAssertions.SequenceEqual(Hex("94F94DFE399448A26C5F3F6223DCDA71546498362D5317C3D2C9537975FBE1DE"), smb311Aes256KeySet.SigningKey, "The SMB 3.1.1 AES-256 signing key changed.");
-                            TestAssertions.SequenceEqual(Hex("993D3710721188D5DCC975AF8CB5402275F139054AB1322707A599BB3A7D6D43"), smb311Aes256KeySet.ApplicationKey, "The SMB 3.1.1 AES-256 application key changed.");
-                            TestAssertions.SequenceEqual(Hex("3AB07EECDA361BD953F8E458899595F3CEF52A3FA3A4F1B7D03546A63DBA1F11"), smb311Aes256KeySet.EncryptionKey, "The SMB 3.1.1 AES-256 encryption key changed.");
-                            TestAssertions.SequenceEqual(Hex("E2183BE7D50D3D3A636A65EAB1B7A22E1299E2889E04DE54B54348C9243EFD7B"), smb311Aes256KeySet.DecryptionKey, "The SMB 3.1.1 AES-256 decryption key changed.");
+                            TestAssertions.SequenceEqual(Hex("5C2A51D834DFBCFA4B53286B3C7CAAC1AE47F2DFDC05A08C2379987CDC08788A"), smb311Aes256KeySet.SigningKey, "The SMB 3.1.1 AES-256 signing key changed.");
+                            TestAssertions.SequenceEqual(Hex("D4E23809E89E44ADEC7AEE207C054699D67EED2A261D2DEEE63BF0C229D5FB49"), smb311Aes256KeySet.ApplicationKey, "The SMB 3.1.1 AES-256 application key changed.");
+                            TestAssertions.SequenceEqual(Hex("53F8B2FB513A90F5231F5AC12BA0A24B9EED8F6E80596136560F1B0003E8D2AE"), smb311Aes256KeySet.EncryptionKey, "The SMB 3.1.1 AES-256 encryption key changed.");
+                            TestAssertions.SequenceEqual(Hex("E568DE865AE188F20138931C5423898FC0D5E94FA094B72D474FC56CF5703DB6"), smb311Aes256KeySet.DecryptionKey, "The SMB 3.1.1 AES-256 decryption key changed.");
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(
@@ -4069,9 +5037,9 @@ namespace OpenCIFS.Core.Tests.Shared
                             byte[] gcmNonce = Hex("CAFEBABEFACEDBADDECAF888");
                             byte[] gcmPlaintext = Hex("D9313225F88406E5A55909C5AFF5269A86A7A9531534F7DA2E4C303D8A318A721C3C0C95956809532FCF0E2449A6B525B16AEDF5AA0DE657BA637B391AAFD255");
                             byte[] gcmAssociatedData = Hex("3AD77BB40D7A3660A89ECAF32466EF97F5D3D58503B9699DE785895A96FDBAAF43B1CD7F598ECE23881B00E3ED0306887B0C785E27E8AD3F8223207104725DD4");
-                            byte[] expectedGmac = Hex("5F91D77123EF5EB9997913849B8DC1E9");
-                            byte[] expectedGcmCiphertext = Hex("42831EC2217774244B7221B784D0D49CE3AA212F2C02A4E035C17E2329ACA12E21D514B25466931C7D8F6A5AAC84AA051BA30B396A0AAC973D58E091473F5985");
-                            byte[] expectedGcmTag = Hex("4D5C2AF327CD64A62CF35ABD2BA6FAB4");
+                            byte[] expectedGmac = GoldenVectorStore.GetBytes("core.security.aead.gmac");
+                            byte[] expectedGcmCiphertext = GoldenVectorStore.GetBytes("core.security.aead.gcm-ciphertext");
+                            byte[] expectedGcmTag = GoldenVectorStore.GetBytes("core.security.aead.gcm-tag");
 
                             byte[] gmac = AesGmac.ComputeMac(gcmKey, gcmNonce, gcmAssociatedData);
                             TestAssertions.SequenceEqual(expectedGmac, gmac, "The AES-GMAC vector changed.");
@@ -4090,8 +5058,8 @@ namespace OpenCIFS.Core.Tests.Shared
                             byte[] ccmAssociatedData = Hex("0001020304050607");
                             byte[] ccmPlaintext = Hex("08090A0B0C0D0E0F101112131415161718191A1B1C1D1E");
                             AeadCipherResult ccmCipherResult = AesCcmCipher.Encrypt(ccmKey, ccmNonce, ccmPlaintext, ccmAssociatedData, tagLength: 8);
-                            TestAssertions.SequenceEqual(Hex("588C979A61C663D2F066D0C2C0F989806D5F6B61DAC384"), ccmCipherResult.Ciphertext, "The AES-CCM ciphertext vector changed.");
-                            TestAssertions.SequenceEqual(Hex("17E8D12CFDF926E0"), ccmCipherResult.AuthenticationTag, "The AES-CCM tag vector changed.");
+                            TestAssertions.SequenceEqual(GoldenVectorStore.GetBytes("core.security.aead.ccm-ciphertext"), ccmCipherResult.Ciphertext, "The AES-CCM ciphertext vector changed.");
+                            TestAssertions.SequenceEqual(GoldenVectorStore.GetBytes("core.security.aead.ccm-tag"), ccmCipherResult.AuthenticationTag, "The AES-CCM tag vector changed.");
                             TestAssertions.SequenceEqual(ccmPlaintext, AesCcmCipher.Decrypt(ccmKey, ccmNonce, ccmCipherResult.Ciphertext, ccmCipherResult.AuthenticationTag, ccmAssociatedData), "The AES-CCM decrypt path changed the plaintext.");
 
                             byte[] corruptedGcmTag = CreateMutatedCopy(gcmCipherResult.AuthenticationTag);
@@ -4329,6 +5297,25 @@ namespace OpenCIFS.Core.Tests.Shared
 
                             await connection.Completion.ConfigureAwait(false);
                             await outboundPipe.Reader.CompleteAsync().ConfigureAwait(false);
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Transport",
+                        caseId: "FramedPipeConnectionSuppressesExpectedSocketAbortDuringDispose",
+                        displayName: "Framed pipe connections suppress expected socket-abort cleanup faults during dispose",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            Pipe inboundPipe = new Pipe();
+                            Pipe outboundPipe = new Pipe();
+
+                            await using FramedPipeConnection connection = new FramedPipeConnection(
+                                new ThrowingCompletePipeReader(inboundPipe.Reader),
+                                new ThrowingCompletePipeWriter(outboundPipe.Writer),
+                                new DirectTcpFrameProtocol());
+
+                            connection.Start();
+                            await connection.DisposeAsync().ConfigureAwait(false);
                         })
                 });
         }
@@ -4475,6 +5462,241 @@ namespace OpenCIFS.Core.Tests.Shared
             return buffer;
         }
 
+        private static IReadOnlyList<(string Name, byte[] Baseline, Action<byte[]> Parser)> BuildProtocolMutationCorpus()
+        {
+            Smb2Header smb2Header = new Smb2Header
+            {
+                CreditCharge = 0,
+                Status = NtStatus.Success,
+                Command = Smb2Command.Negotiate,
+                CreditRequest = 1,
+                Flags = Smb2HeaderFlags.None,
+                NextCommand = 0,
+                MessageId = 1,
+                TreeId = 0,
+                SessionId = 0,
+                Signature = new byte[16]
+            };
+
+            Smb2NegotiateRequest negotiateRequest = new Smb2NegotiateRequest
+            {
+                SecurityMode = Smb2SecurityMode.SigningEnabled,
+                ClientGuid = Guid.Parse("6D8F66FA-6D20-4D4C-B016-A3B3AC02D40F"),
+                Dialects = new[] { SmbDialect.Smb2002, SmbDialect.Smb21 }
+            };
+
+            Smb2CreateRequest createRequest = new Smb2CreateRequest
+            {
+                RequestedOplockLevel = Smb2OplockLevel.None,
+                ImpersonationLevel = Smb2ImpersonationLevel.Impersonation,
+                DesiredAccess = 0xC0000000U,
+                FileAttributes = ProtocolFileAttributes.Normal,
+                ShareAccess = 0x00000007U,
+                CreateDisposition = Smb2CreateDisposition.OpenIf,
+                CreateOptions = Smb2CreateOptions.NonDirectoryFile,
+                Name = "folder\\notes.txt",
+                CreateContexts = Array.Empty<byte>()
+            };
+
+            Smb2ChangeNotifyRequest changeNotifyRequest = new Smb2ChangeNotifyRequest
+            {
+                Flags = Smb2ChangeNotifyFlags.WatchTree,
+                OutputBufferLength = 4096,
+                PersistentFileId = 10,
+                VolatileFileId = 11,
+                CompletionFilter = FileNotifyChangeFilter.FileName | FileNotifyChangeFilter.LastWrite
+            };
+
+            Smb2IoctlRequest ioctlRequest = new Smb2IoctlRequest
+            {
+                CtlCode = (uint)FsctlCode.SrvEnumerateSnapshots,
+                PersistentFileId = 301,
+                VolatileFileId = 302,
+                MaxInputResponse = 0,
+                MaxOutputResponse = 4096,
+                Flags = Smb2IoctlFlags.IsFsctl,
+                InputBuffer = new byte[] { 0x10, 0x20, 0x30, 0x40 }
+            };
+
+            Smb2LeaseBreakAcknowledgment leaseAcknowledgment = new Smb2LeaseBreakAcknowledgment
+            {
+                LeaseKey = CreateRepeatedByteArray(0x11, 16),
+                LeaseState = Smb2LeaseState.None
+            };
+
+            Smb2QueryInfoRequest queryInfoRequest = new Smb2QueryInfoRequest
+            {
+                InfoType = Smb2InfoType.File,
+                FileInfoClass = FileInformationClass.BasicInformation,
+                OutputBufferLength = 128,
+                PersistentFileId = 1,
+                VolatileFileId = 2,
+                InputBuffer = Array.Empty<byte>()
+            };
+
+            FileBothDirectoryInformationEntry[] directoryEntries = new[]
+            {
+                new FileBothDirectoryInformationEntry
+                {
+                    FileName = "alpha.txt"
+                },
+                new FileBothDirectoryInformationEntry
+                {
+                    FileName = "nested"
+                }
+            };
+
+            Smb2CompoundPacket negotiatePacket = new Smb2CompoundPacket(new[]
+            {
+                new Smb2CompoundPacketEntry(smb2Header, negotiateRequest.ToByteArray())
+            });
+
+            return new List<(string Name, byte[] Baseline, Action<byte[]> Parser)>
+            {
+                (
+                    "DirectTcpFrameHeader",
+                    new DirectTcpFrameHeader { Length = 64 }.ToByteArray(),
+                    bytes =>
+                    {
+                        DirectTcpFrameHeader parsedHeader = DirectTcpFrameHeader.ReadFrom(bytes);
+                        DirectTcpFrameValidator.Validate(parsedHeader);
+                    }),
+                (
+                    "Smb2Header",
+                    smb2Header.ToByteArray(),
+                    bytes =>
+                    {
+                        Smb2Header parsedHeader = Smb2Header.ReadFrom(bytes);
+                        Smb2HeaderValidator.Validate(parsedHeader);
+                    }),
+                (
+                    "Smb2NegotiateRequest",
+                    negotiateRequest.ToByteArray(),
+                    bytes =>
+                    {
+                        Smb2NegotiateRequest parsedRequest = Smb2NegotiateRequest.ReadFrom(bytes);
+                        Smb2NegotiateRequestValidator.Validate(parsedRequest);
+                    }),
+                (
+                    "Smb2CreateRequest",
+                    createRequest.ToByteArray(),
+                    bytes =>
+                    {
+                        Smb2CreateRequest parsedRequest = Smb2CreateRequest.ReadFrom(bytes);
+                        Smb2CreateRequestValidator.Validate(parsedRequest);
+                    }),
+                (
+                    "Smb2ChangeNotifyRequest",
+                    changeNotifyRequest.ToByteArray(),
+                    bytes =>
+                    {
+                        Smb2ChangeNotifyRequest parsedRequest = Smb2ChangeNotifyRequest.ReadFrom(bytes);
+                        Smb2ChangeNotifyRequestValidator.Validate(parsedRequest);
+                    }),
+                (
+                    "Smb2IoctlRequest",
+                    ioctlRequest.ToByteArray(),
+                    bytes =>
+                    {
+                        Smb2IoctlRequest parsedRequest = Smb2IoctlRequest.ReadFrom(bytes);
+                        Smb2IoctlRequestValidator.Validate(parsedRequest);
+                    }),
+                (
+                    "Smb2LeaseBreakAcknowledgment",
+                    leaseAcknowledgment.ToByteArray(),
+                    bytes =>
+                    {
+                        Smb2LeaseBreakAcknowledgment parsedAcknowledgment = Smb2LeaseBreakAcknowledgment.ReadFrom(bytes);
+                        Smb2LeaseBreakAcknowledgmentValidator.Validate(parsedAcknowledgment);
+                    }),
+                (
+                    "Smb2QueryInfoRequest",
+                    queryInfoRequest.ToByteArray(),
+                    bytes =>
+                    {
+                        Smb2QueryInfoRequest parsedRequest = Smb2QueryInfoRequest.ReadFrom(bytes);
+                        Smb2QueryInfoRequestValidator.Validate(parsedRequest);
+                    }),
+                (
+                    "FileBothDirectoryInformationEntry",
+                    FileBothDirectoryInformationEntry.EncodeEntries(directoryEntries),
+                    bytes =>
+                    {
+                        FileBothDirectoryInformationEntry.DecodeEntries(bytes);
+                    }),
+                (
+                    "Smb2CompoundPacket",
+                    negotiatePacket.ToByteArray(),
+                    bytes =>
+                    {
+                        Smb2CompoundPacket.ReadFrom(bytes);
+                    }),
+                (
+                    "DfsReferralRequest",
+                    new DfsReferralRequest
+                    {
+                        MaxReferralLevel = 2,
+                        RequestPath = @"\labserver\namespace\link"
+                    }.ToByteArray(),
+                    bytes =>
+                    {
+                        DfsReferralRequest.ReadFrom(bytes);
+                    }),
+                (
+                    "DfsReferralResponse",
+                    new DfsReferralResponse
+                    {
+                        PathConsumed = 24,
+                        HeaderFlags = DfsReferralHeaderFlags.StorageServers,
+                        Entries = new[]
+                        {
+                            new DfsReferralEntryV2
+                            {
+                                IsRootTarget = false,
+                                TimeToLive = 600,
+                                DfsPath = @"\labserver\namespace",
+                                NetworkAddress = @"\target\share"
+                            }
+                        }
+                    }.ToByteArray(),
+                    bytes =>
+                    {
+                        DfsReferralResponse.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb311NegotiateContextList",
+                    Smb2NegotiateContextList.Encode(new[]
+                    {
+                        new Smb2NegotiateContextEntry
+                        {
+                            ContextType = Smb2NegotiateContextType.PreauthIntegrityCapabilities,
+                            Payload = new PreauthIntegrityCapabilities
+                            {
+                                HashAlgorithms = new HashAlgorithmId[] { HashAlgorithmId.Sha512 },
+                                Salt = new byte[] { 0x11, 0x22, 0x33, 0x44 }
+                            }.ToByteArray()
+                        },
+                        new Smb2NegotiateContextEntry
+                        {
+                            ContextType = Smb2NegotiateContextType.EncryptionCapabilities,
+                            Payload = new EncryptionCapabilities
+                            {
+                                Ciphers = new SmbCipherAlgorithmId[]
+                                {
+                                    SmbCipherAlgorithmId.Aes256Gcm,
+                                    SmbCipherAlgorithmId.Aes128Gcm,
+                                    SmbCipherAlgorithmId.Aes128Ccm
+                                }
+                            }.ToByteArray()
+                        }
+                    }),
+                    bytes =>
+                    {
+                        Smb2NegotiateContextList.Decode(bytes, 2);
+                    })
+            };
+        }
+
         private static byte[] Hex(string value)
         {
             return Convert.FromHexString(value.Replace(" ", string.Empty));
@@ -4505,6 +5727,96 @@ namespace OpenCIFS.Core.Tests.Shared
                 {
                     throw new InvalidOperationException("The pipe completed before a full frame was available.");
                 }
+            }
+        }
+
+        private sealed class ThrowingCompletePipeReader : PipeReader
+        {
+            private readonly PipeReader _InnerReader;
+
+            public ThrowingCompletePipeReader(PipeReader innerReader)
+            {
+                _InnerReader = innerReader ?? throw new ArgumentNullException(nameof(innerReader));
+            }
+
+            public override void AdvanceTo(SequencePosition consumed)
+            {
+                _InnerReader.AdvanceTo(consumed);
+            }
+
+            public override void AdvanceTo(SequencePosition consumed, SequencePosition examined)
+            {
+                _InnerReader.AdvanceTo(consumed, examined);
+            }
+
+            public override void CancelPendingRead()
+            {
+                _InnerReader.CancelPendingRead();
+            }
+
+            public override void Complete(Exception? exception = null)
+            {
+                throw new IOException("Simulated reader completion fault during expected cancellation.");
+            }
+
+            public override ValueTask CompleteAsync(Exception? exception = null)
+            {
+                return ValueTask.FromException(new IOException("Simulated reader completion fault during expected cancellation."));
+            }
+
+            public override ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken = default)
+            {
+                return _InnerReader.ReadAsync(cancellationToken);
+            }
+
+            public override bool TryRead(out ReadResult result)
+            {
+                return _InnerReader.TryRead(out result);
+            }
+        }
+
+        private sealed class ThrowingCompletePipeWriter : PipeWriter
+        {
+            private readonly PipeWriter _InnerWriter;
+
+            public ThrowingCompletePipeWriter(PipeWriter innerWriter)
+            {
+                _InnerWriter = innerWriter ?? throw new ArgumentNullException(nameof(innerWriter));
+            }
+
+            public override void Advance(int bytes)
+            {
+                _InnerWriter.Advance(bytes);
+            }
+
+            public override void CancelPendingFlush()
+            {
+                _InnerWriter.CancelPendingFlush();
+            }
+
+            public override void Complete(Exception? exception = null)
+            {
+                throw new IOException("Simulated writer completion fault during expected cancellation.");
+            }
+
+            public override ValueTask CompleteAsync(Exception? exception = null)
+            {
+                return ValueTask.FromException(new IOException("Simulated writer completion fault during expected cancellation."));
+            }
+
+            public override ValueTask<FlushResult> FlushAsync(CancellationToken cancellationToken = default)
+            {
+                return _InnerWriter.FlushAsync(cancellationToken);
+            }
+
+            public override Memory<byte> GetMemory(int sizeHint = 0)
+            {
+                return _InnerWriter.GetMemory(sizeHint);
+            }
+
+            public override Span<byte> GetSpan(int sizeHint = 0)
+            {
+                return _InnerWriter.GetSpan(sizeHint);
             }
         }
     }

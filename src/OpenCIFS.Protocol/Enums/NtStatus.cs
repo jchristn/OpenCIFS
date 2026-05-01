@@ -26,6 +26,11 @@ namespace OpenCIFS.Protocol
         NotifyEnumDir = 0x0000010C,
 
         /// <summary>
+        /// The output buffer was too small to hold the full response payload.
+        /// </summary>
+        BufferOverflow = 0x80000005,
+
+        /// <summary>
         /// More processing is required.
         /// </summary>
         MoreProcessingRequired = 0xC0000016,
@@ -139,6 +144,16 @@ namespace OpenCIFS.Protocol
         /// Not supported.
         /// </summary>
         NotSupported = 0xC00000BB,
+
+        /// <summary>
+        /// A filesystem driver is required for the requested operation.
+        /// </summary>
+        FsDriverRequired = 0xC000019C,
+
+        /// <summary>
+        /// The contacted server does not cover the requested DFS namespace path.
+        /// </summary>
+        PathNotCovered = 0xC0000257,
 
         /// <summary>
         /// Cancelled operation.

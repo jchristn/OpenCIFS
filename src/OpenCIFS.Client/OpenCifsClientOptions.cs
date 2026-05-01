@@ -72,6 +72,19 @@ namespace OpenCIFS.Client
         public bool PreferEncryption { get; set; } = true;
 
         /// <summary>
+        /// Whether the bounded SMB 3.1.1 preview slice should be enabled.
+        /// When <c>true</c>, the client advertises <see cref="SmbDialect.Smb311" /> and emits typed
+        /// SMB 3.1.1 negotiate-context entries (preauth integrity, signing, encryption).
+        /// Default value: <c>false</c>.
+        /// </summary>
+        /// <remarks>
+        /// SMB 3.1.1 negotiation succeeds end-to-end only when the peer also opts into the preview.
+        /// When the peer is an existing SMB 2.x / 3.0.2 server, the existing tolerance behavior selects
+        /// the highest mutually supported dialect.
+        /// </remarks>
+        public bool EnableSmb311Preview { get; set; } = false;
+
+        /// <summary>
         /// Connection timeout in milliseconds.
         /// Default value: <c>30000</c>.
         /// Minimum value: <c>1000</c>.

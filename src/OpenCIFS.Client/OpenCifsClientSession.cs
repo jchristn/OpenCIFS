@@ -1,4 +1,4 @@
-namespace OpenCIFS.Client
+﻿namespace OpenCIFS.Client
 {
     using System;
     using System.Collections.Generic;
@@ -8,7 +8,7 @@ namespace OpenCIFS.Client
     using OpenCIFS.Security;
 
     /// <summary>
-        /// Low-level client session state for the currently implemented SMB 2.1-or-earlier negotiate, session, tree, and file-I/O slices.
+        /// Low-level client session state for the currently implemented SMB 3.0.2-or-earlier negotiate, session, tree, and file-I/O slices.
     /// </summary>
     public sealed class OpenCifsClientSession
     {
@@ -25,21 +25,35 @@ namespace OpenCIFS.Client
         private readonly Dictionary<uint, TreeConnectState> _Trees = new Dictionary<uint, TreeConnectState>();
         private readonly Dictionary<ulong, ClientOpenRecord> _Opens = new Dictionary<ulong, ClientOpenRecord>();
         private SmbDialect[]? _LastOfferedDialects;
+        private Smb2SecurityMode _NegotiatedClientSecurityMode = Smb2SecurityMode.SigningEnabled;
+        private Smb2GlobalCapabilities _NegotiatedClientCapabilities = Smb2GlobalCapabilities.None;
+        private Smb2GlobalCapabilities _NegotiatedServerCapabilities = Smb2GlobalCapabilities.None;
+        private Smb2SecurityMode _NegotiatedServerSecurityMode = Smb2SecurityMode.SigningEnabled;
         private byte[]? _SessionBaseKey;
         private byte[]? _SessionSigningKey;
+        private byte[]? _SessionEncryptionKey;
+        private byte[]? _SessionDecryptionKey;
         private byte[]? _StandardNegotiateMessage;
         private ulong? _SessionId;
         private ulong _NextMessageIdToGrant = 1;
+        private bool _IsSessionEncryptionRequired;
+        private PreauthIntegrityHashAccumulator? _PreauthHashAccumulator;
+        private SmbCipherAlgorithmId _NegotiatedCipher = SmbCipherAlgorithmId.Aes128Ccm;
 
         /// <summary>
         /// Initialize a client session.
         /// </summary>
         /// <param name="options">Client options.</param>
         public OpenCifsClientSession(OpenCifsClientOptions options)
+            : this(options, clientGuid: null)
+        {
+        }
+
+        internal OpenCifsClientSession(OpenCifsClientOptions options, Guid? clientGuid)
         {
             Options = options ?? throw new ArgumentNullException(nameof(options), "Options cannot be null.");
             Options.Validate();
-            ClientGuid = Guid.NewGuid();
+            ClientGuid = clientGuid ?? Guid.NewGuid();
             _AvailableMessageIds.Enqueue(0);
             _ConnectionState.Credits.Grant(1);
         }
@@ -85,6 +99,17 @@ namespace OpenCIFS.Client
         public bool IsSigningRequired { get; private set; }
 
         /// <summary>
+        /// Whether the authenticated session currently requires SMB3 encryption.
+        /// </summary>
+        public bool IsSessionEncryptionRequired
+        {
+            get
+            {
+                return _IsSessionEncryptionRequired;
+            }
+        }
+
+        /// <summary>
         /// Whether the session completed negotiate successfully.
         /// </summary>
         public bool IsNegotiated
@@ -120,6 +145,11 @@ namespace OpenCIFS.Client
                 return _SessionState.IsAuthenticated;
             }
         }
+
+        /// <summary>
+        /// Whether the authenticated session has completed a bounded SMB3 secure-negotiate validation round trip.
+        /// </summary>
+        public bool IsSecureNegotiateValidated { get; private set; }
 
         /// <summary>
         /// Currently connected tree identifiers.
@@ -194,7 +224,7 @@ namespace OpenCIFS.Client
         /// <returns>Advertised SMB2/3 dialects.</returns>
         public SmbDialect[] GetAdvertisedDialects()
         {
-            SmbDialect maximumImplementedDialect = SmbDialect.Smb21;
+            SmbDialect maximumImplementedDialect = GetMaximumImplementedDialect();
             SmbDialect effectiveMaximumDialect = Options.MaximumDialect < maximumImplementedDialect
                 ? Options.MaximumDialect
                 : maximumImplementedDialect;
@@ -234,7 +264,7 @@ namespace OpenCIFS.Client
 
             if (treeId != 0 && effectiveSessionId == 0)
             {
-                throw new InvalidOperationException("A non-zero tree identifier requires a session-scoped SMB2 request.");
+                throw new OpenCifsClientStateException("A non-zero tree identifier requires a session-scoped SMB2 request.");
             }
 
             ValidateCompatibleCreditCharge(command, creditCharge);
@@ -242,7 +272,7 @@ namespace OpenCIFS.Client
 
             if (_AvailableMessageIds.Count < creditsToConsume)
             {
-                throw new InvalidOperationException("The local SMB2 message identifier window does not have enough contiguous sequence numbers for the outbound request.");
+                throw new OpenCifsClientStateException("The local SMB2 message identifier window does not have enough contiguous sequence numbers for the outbound request.");
             }
 
             _ConnectionState.Credits.Consume(creditsToConsume);
@@ -291,7 +321,7 @@ namespace OpenCIFS.Client
         {
             if (!_PendingRequests.TryGetValue(messageId, out RequestState? requestState) || requestState.Header == null)
             {
-                throw new InvalidOperationException("The specified SMB2 message identifier is not currently pending on this client session.");
+                throw new OpenCifsClientStateException("The specified SMB2 message identifier is not currently pending on this client session.");
             }
 
             Smb2Header pendingHeader = requestState.Header;
@@ -328,7 +358,7 @@ namespace OpenCIFS.Client
         public Smb2Header CreateRelatedRequestHeader(Smb2Command command, uint treeId = 0, ushort creditRequest = 1, ulong? sessionId = null)
         {
             Smb2Header header = CreateRequestHeader(command, treeId, creditRequest, sessionId);
-            header.Flags = Smb2HeaderFlags.RelatedOperations;
+            header.Flags |= Smb2HeaderFlags.RelatedOperations;
             Smb2HeaderValidator.Validate(header);
             return header;
         }
@@ -348,35 +378,35 @@ namespace OpenCIFS.Client
 
             if ((responseHeader.Flags & Smb2HeaderFlags.ServerToRedir) == 0)
             {
-                throw new ProtocolValidationException("SMB2 response headers must set the ServerToRedir flag.", nameof(responseHeader));
+                throw new OpenCifsClientProtocolException("SMB2 response headers must set the ServerToRedir flag.", nameof(responseHeader));
             }
 
             Smb2HeaderFlags unsupportedFlags = responseHeader.Flags & ~(Smb2HeaderFlags.ServerToRedir | Smb2HeaderFlags.Signed | Smb2HeaderFlags.RelatedOperations | Smb2HeaderFlags.AsyncCommand);
 
             if (unsupportedFlags != Smb2HeaderFlags.None)
             {
-                throw new ProtocolValidationException("The response header contains SMB2 flags that are not supported in the current SMB 2.0.2 slice.", nameof(responseHeader));
+                throw new OpenCifsClientProtocolException("The response header contains SMB2 flags that are not supported in the current SMB 2.0.2 slice.", nameof(responseHeader));
             }
 
             RequestState requestState = GetPendingRequest(responseHeader.MessageId);
 
             if (requestState.Command != responseHeader.Command)
             {
-                throw new ProtocolValidationException("The SMB2 response command does not match the pending request.", nameof(responseHeader));
+                throw new OpenCifsClientProtocolException("The SMB2 response command does not match the pending request.", nameof(responseHeader));
             }
 
             if ((responseHeader.Flags & Smb2HeaderFlags.AsyncCommand) != 0)
             {
                 if ((responseHeader.Flags & Smb2HeaderFlags.RelatedOperations) != 0)
                 {
-                    throw new ProtocolValidationException("Async SMB2 responses are not supported inside related compounded chains in the current slice.", nameof(responseHeader));
+                    throw new OpenCifsClientProtocolException("Async SMB2 responses are not supported inside related compounded chains in the current slice.", nameof(responseHeader));
                 }
 
                 if (responseHeader.Status == NtStatus.Pending)
                 {
                     if (responseHeader.CreditRequest == 0)
                     {
-                        throw new ProtocolValidationException("Interim async SMB2 responses must grant at least one credit.", nameof(responseHeader));
+                        throw new OpenCifsClientProtocolException("Interim async SMB2 responses must grant at least one credit.", nameof(responseHeader));
                     }
 
                     GrantCredits(responseHeader.CreditRequest);
@@ -386,19 +416,19 @@ namespace OpenCIFS.Client
 
                 if (responseHeader.CreditRequest != 0)
                 {
-                    throw new ProtocolValidationException("Final async SMB2 responses must not grant additional credits in the current slice.", nameof(responseHeader));
+                    throw new OpenCifsClientProtocolException("Final async SMB2 responses must not grant additional credits in the current slice.", nameof(responseHeader));
                 }
 
                 if (requestState.AsyncId == 0 || requestState.AsyncId != responseHeader.AsyncId)
                 {
-                    throw new ProtocolValidationException("The async SMB2 response does not match the pending request AsyncId.", nameof(responseHeader));
+                    throw new OpenCifsClientProtocolException("The async SMB2 response does not match the pending request AsyncId.", nameof(responseHeader));
                 }
             }
             else
             {
                 if (responseHeader.CreditRequest == 0)
                 {
-                    throw new ProtocolValidationException("SMB 2.0.2 synchronous response headers must grant at least one credit.", nameof(responseHeader));
+                    throw new OpenCifsClientProtocolException("SMB 2.0.2 synchronous response headers must grant at least one credit.", nameof(responseHeader));
                 }
 
                 GrantCredits(responseHeader.CreditRequest);
@@ -441,7 +471,7 @@ namespace OpenCIFS.Client
             }
 
             byte[] packetBytes = requestPacket.ToByteArray();
-            IMessageSigner signer = MessageSignerFactory.Create(SigningAlgorithmId.HmacSha256);
+            IMessageSigner signer = CreateNegotiatedMessageSigner();
             int offset = 0;
 
             for (int index = 0; index < requestPacket.Entries.Count; index++)
@@ -455,14 +485,39 @@ namespace OpenCIFS.Client
                 {
                     byte[] signingKey = GetSessionSigningKey(requestEntry.Header.SessionId);
                     Array.Clear(packetBytes, offset + Smb2HeaderSignatureOffset, Smb2HeaderSignatureLength);
-                    byte[] signature = signer.Sign(packetBytes.AsSpan(offset, entryLength), signingKey, ReadOnlySpan<byte>.Empty);
+                    ReadOnlySpan<byte> signingNonce = signer.RequiresNonce
+                        ? Smb2SigningNonce.BuildSmb311GmacNonce(requestEntry.Header.MessageId, isServerToClient: false)
+                        : ReadOnlySpan<byte>.Empty;
+                    byte[] signature = signer.Sign(packetBytes.AsSpan(offset, entryLength), signingKey, signingNonce);
                     Buffer.BlockCopy(signature, 0, packetBytes, offset + Smb2HeaderSignatureOffset, signature.Length);
                 }
 
                 offset += entryLength;
             }
 
+            if (TryGetEncryptedPacketSessionId(requestPacket, out ulong encryptedSessionId))
+            {
+                return Smb3MessageTransform.EncryptPacket(packetBytes, encryptedSessionId, GetSessionEncryptionKey(encryptedSessionId), _NegotiatedCipher);
+            }
+
             return packetBytes;
+        }
+
+        /// <summary>
+        /// Decrypt an inbound SMB3 transform packet when session encryption is active.
+        /// Plain SMB2 packets are returned unchanged.
+        /// </summary>
+        /// <param name="packetBytes">Inbound direct-TCP packet payload.</param>
+        /// <returns>Decrypted SMB2 packet bytes or the original plain SMB2 packet bytes.</returns>
+        public byte[] UnwrapResponsePacket(ReadOnlyMemory<byte> packetBytes)
+        {
+            if (!Smb2TransformHeader.LooksLikeTransformHeader(packetBytes.Span))
+            {
+                return packetBytes.ToArray();
+            }
+
+            Smb2TransformHeader header = Smb2TransformHeader.ReadFrom(packetBytes);
+            return Smb3MessageTransform.DecryptPacket(packetBytes, GetSessionDecryptionKey(header.SessionId), expectedSessionId: SessionId, cipher: _NegotiatedCipher);
         }
 
         /// <summary>
@@ -477,7 +532,7 @@ namespace OpenCIFS.Client
                 throw new ArgumentNullException(nameof(responsePacket), "ResponsePacket cannot be null.");
             }
 
-            IMessageSigner signer = MessageSignerFactory.Create(SigningAlgorithmId.HmacSha256);
+            IMessageSigner signer = CreateNegotiatedMessageSigner();
             int offset = 0;
 
             for (int index = 0; index < responsePacket.Entries.Count; index++)
@@ -494,7 +549,7 @@ namespace OpenCIFS.Client
                 {
                     if (responseShouldBeSigned)
                     {
-                        throw new ProtocolValidationException(
+                        throw new OpenCifsClientProtocolException(
                             $"The SMB2 response omitted the required Signed flag. Command={responseHeader.Command}; Status={responseHeader.Status}; Flags=0x{(uint)responseHeader.Flags:X8}; MessageId={responseHeader.MessageId}.",
                             nameof(responsePacket));
                     }
@@ -506,10 +561,13 @@ namespace OpenCIFS.Client
                 byte[] signingKey = GetSessionSigningKey(GetEffectiveResponseSessionId(requestState, responseHeader));
                 byte[] expectedMessage = packetBytes.Slice(offset, entryLength).ToArray();
                 Array.Clear(expectedMessage, Smb2HeaderSignatureOffset, Smb2HeaderSignatureLength);
+                ReadOnlySpan<byte> verifyNonce = signer.RequiresNonce
+                    ? Smb2SigningNonce.BuildSmb311GmacNonce(responseHeader.MessageId, isServerToClient: true)
+                    : ReadOnlySpan<byte>.Empty;
 
-                if (!signer.Verify(expectedMessage, signingKey, ReadOnlySpan<byte>.Empty, responseHeader.Signature))
+                if (!signer.Verify(expectedMessage, signingKey, verifyNonce, responseHeader.Signature))
                 {
-                    throw new ProtocolValidationException("The SMB2 response signature did not verify.", nameof(responsePacket));
+                    throw new OpenCifsClientProtocolException("The SMB2 response signature did not verify.", nameof(responsePacket));
                 }
 
                 offset += entryLength;
@@ -546,7 +604,7 @@ namespace OpenCIFS.Client
 
             if (advertisedDialects.Length == 0)
             {
-                throw new InvalidOperationException("The configured client dialect range does not include any currently implemented SMB2 dialects.");
+                throw new OpenCifsClientStateException("The configured client dialect range does not include any currently implemented SMB2 dialects.");
             }
 
             Smb2SecurityMode securityMode = Smb2SecurityMode.SigningEnabled;
@@ -559,15 +617,108 @@ namespace OpenCIFS.Client
             Smb2NegotiateRequest request = new Smb2NegotiateRequest
             {
                 SecurityMode = securityMode,
-                Capabilities = Smb2GlobalCapabilities.None,
+                Capabilities = GetNegotiationCapabilities(advertisedDialects),
                 ClientGuid = ClientGuid,
                 ClientStartTime = 0,
                 Dialects = advertisedDialects
             };
 
+            if (Options.EnableSmb311Preview && Array.IndexOf(advertisedDialects, SmbDialect.Smb311) >= 0)
+            {
+                request.SetNegotiateContextEntries(BuildSmb311PreviewNegotiateContextEntries());
+                _PreauthHashAccumulator = new PreauthIntegrityHashAccumulator(HashAlgorithmId.Sha512);
+            }
+            else
+            {
+                _PreauthHashAccumulator = null;
+            }
+
             Smb2NegotiateRequestValidator.Validate(request);
             _LastOfferedDialects = advertisedDialects;
+            _NegotiatedClientSecurityMode = request.SecurityMode;
+            _NegotiatedClientCapabilities = request.Capabilities;
+            IsSecureNegotiateValidated = false;
             return request;
+        }
+
+        /// <summary>
+        /// Append the bytes of an SMB2 message to the SMB 3.1.1 preauthentication transcript hash.
+        /// </summary>
+        /// <param name="header">Message header.</param>
+        /// <param name="body">Message body bytes.</param>
+        /// <remarks>
+        /// This is a no-op when the SMB 3.1.1 preview opt-in is not enabled or when the negotiate request
+        /// has not yet been built. The bytes appended are the concatenation of <see cref="Smb2Header.ToByteArray()" />
+        /// and the supplied body, matching the wire-message form per MS-SMB2.
+        /// </remarks>
+        public void AppendPreauthMessageBytes(Smb2Header header, byte[] body)
+        {
+            if (_PreauthHashAccumulator == null)
+            {
+                return;
+            }
+
+            if (header == null)
+            {
+                throw new ArgumentNullException(nameof(header), "Header cannot be null.");
+            }
+
+            if (body == null)
+            {
+                throw new ArgumentNullException(nameof(body), "Body cannot be null.");
+            }
+
+            byte[] headerBytes = header.ToByteArray();
+            byte[] message = new byte[headerBytes.Length + body.Length];
+            Buffer.BlockCopy(headerBytes, 0, message, 0, headerBytes.Length);
+            Buffer.BlockCopy(body, 0, message, headerBytes.Length, body.Length);
+            _PreauthHashAccumulator.Append(message);
+        }
+
+        /// <summary>
+        /// Get the current SMB 3.1.1 preauthentication transcript hash, or <c>null</c> when the
+        /// preview opt-in is not enabled.
+        /// </summary>
+        /// <returns>Current transcript hash bytes, or <c>null</c>.</returns>
+        public byte[]? GetCurrentPreauthIntegrityHash()
+        {
+            return _PreauthHashAccumulator?.CurrentHash;
+        }
+
+        private Smb2NegotiateContextEntry[] BuildSmb311PreviewNegotiateContextEntries()
+        {
+            byte[] preauthSalt = new byte[32];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(preauthSalt);
+            byte[] preauthPayload = new PreauthIntegrityCapabilities
+            {
+                HashAlgorithms = new HashAlgorithmId[] { HashAlgorithmId.Sha512 },
+                Salt = preauthSalt
+            }.ToByteArray();
+            byte[] signingPayload = new SigningCapabilities
+            {
+                SigningAlgorithms = new SigningAlgorithmId[]
+                {
+                    SigningAlgorithmId.AesGmac,
+                    SigningAlgorithmId.AesCmac,
+                    SigningAlgorithmId.HmacSha256
+                }
+            }.ToByteArray();
+            byte[] encryptionPayload = new EncryptionCapabilities
+            {
+                Ciphers = new SmbCipherAlgorithmId[] { SmbCipherAlgorithmId.Aes128Gcm, SmbCipherAlgorithmId.Aes128Ccm }
+            }.ToByteArray();
+            byte[] netnamePayload = new NetnameNegotiateContext
+            {
+                ServerName = Options.ServerName
+            }.ToByteArray();
+
+            return new[]
+            {
+                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.PreauthIntegrityCapabilities, Payload = preauthPayload },
+                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.EncryptionCapabilities, Payload = encryptionPayload },
+                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.SigningCapabilities, Payload = signingPayload },
+                new Smb2NegotiateContextEntry { ContextType = Smb2NegotiateContextType.Netname, Payload = netnamePayload }
+            };
         }
 
         /// <summary>
@@ -578,24 +729,24 @@ namespace OpenCIFS.Client
         {
             if (_LastOfferedDialects == null)
             {
-                throw new InvalidOperationException("A negotiate request must be created before a response can be applied.");
+                throw new OpenCifsClientStateException("A negotiate request must be created before a response can be applied.");
             }
 
             Smb2NegotiateResponseValidator.Validate(response);
 
             if (!ContainsDialect(_LastOfferedDialects, response.Dialect))
             {
-                throw new InvalidOperationException("The server selected a dialect that the client did not advertise.");
+                throw new OpenCifsClientStateException("The server selected a dialect that the client did not advertise.");
             }
 
             if (response.Dialect < Options.MinimumDialect || response.Dialect > Options.MaximumDialect)
             {
-                throw new InvalidOperationException("The negotiated dialect is outside the configured client dialect range.");
+                throw new OpenCifsClientStateException("The negotiated dialect is outside the configured client dialect range.");
             }
 
             if ((response.SecurityMode & Smb2SecurityMode.SigningEnabled) == 0)
             {
-                throw new InvalidOperationException("The server negotiate response must enable message signing.");
+                throw new OpenCifsClientStateException("The server negotiate response must enable message signing.");
             }
 
             NegotiatedDialect = response.Dialect;
@@ -603,7 +754,71 @@ namespace OpenCIFS.Client
             NegotiatedMaxTransactSize = response.MaxTransactSize;
             NegotiatedMaxReadSize = response.MaxReadSize;
             NegotiatedMaxWriteSize = response.MaxWriteSize;
+            _NegotiatedServerCapabilities = response.Capabilities;
+            _NegotiatedServerSecurityMode = response.SecurityMode;
             IsSigningRequired = Options.RequireSigning || (response.SecurityMode & Smb2SecurityMode.SigningRequired) != 0;
+            IsSecureNegotiateValidated = false;
+            _NegotiatedCipher = SmbCipherAlgorithmId.Aes128Ccm;
+
+            if (response.Dialect == SmbDialect.Smb311)
+            {
+                if (response.NegotiateContextCount == 0)
+                {
+                    throw new OpenCifsClientStateException("The SMB 3.1.1 server negotiate response must carry at least one negotiate-context entry.");
+                }
+
+                Smb2NegotiateContextEntry[] responseEntries = response.DecodeNegotiateContextEntries();
+                bool sawPreauthContext = false;
+
+                for (int index = 0; index < responseEntries.Length; index++)
+                {
+                    Smb2NegotiateContextEntry entry = responseEntries[index];
+
+                    if (entry.ContextType == Smb2NegotiateContextType.PreauthIntegrityCapabilities)
+                    {
+                        PreauthIntegrityCapabilities serverPreauth = PreauthIntegrityCapabilities.ReadFrom(entry.Payload);
+
+                        if (serverPreauth.HashAlgorithms.Length != 1)
+                        {
+                            throw new OpenCifsClientStateException("The SMB 3.1.1 server response must select exactly one preauth integrity hash algorithm.");
+                        }
+
+                        if (serverPreauth.HashAlgorithms[0] != HashAlgorithmId.Sha512)
+                        {
+                            throw new OpenCifsClientStateException("The SMB 3.1.1 server selected a preauth integrity hash algorithm that is not supported by the bounded preview slice.");
+                        }
+
+                        sawPreauthContext = true;
+                        continue;
+                    }
+
+                    if (entry.ContextType == Smb2NegotiateContextType.EncryptionCapabilities)
+                    {
+                        EncryptionCapabilities serverEncryption = EncryptionCapabilities.ReadFrom(entry.Payload);
+
+                        if (serverEncryption.Ciphers.Length != 1)
+                        {
+                            throw new OpenCifsClientStateException("The SMB 3.1.1 server response must select exactly one encryption cipher.");
+                        }
+
+                        SmbCipherAlgorithmId serverSelected = serverEncryption.Ciphers[0];
+
+                        if (serverSelected != SmbCipherAlgorithmId.Aes128Ccm && serverSelected != SmbCipherAlgorithmId.Aes128Gcm)
+                        {
+                            throw new OpenCifsClientStateException("The SMB 3.1.1 server selected an encryption cipher that is not supported by the bounded preview slice.");
+                        }
+
+                        _NegotiatedCipher = serverSelected;
+                        continue;
+                    }
+                }
+
+                if (!sawPreauthContext)
+                {
+                    throw new OpenCifsClientStateException("The SMB 3.1.1 server negotiate response must carry a preauth integrity context.");
+                }
+            }
+
             _ConnectionState.Negotiate(response.Dialect);
         }
 
@@ -621,7 +836,7 @@ namespace OpenCIFS.Client
 
             if (!IsNegotiated)
             {
-                throw new InvalidOperationException("Negotiate must complete before session setup can begin.");
+                throw new OpenCifsClientStateException("Negotiate must complete before session setup can begin.");
             }
 
             NtlmNegotiateMessage mechanismToken = CreateStandardNegotiateMessage(credential);
@@ -667,12 +882,12 @@ namespace OpenCIFS.Client
 
             if (!IsNegotiated)
             {
-                throw new InvalidOperationException("Negotiate must complete before session authentication can continue.");
+                throw new OpenCifsClientStateException("Negotiate must complete before session authentication can continue.");
             }
 
             if (status != NtStatus.MoreProcessingRequired)
             {
-                throw new InvalidOperationException("The server did not return an SMB2 session-setup challenge.");
+                throw new OpenCifsClientStateException("The server did not return an SMB2 session-setup challenge.");
             }
 
             if (challengeResponse == null)
@@ -684,12 +899,12 @@ namespace OpenCIFS.Client
 
             if (sessionId == 0)
             {
-                throw new InvalidOperationException("The server challenge did not include a valid session identifier.");
+                throw new OpenCifsClientStateException("The server challenge did not include a valid session identifier.");
             }
 
             if (challengeResponse.SecurityBuffer.Length == 0)
             {
-                throw new InvalidOperationException("The server challenge did not include a security buffer.");
+                throw new OpenCifsClientStateException("The server challenge did not include a security buffer.");
             }
 
             if (TryExtractStandardChallengeToken(challengeResponse.SecurityBuffer, out byte[]? challengeTokenBytes, out bool wrapAuthenticateInSpnego) &&
@@ -703,12 +918,12 @@ namespace OpenCIFS.Client
                 }
                 catch (ProtocolEncodingException exception)
                 {
-                    throw new InvalidOperationException("The server challenge token is not a valid NTLM challenge message.", exception);
+                    throw new OpenCifsClientProtocolException("The server challenge token is not a valid NTLM challenge message.", exception);
                 }
 
                 if (_StandardNegotiateMessage == null || _StandardNegotiateMessage.Length == 0)
                 {
-                    throw new InvalidOperationException("The client does not have the original NTLM negotiate message for session authentication.");
+                    throw new OpenCifsClientStateException("The client does not have the original NTLM negotiate message for session authentication.");
                 }
 
                 NtlmV2ClientChallenge clientChallenge = CreateStandardClientChallenge(challengeMessage);
@@ -770,22 +985,22 @@ namespace OpenCIFS.Client
             }
             catch (ProtocolEncodingException exception)
             {
-                throw new InvalidOperationException("The server challenge security buffer is not a valid SPNEGO response token.", exception);
+                throw new OpenCifsClientProtocolException("The server challenge security buffer is not a valid SPNEGO response token.", exception);
             }
 
             if (responseToken.NegotiationState != SpnegoNegState.AcceptIncomplete)
             {
-                throw new InvalidOperationException("The server challenge must report an incomplete SPNEGO negotiation state.");
+                throw new OpenCifsClientStateException("The server challenge must report an incomplete SPNEGO negotiation state.");
             }
 
             if (!string.Equals(responseToken.SupportedMechanism, SpnegoMechanismOid.Ntlm, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException("The server selected an unsupported SPNEGO mechanism.");
+                throw new OpenCifsClientStateException("The server selected an unsupported SPNEGO mechanism.");
             }
 
             if (responseToken.ResponseToken == null)
             {
-                throw new InvalidOperationException("The server challenge is missing the NTLM response token.");
+                throw new OpenCifsClientStateException("The server challenge is missing the NTLM response token.");
             }
 
             OpenCifsNtlmChallengeToken legacyChallengeToken;
@@ -796,7 +1011,7 @@ namespace OpenCIFS.Client
             }
             catch (ProtocolEncodingException exception)
             {
-                throw new InvalidOperationException("The server challenge token is not a valid OpenCIFS NTLM challenge token.", exception);
+                throw new OpenCifsClientProtocolException("The server challenge token is not a valid OpenCIFS NTLM challenge token.", exception);
             }
 
             NtlmV2ClientChallenge legacyClientChallenge = new NtlmV2ClientChallenge
@@ -872,7 +1087,7 @@ namespace OpenCIFS.Client
 
             if (_SessionBaseKey == null || _SessionBaseKey.Length == 0)
             {
-                throw new InvalidOperationException("The client does not have a session base key for the authenticated session.");
+                throw new OpenCifsClientStateException("The client does not have a session base key for the authenticated session.");
             }
 
             if (response == null)
@@ -884,7 +1099,7 @@ namespace OpenCIFS.Client
 
             if (sessionId == 0)
             {
-                throw new InvalidOperationException("The server did not return a valid session identifier.");
+                throw new OpenCifsClientStateException("The server did not return a valid session identifier.");
             }
 
             if (response.SecurityBuffer.Length > 0)
@@ -897,18 +1112,18 @@ namespace OpenCIFS.Client
                 }
                 catch (ProtocolEncodingException exception)
                 {
-                    throw new InvalidOperationException("The server session-setup response is not a valid SPNEGO response token.", exception);
+                    throw new OpenCifsClientProtocolException("The server session-setup response is not a valid SPNEGO response token.", exception);
                 }
 
                 if (responseToken.NegotiationState != SpnegoNegState.AcceptCompleted)
                 {
-                    throw new InvalidOperationException("The server session-setup response did not complete SPNEGO negotiation.");
+                    throw new OpenCifsClientStateException("The server session-setup response did not complete SPNEGO negotiation.");
                 }
 
                 if (!string.IsNullOrEmpty(responseToken.SupportedMechanism) &&
                     !string.Equals(responseToken.SupportedMechanism, SpnegoMechanismOid.Ntlm, StringComparison.Ordinal))
                 {
-                    throw new InvalidOperationException("The server completed session setup with an unsupported mechanism.");
+                    throw new OpenCifsClientStateException("The server completed session setup with an unsupported mechanism.");
                 }
             }
 
@@ -919,6 +1134,7 @@ namespace OpenCIFS.Client
 
             _SessionState.Authenticate();
             SessionId = sessionId;
+            ApplyAuthenticatedSessionKeys(response.SessionFlags);
         }
 
         /// <summary>
@@ -929,7 +1145,7 @@ namespace OpenCIFS.Client
         {
             if (!IsAuthenticated || SessionId == null)
             {
-                throw new InvalidOperationException("An authenticated session is required before echo.");
+                throw new OpenCifsClientStateException("An authenticated session is required before echo.");
             }
 
             Smb2EchoRequest request = new Smb2EchoRequest();
@@ -946,7 +1162,7 @@ namespace OpenCIFS.Client
         {
             if (!IsAuthenticated || SessionId == null)
             {
-                throw new InvalidOperationException("An authenticated session is required before echo responses can be applied.");
+                throw new OpenCifsClientStateException("An authenticated session is required before echo responses can be applied.");
             }
 
             if (status != NtStatus.Success)
@@ -976,7 +1192,7 @@ namespace OpenCIFS.Client
 
             if (!IsAuthenticated || SessionId == null)
             {
-                throw new InvalidOperationException("An authenticated session is required before tree connect.");
+                throw new OpenCifsClientStateException("An authenticated session is required before tree connect.");
             }
 
             Smb2TreeConnectRequest request = new Smb2TreeConnectRequest
@@ -1010,7 +1226,7 @@ namespace OpenCIFS.Client
 
             if (treeId == 0)
             {
-                throw new InvalidOperationException("The server did not assign a valid tree identifier.");
+                throw new OpenCifsClientStateException("The server did not assign a valid tree identifier.");
             }
 
             if (response == null)
@@ -1021,7 +1237,7 @@ namespace OpenCIFS.Client
             Smb2TreeConnectResponseValidator.Validate(response);
 
             TreeConnectState treeState = new TreeConnectState();
-            treeState.Connect(treeId, shareName.Trim('\\'));
+            treeState.Connect(treeId, shareName.Trim('\\'), (Smb2ShareFlags)response.ShareFlags);
             _Trees[treeId] = treeState;
         }
 
@@ -1036,7 +1252,7 @@ namespace OpenCIFS.Client
         /// <param name="createDisposition">Create disposition.</param>
         /// <param name="createOptions">Create options.</param>
         /// <param name="requestedOplockLevel">Requested oplock level.</param>
-        /// <param name="requestDurableHandle">Whether to append a bounded SMB 2.0.2 durable-handle request context.</param>
+        /// <param name="requestDurableHandle">Whether to append a durable-handle request context for the negotiated dialect.</param>
         /// <param name="requestedLeaseState">Requested SMB 2.1 lease state when <paramref name="requestedOplockLevel"/> is <see cref="Smb2OplockLevel.Lease"/>.</param>
         /// <param name="leaseKey">Optional 16-byte SMB 2.1 lease key. When omitted, a random key is generated.</param>
         /// <returns>Create request.</returns>
@@ -1057,7 +1273,19 @@ namespace OpenCIFS.Client
 
             if (requestDurableHandle)
             {
-                createContexts.Add(Smb2DurableHandleRequestContext.Create());
+                if (NegotiatedDialect.HasValue && NegotiatedDialect.Value >= SmbDialect.Smb30)
+                {
+                    createContexts.Add(new Smb2DurableHandleRequestV2Context
+                    {
+                        Timeout = 0,
+                        Flags = Smb2DurableHandleFlags.None,
+                        CreateGuid = Guid.NewGuid()
+                    }.ToCreateContext());
+                }
+                else
+                {
+                    createContexts.Add(Smb2DurableHandleRequestContext.Create());
+                }
             }
 
             if (requestedOplockLevel == Smb2OplockLevel.Lease)
@@ -1102,6 +1330,8 @@ namespace OpenCIFS.Client
         /// <param name="requestedOplockLevel">Requested oplock level.</param>
         /// <param name="requestedLeaseState">Requested SMB 2.1 lease state when <paramref name="requestedOplockLevel"/> is <see cref="Smb2OplockLevel.Lease"/>.</param>
         /// <param name="leaseKey">Optional 16-byte SMB 2.1 lease key for a lease-backed reconnect request.</param>
+        /// <param name="durableCreateGuid">Original SMB 3.x durable-handle create GUID when reconnecting a durable-handle v2 open.</param>
+        /// <param name="useDurableHandleV2">Whether to emit the SMB 3.x durable-handle reconnect v2 context.</param>
         /// <returns>Create request.</returns>
         public Smb2CreateRequest CreateDurableReconnectCreateRequest(
             uint treeId,
@@ -1115,16 +1345,35 @@ namespace OpenCIFS.Client
             Smb2CreateOptions createOptions = Smb2CreateOptions.NonDirectoryFile,
             Smb2OplockLevel requestedOplockLevel = Smb2OplockLevel.Batch,
             Smb2LeaseState requestedLeaseState = Smb2LeaseState.None,
-            byte[]? leaseKey = null)
+            byte[]? leaseKey = null,
+            Guid durableCreateGuid = default,
+            bool useDurableHandleV2 = false)
         {
-            List<Smb2CreateContext> createContexts = new List<Smb2CreateContext>
+            List<Smb2CreateContext> createContexts = new List<Smb2CreateContext>();
+
+            if (useDurableHandleV2)
             {
-                new Smb2DurableHandleReconnectContext
+                if (durableCreateGuid == Guid.Empty)
+                {
+                    throw new OpenCifsClientStateException("SMB 3.x durable-handle reconnect v2 requires a non-empty durable create GUID.");
+                }
+
+                createContexts.Add(new Smb2DurableHandleReconnectV2Context
+                {
+                    PersistentFileId = persistentFileId,
+                    VolatileFileId = volatileFileId,
+                    CreateGuid = durableCreateGuid,
+                    Flags = Smb2DurableHandleFlags.None
+                }.ToCreateContext());
+            }
+            else
+            {
+                createContexts.Add(new Smb2DurableHandleReconnectContext
                 {
                     PersistentFileId = persistentFileId,
                     VolatileFileId = volatileFileId
-                }.ToCreateContext()
-            };
+                }.ToCreateContext());
+            }
 
             if (requestedOplockLevel == Smb2OplockLevel.Lease && leaseKey != null)
             {
@@ -1156,8 +1405,9 @@ namespace OpenCIFS.Client
         /// <param name="path">Relative path used for the request.</param>
         /// <param name="status">NTSTATUS from the server response.</param>
         /// <param name="response">Server create response body.</param>
+        /// <param name="originatingRequest">Original request body when the caller needs create-context metadata preserved.</param>
         /// <returns>Tracked open state.</returns>
-        public OpenState ApplyCreateResult(uint treeId, string path, NtStatus status, Smb2CreateResponse response)
+        public OpenState ApplyCreateResult(uint treeId, string path, NtStatus status, Smb2CreateResponse response, Smb2CreateRequest? originatingRequest = null)
         {
             EnsureConnectedTree(treeId);
 
@@ -1171,18 +1421,60 @@ namespace OpenCIFS.Client
                 throw new ArgumentNullException(nameof(response), "Response cannot be null.");
             }
 
-            Smb2CreateResponseValidator.Validate(response);
+            try
+            {
+                Smb2CreateResponseValidator.Validate(response);
+            }
+            catch (ProtocolValidationException exception)
+            {
+                throw new OpenCifsClientProtocolException(exception.Message, exception.ParamName, exception);
+            }
+
             string normalizedPath = NormalizeOpenPath(path);
             bool durableGranted = false;
+            bool durableHandleV2Granted = false;
+            Guid durableCreateGuid = Guid.Empty;
+            uint durableTimeoutMs = 0;
+            bool isPersistent = false;
             Smb2CreateResponseLeaseContext? leaseResponseContext = null;
 
             Smb2CreateContext[] createContexts = Smb2CreateContextCodec.Decode(response.CreateContexts);
+
+            if (originatingRequest != null)
+            {
+                Smb2CreateContext[] requestCreateContexts = Smb2CreateContextCodec.Decode(originatingRequest.CreateContexts);
+
+                for (int index = 0; index < requestCreateContexts.Length; index++)
+                {
+                    if (Smb2DurableHandleRequestV2Context.IsMatch(requestCreateContexts[index]))
+                    {
+                        durableCreateGuid = Smb2DurableHandleRequestV2Context.ReadFrom(requestCreateContexts[index]).CreateGuid;
+                        break;
+                    }
+
+                    if (Smb2DurableHandleReconnectV2Context.IsMatch(requestCreateContexts[index]))
+                    {
+                        durableCreateGuid = Smb2DurableHandleReconnectV2Context.ReadFrom(requestCreateContexts[index]).CreateGuid;
+                        break;
+                    }
+                }
+            }
 
             for (int index = 0; index < createContexts.Length; index++)
             {
                 if (Smb2DurableHandleResponseContext.IsMatch(createContexts[index]))
                 {
                     durableGranted = true;
+                    continue;
+                }
+
+                if (Smb2DurableHandleResponseV2Context.IsMatch(createContexts[index]))
+                {
+                    Smb2DurableHandleResponseV2Context durableResponseV2 = Smb2DurableHandleResponseV2Context.ReadFrom(createContexts[index]);
+                    durableGranted = true;
+                    durableHandleV2Granted = true;
+                    durableTimeoutMs = durableResponseV2.Timeout;
+                    isPersistent = (durableResponseV2.Flags & Smb2DurableHandleFlags.Persistent) != 0;
                     continue;
                 }
 
@@ -1195,7 +1487,7 @@ namespace OpenCIFS.Client
             OpenState openState = new OpenState();
             openState.Bind(response.PersistentFileId, response.VolatileFileId, normalizedPath);
             openState.SetOplockLevel(response.OplockLevel);
-            openState.SetDurable(durableGranted);
+            openState.SetDurable(durableGranted, durableHandleV2Granted, durableCreateGuid, durableTimeoutMs, isPersistent);
 
             if (leaseResponseContext != null)
             {
@@ -1243,7 +1535,15 @@ namespace OpenCIFS.Client
                 CreateContexts = createContexts ?? Array.Empty<byte>()
             };
 
-            Smb2CreateRequestValidator.Validate(request);
+            try
+            {
+                Smb2CreateRequestValidator.Validate(request);
+            }
+            catch (ProtocolValidationException exception)
+            {
+                throw new OpenCifsClientProtocolException(exception.Message, exception.ParamName, exception);
+            }
+
             return request;
         }
 
@@ -1259,7 +1559,7 @@ namespace OpenCIFS.Client
 
             if (openRecord.State.LeaseKey.Length != 16)
             {
-                throw new InvalidOperationException("The specified file identifier is not tracked as an SMB 2.1 lease-backed open.");
+                throw new OpenCifsClientStateException("The specified file identifier is not tracked as an SMB 2.1 lease-backed open.");
             }
 
             Smb2LeaseBreakAcknowledgment acknowledgment = new Smb2LeaseBreakAcknowledgment
@@ -1311,7 +1611,7 @@ namespace OpenCIFS.Client
 
             if (openRecord.TreeId != treeId)
             {
-                throw new ProtocolValidationException("The SMB2 oplock-break notification tree identifier does not match the tracked open.", nameof(treeId));
+                throw new OpenCifsClientProtocolException("The SMB2 oplock-break notification tree identifier does not match the tracked open.", nameof(treeId));
             }
 
             Smb2OplockLevel previousOplockLevel = openRecord.State.OplockLevel;
@@ -1329,7 +1629,7 @@ namespace OpenCIFS.Client
             }
             else
             {
-                throw new InvalidOperationException("The unsolicited SMB2 oplock-break notification does not match the tracked client oplock state.");
+                throw new OpenCifsClientStateException("The unsolicited SMB2 oplock-break notification does not match the tracked client oplock state.");
             }
 
             openRecord.State.SetOplockLevel(notification.OplockLevel);
@@ -1357,12 +1657,12 @@ namespace OpenCIFS.Client
 
             if (previousLeaseState != notification.CurrentLeaseState)
             {
-                throw new ProtocolValidationException("The SMB2 lease-break notification current lease state does not match the tracked open.", nameof(notification));
+                throw new OpenCifsClientProtocolException("The SMB2 lease-break notification current lease state does not match the tracked open.", nameof(notification));
             }
 
             if ((notification.NewLeaseState & ~previousLeaseState) != 0)
             {
-                throw new ProtocolValidationException("The SMB2 lease-break notification new lease state is not a subset of the tracked open state.", nameof(notification));
+                throw new OpenCifsClientProtocolException("The SMB2 lease-break notification new lease state is not a subset of the tracked open state.", nameof(notification));
             }
 
             openRecord.State.SetLeaseState(notification.NewLeaseState);
@@ -1431,7 +1731,7 @@ namespace OpenCIFS.Client
 
             if (!response.LeaseKey.AsSpan().SequenceEqual(openRecord.State.LeaseKey))
             {
-                throw new ProtocolValidationException("The SMB2 lease-break response lease key does not match the tracked open.", nameof(response));
+                throw new OpenCifsClientProtocolException("The SMB2 lease-break response lease key does not match the tracked open.", nameof(response));
             }
 
             openRecord.State.SetLeaseState(response.LeaseState);
@@ -1467,7 +1767,15 @@ namespace OpenCIFS.Client
                 ReadChannelInfo = Array.Empty<byte>()
             };
 
-            Smb2ReadRequestValidator.Validate(request);
+            try
+            {
+                Smb2ReadRequestValidator.Validate(request);
+            }
+            catch (ProtocolValidationException exception)
+            {
+                throw new OpenCifsClientProtocolException(exception.Message, exception.ParamName, exception);
+            }
+
             return request;
         }
 
@@ -1498,7 +1806,15 @@ namespace OpenCIFS.Client
                 throw new ArgumentNullException(nameof(response), "Response cannot be null.");
             }
 
-            Smb2ReadResponseValidator.Validate(response);
+            try
+            {
+                Smb2ReadResponseValidator.Validate(response);
+            }
+            catch (ProtocolValidationException exception)
+            {
+                throw new OpenCifsClientProtocolException(exception.Message, exception.ParamName, exception);
+            }
+
             return response.DataBuffer;
         }
 
@@ -1752,7 +2068,7 @@ namespace OpenCIFS.Client
         {
             if (!IsAuthenticated || SessionId == null)
             {
-                throw new InvalidOperationException("An authenticated session is required before issuing SMB2 IOCTL requests.");
+                throw new OpenCifsClientStateException("An authenticated session is required before issuing SMB2 IOCTL requests.");
             }
 
             return CreateIoctlRequestCore(
@@ -1789,7 +2105,7 @@ namespace OpenCIFS.Client
         {
             if (!IsAuthenticated || SessionId == null)
             {
-                throw new InvalidOperationException("An authenticated session is required before applying SMB2 IOCTL results.");
+                throw new OpenCifsClientStateException("An authenticated session is required before applying SMB2 IOCTL results.");
             }
 
             if (response == null)
@@ -1799,10 +2115,93 @@ namespace OpenCIFS.Client
 
             if (response.PersistentFileId != WildcardIoctlFileId || response.VolatileFileId != WildcardIoctlFileId)
             {
-                throw new InvalidOperationException("The SMB2 IOCTL result does not use the wildcard file identifier pair expected for a connection-scoped request.");
+                throw new OpenCifsClientStateException("The SMB2 IOCTL result does not use the wildcard file identifier pair expected for a connection-scoped request.");
             }
 
             return ApplyIoctlResultCore(status, response);
+        }
+
+        /// <summary>
+        /// Create a connection-scoped SMB2 FSCTL_VALIDATE_NEGOTIATE_INFO request for the current authenticated session.
+        /// </summary>
+        /// <param name="maxOutputResponse">Maximum accepted response payload length.</param>
+        /// <returns>Connection-scoped secure-negotiate validation request.</returns>
+        public Smb2IoctlRequest CreateValidateNegotiateInfoRequest(uint maxOutputResponse = 24)
+        {
+            if (_LastOfferedDialects == null || _LastOfferedDialects.Length == 0)
+            {
+                throw new OpenCifsClientStateException("A negotiate request must be created before secure-negotiate validation can be requested.");
+            }
+
+            ValidateNegotiateInfoRequest request = new ValidateNegotiateInfoRequest
+            {
+                Capabilities = _NegotiatedClientCapabilities,
+                ClientGuid = ClientGuid,
+                SecurityMode = _NegotiatedClientSecurityMode,
+                Dialects = (SmbDialect[])_LastOfferedDialects.Clone()
+            };
+
+            return CreateConnectionIoctlRequest(
+                (uint)FsctlCode.ValidateNegotiateInfo,
+                request.ToByteArray(),
+                maxOutputResponse: maxOutputResponse,
+                maxInputResponse: 0,
+                flags: Smb2IoctlFlags.IsFsctl);
+        }
+
+        /// <summary>
+        /// Apply a successful connection-scoped SMB2 FSCTL_VALIDATE_NEGOTIATE_INFO result and verify that it matches the negotiated session state.
+        /// </summary>
+        /// <param name="status">NTSTATUS from the server response.</param>
+        /// <param name="response">Server IOCTL response body.</param>
+        /// <returns>Decoded secure-negotiate validation response.</returns>
+        public ValidateNegotiateInfoResponse ApplyValidateNegotiateInfoResult(NtStatus status, Smb2IoctlResponse response)
+        {
+            if (!NegotiatedDialect.HasValue || !ServerGuid.HasValue)
+            {
+                throw new OpenCifsClientStateException("A negotiated SMB session is required before secure-negotiate validation responses can be applied.");
+            }
+
+            byte[] outputBuffer = ApplyConnectionIoctlResult(status, response);
+
+            if (response.CtlCode != (uint)FsctlCode.ValidateNegotiateInfo)
+            {
+                throw new OpenCifsClientProtocolException("The server IOCTL result does not contain an FSCTL_VALIDATE_NEGOTIATE_INFO response.");
+            }
+
+            ValidateNegotiateInfoResponse validateResponse;
+
+            try
+            {
+                validateResponse = ValidateNegotiateInfoResponse.ReadFrom(outputBuffer);
+            }
+            catch (ProtocolEncodingException exception)
+            {
+                throw new OpenCifsClientProtocolException("The server FSCTL_VALIDATE_NEGOTIATE_INFO payload is malformed.", exception);
+            }
+
+            if (validateResponse.Capabilities != _NegotiatedServerCapabilities)
+            {
+                throw new OpenCifsClientProtocolException("The server FSCTL_VALIDATE_NEGOTIATE_INFO response capabilities do not match the negotiated SMB state.");
+            }
+
+            if (validateResponse.ServerGuid != ServerGuid.Value)
+            {
+                throw new OpenCifsClientProtocolException("The server FSCTL_VALIDATE_NEGOTIATE_INFO response GUID does not match the negotiated SMB state.");
+            }
+
+            if (validateResponse.SecurityMode != _NegotiatedServerSecurityMode)
+            {
+                throw new OpenCifsClientProtocolException("The server FSCTL_VALIDATE_NEGOTIATE_INFO response security mode does not match the negotiated SMB state.");
+            }
+
+            if (validateResponse.Dialect != NegotiatedDialect.Value)
+            {
+                throw new OpenCifsClientProtocolException("The server FSCTL_VALIDATE_NEGOTIATE_INFO response dialect does not match the negotiated SMB state.");
+            }
+
+            IsSecureNegotiateValidated = true;
+            return validateResponse;
         }
 
         /// <summary>
@@ -1838,7 +2237,7 @@ namespace OpenCIFS.Client
 
             if (response.CtlCode != (uint)FsctlCode.SrvEnumerateSnapshots)
             {
-                throw new InvalidOperationException("The server IOCTL result does not contain an FSCTL_SRV_ENUMERATE_SNAPSHOTS response.");
+                throw new OpenCifsClientStateException("The server IOCTL result does not contain an FSCTL_SRV_ENUMERATE_SNAPSHOTS response.");
             }
 
             return SrvSnapshotArray.ReadFrom(outputBuffer);
@@ -2020,7 +2419,7 @@ namespace OpenCIFS.Client
             {
                 if (response.OutputBuffer.Length != 0)
                 {
-                    throw new ProtocolValidationException("STATUS_NOTIFY_ENUM_DIR responses must not carry FILE_NOTIFY_INFORMATION entries in the current slice.", nameof(response));
+                    throw new OpenCifsClientProtocolException("STATUS_NOTIFY_ENUM_DIR responses must not carry FILE_NOTIFY_INFORMATION entries in the current slice.", nameof(response));
                 }
 
                 return Array.Empty<FileNotifyInformation>();
@@ -2033,12 +2432,12 @@ namespace OpenCIFS.Client
 
             if (request.OutputBufferLength != 0 && response.OutputBuffer.Length > request.OutputBufferLength)
             {
-                throw new ProtocolValidationException("The CHANGE_NOTIFY response output buffer exceeds the request limit.", nameof(response));
+                throw new OpenCifsClientProtocolException("The CHANGE_NOTIFY response output buffer exceeds the request limit.", nameof(response));
             }
 
             if (response.OutputBuffer.Length == 0)
             {
-                throw new ProtocolValidationException("Successful CHANGE_NOTIFY responses must carry at least one FILE_NOTIFY_INFORMATION entry.", nameof(response));
+                throw new OpenCifsClientProtocolException("Successful CHANGE_NOTIFY responses must carry at least one FILE_NOTIFY_INFORMATION entry.", nameof(response));
             }
 
             FileNotifyInformation[] entries = FileNotifyInformation.DecodeEntries(response.OutputBuffer);
@@ -2050,22 +2449,22 @@ namespace OpenCIFS.Client
 
                 if (fileName.Length == 0)
                 {
-                    throw new ProtocolValidationException("CHANGE_NOTIFY response entries must carry a relative path.", nameof(response));
+                    throw new OpenCifsClientProtocolException("CHANGE_NOTIFY response entries must carry a relative path.", nameof(response));
                 }
 
                 if (fileName[0] == '\\' || fileName[0] == '/')
                 {
-                    throw new ProtocolValidationException("CHANGE_NOTIFY response entries must be relative to the watched directory.", nameof(response));
+                    throw new OpenCifsClientProtocolException("CHANGE_NOTIFY response entries must be relative to the watched directory.", nameof(response));
                 }
 
                 if (fileName.IndexOf('\"') >= 0)
                 {
-                    throw new ProtocolValidationException("CHANGE_NOTIFY response entries must not contain quote characters.", nameof(response));
+                    throw new OpenCifsClientProtocolException("CHANGE_NOTIFY response entries must not contain quote characters.", nameof(response));
                 }
 
                 if (!watchTree && (fileName.IndexOf('\\') >= 0 || fileName.IndexOf('/') >= 0))
                 {
-                    throw new ProtocolValidationException("Non-recursive CHANGE_NOTIFY responses must not contain nested relative paths.", nameof(response));
+                    throw new OpenCifsClientProtocolException("Non-recursive CHANGE_NOTIFY responses must not contain nested relative paths.", nameof(response));
                 }
             }
 
@@ -2232,7 +2631,7 @@ namespace OpenCIFS.Client
         {
             if (!_Trees.ContainsKey(treeId))
             {
-                throw new InvalidOperationException("The specified tree identifier is not connected on this client session.");
+                throw new OpenCifsClientStateException("The specified tree identifier is not connected on this client session.");
             }
 
             Smb2TreeDisconnectRequest request = new Smb2TreeDisconnectRequest();
@@ -2277,7 +2676,7 @@ namespace OpenCIFS.Client
         {
             if (!IsAuthenticated || SessionId == null)
             {
-                throw new InvalidOperationException("An authenticated session is required before logoff.");
+                throw new OpenCifsClientStateException("An authenticated session is required before logoff.");
             }
 
             Smb2LogoffRequest request = new Smb2LogoffRequest();
@@ -2318,7 +2717,7 @@ namespace OpenCIFS.Client
 
                 if (consumedMessageId != expectedMessageId)
                 {
-                    throw new InvalidOperationException("The local SMB2 message identifier window is not contiguous enough for the requested credit charge.");
+                    throw new OpenCifsClientStateException("The local SMB2 message identifier window is not contiguous enough for the requested credit charge.");
                 }
             }
 
@@ -2351,7 +2750,7 @@ namespace OpenCIFS.Client
             {
                 if (creditCharge > 1)
                 {
-                    throw new InvalidOperationException("Only bounded SMB 2.1 large read and write requests may consume multiple SMB2 credits.");
+                    throw new OpenCifsClientStateException("Only bounded SMB 2.1 large read and write requests may consume multiple SMB2 credits.");
                 }
 
                 return;
@@ -2359,7 +2758,7 @@ namespace OpenCIFS.Client
 
             if (command != Smb2Command.Read && command != Smb2Command.Write && creditCharge > 1)
             {
-                throw new InvalidOperationException("Only bounded SMB 2.1 read and write requests may carry a multi-credit SMB2 charge.");
+                throw new OpenCifsClientStateException("Only bounded SMB 2.1 read and write requests may carry a multi-credit SMB2 charge.");
             }
         }
 
@@ -2378,7 +2777,7 @@ namespace OpenCIFS.Client
         {
             if (!_PendingRequests.TryGetValue(messageId, out RequestState? requestState))
             {
-                throw new ProtocolValidationException("The SMB2 response does not match any pending request on this client session.", nameof(messageId));
+                throw new OpenCifsClientProtocolException("The SMB2 response does not match any pending request on this client session.", nameof(messageId));
             }
 
             return requestState;
@@ -2388,12 +2787,12 @@ namespace OpenCIFS.Client
         {
             if (!IsAuthenticated || SessionId == null)
             {
-                throw new InvalidOperationException("An authenticated session is required before file operations.");
+                throw new OpenCifsClientStateException("An authenticated session is required before file operations.");
             }
 
             if (!_Trees.ContainsKey(treeId))
             {
-                throw new InvalidOperationException("The specified tree identifier is not connected on this client session.");
+                throw new OpenCifsClientStateException("The specified tree identifier is not connected on this client session.");
             }
         }
 
@@ -2402,7 +2801,7 @@ namespace OpenCIFS.Client
             if (!_Opens.TryGetValue(volatileFileId, out ClientOpenRecord? openRecord) ||
                 openRecord.State.PersistentFileId != persistentFileId)
             {
-                throw new InvalidOperationException("The specified file identifier is not open on this client session.");
+                throw new OpenCifsClientStateException("The specified file identifier is not open on this client session.");
             }
 
             return openRecord;
@@ -2424,7 +2823,7 @@ namespace OpenCIFS.Client
                 }
             }
 
-            throw new InvalidOperationException("The specified lease key is not tracked on this client session.");
+            throw new OpenCifsClientStateException("The specified lease key is not tracked on this client session.");
         }
 
         private Smb2SetInfoRequest CreateSetInfoRequest(ulong persistentFileId, ulong volatileFileId, FileInformationClass informationClass, byte[] buffer)
@@ -2508,7 +2907,7 @@ namespace OpenCIFS.Client
 
             if (responsePacket.Entries.Count != 1)
             {
-                throw new ProtocolValidationException("The managed client break-notification path expects a single SMB2 packet entry.", nameof(responsePacket));
+                throw new OpenCifsClientProtocolException("The managed client break-notification path expects a single SMB2 packet entry.", nameof(responsePacket));
             }
 
             Smb2CompoundPacketEntry entry = responsePacket.Entries[0];
@@ -2516,58 +2915,64 @@ namespace OpenCIFS.Client
 
             if (responseHeader.Command != Smb2Command.OplockBreak || responseHeader.MessageId != UInt64.MaxValue)
             {
-                throw new ProtocolValidationException("The packet is not an unsolicited SMB2 " + notificationName + " notification.", nameof(responsePacket));
+                throw new OpenCifsClientProtocolException("The packet is not an unsolicited SMB2 " + notificationName + " notification.", nameof(responsePacket));
             }
 
             if ((responseHeader.Flags & Smb2HeaderFlags.ServerToRedir) == 0)
             {
-                throw new ProtocolValidationException("The unsolicited SMB2 " + notificationName + " notification must set the ServerToRedir flag.", nameof(responsePacket));
+                throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification must set the ServerToRedir flag.", nameof(responsePacket));
             }
 
             if ((responseHeader.Flags & Smb2HeaderFlags.AsyncCommand) != 0)
             {
-                throw new ProtocolValidationException("The unsolicited SMB2 " + notificationName + " notification must not set the AsyncCommand flag.", nameof(responsePacket));
+                throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification must not set the AsyncCommand flag.", nameof(responsePacket));
             }
 
             if (SessionId == null || responseHeader.SessionId != SessionId.Value)
             {
-                throw new ProtocolValidationException("The unsolicited SMB2 " + notificationName + " notification session identifier is invalid.", nameof(responsePacket));
+                throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification session identifier is invalid.", nameof(responsePacket));
             }
 
             byte[] payload = entry.Payload;
 
             if (payload.Length < 2)
             {
-                throw new ProtocolValidationException("The unsolicited SMB2 " + notificationName + " notification payload is truncated.", nameof(responsePacket));
+                throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification payload is truncated.", nameof(responsePacket));
             }
 
             LittleEndianReader payloadReader = new LittleEndianReader(payload);
 
             if (payloadReader.ReadUInt16() != expectedStructureSize)
             {
-                throw new ProtocolValidationException("The unsolicited SMB2 " + notificationName + " notification structure size is invalid.", nameof(responsePacket));
+                throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification structure size is invalid.", nameof(responsePacket));
             }
 
-            bool mustBeSigned = IsAuthenticated && IsSigningRequired;
+            bool mustBeSigned =
+                IsAuthenticated &&
+                IsSigningRequired &&
+                !IsSessionEncryptionActive(responseHeader.SessionId);
 
             if ((responseHeader.Flags & Smb2HeaderFlags.Signed) == 0)
             {
                 if (mustBeSigned)
                 {
-                    throw new ProtocolValidationException("The unsolicited SMB2 " + notificationName + " notification omitted the required Signed flag.", nameof(responsePacket));
+                    throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification omitted the required Signed flag.", nameof(responsePacket));
                 }
 
                 return;
             }
 
-            IMessageSigner signer = MessageSignerFactory.Create(SigningAlgorithmId.HmacSha256);
+            IMessageSigner signer = CreateNegotiatedMessageSigner();
             byte[] signingKey = GetSessionSigningKey(responseHeader.SessionId);
             byte[] expectedMessage = packetBytes.ToArray();
             Array.Clear(expectedMessage, Smb2HeaderSignatureOffset, Smb2HeaderSignatureLength);
+            ReadOnlySpan<byte> notificationVerifyNonce = signer.RequiresNonce
+                ? Smb2SigningNonce.BuildSmb311GmacNonce(responseHeader.MessageId, isServerToClient: true)
+                : ReadOnlySpan<byte>.Empty;
 
-            if (!signer.Verify(expectedMessage, signingKey, ReadOnlySpan<byte>.Empty, responseHeader.Signature))
+            if (!signer.Verify(expectedMessage, signingKey, notificationVerifyNonce, responseHeader.Signature))
             {
-                throw new ProtocolValidationException("The unsolicited SMB2 " + notificationName + " notification signature did not verify.", nameof(responsePacket));
+                throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification signature did not verify.", nameof(responsePacket));
             }
         }
 
@@ -2631,7 +3036,13 @@ namespace OpenCIFS.Client
             _SessionState = new SessionState();
             _SessionBaseKey = null;
             _SessionSigningKey = null;
+            _SessionEncryptionKey = null;
+            _SessionDecryptionKey = null;
             _StandardNegotiateMessage = null;
+            _NegotiatedServerCapabilities = Smb2GlobalCapabilities.None;
+            _NegotiatedServerSecurityMode = Smb2SecurityMode.SigningEnabled;
+            _IsSessionEncryptionRequired = false;
+            IsSecureNegotiateValidated = false;
             SessionId = null;
         }
 
@@ -2639,6 +3050,7 @@ namespace OpenCIFS.Client
         {
             return IsSigningRequired &&
                 _SessionState.IsAuthenticated &&
+                !IsSessionEncryptionActive(sessionId) &&
                 sessionId != 0 &&
                 command != Smb2Command.Negotiate &&
                 command != Smb2Command.SessionSetup;
@@ -2662,6 +3074,11 @@ namespace OpenCIFS.Client
             }
 
             ulong effectiveSessionId = GetEffectiveResponseSessionId(requestState, responseHeader);
+            if (IsSessionEncryptionActive(effectiveSessionId))
+            {
+                return false;
+            }
+
             return IsSigningRequired &&
                 effectiveSessionId != 0 &&
                 responseHeader.Command != Smb2Command.Negotiate &&
@@ -2678,24 +3095,194 @@ namespace OpenCIFS.Client
             return requestState.Header?.SessionId ?? 0;
         }
 
+        private SmbDialect GetMaximumImplementedDialect()
+        {
+            return Options.EnableSmb311Preview ? SmbDialect.Smb311 : SmbDialect.Smb302;
+        }
+
+        private Smb2GlobalCapabilities GetNegotiationCapabilities(IReadOnlyList<SmbDialect> advertisedDialects)
+        {
+            if (advertisedDialects == null)
+            {
+                throw new ArgumentNullException(nameof(advertisedDialects), "AdvertisedDialects cannot be null.");
+            }
+
+            if (advertisedDialects.Count == 0)
+            {
+                return Smb2GlobalCapabilities.None;
+            }
+
+            SmbDialect maximumDialect = advertisedDialects[advertisedDialects.Count - 1];
+            Smb2GlobalCapabilities capabilities = Smb2GlobalCapabilities.None;
+
+            if (maximumDialect >= SmbDialect.Smb21)
+            {
+                capabilities |= Smb2GlobalCapabilities.Dfs | Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing;
+            }
+
+            if (maximumDialect >= SmbDialect.Smb30 && Options.PreferEncryption)
+            {
+                capabilities |= Smb2GlobalCapabilities.Encryption;
+            }
+
+            return capabilities;
+        }
+
+        private void ApplyAuthenticatedSessionKeys(Smb2SessionFlags sessionFlags)
+        {
+            if (_SessionBaseKey == null || _SessionBaseKey.Length == 0)
+            {
+                throw new OpenCifsClientStateException("The client does not have a session base key for the authenticated SMB session.");
+            }
+
+            _IsSessionEncryptionRequired = (sessionFlags & Smb2SessionFlags.EncryptData) != 0;
+
+            if (!NegotiatedDialect.HasValue || NegotiatedDialect.Value < SmbDialect.Smb30)
+            {
+                _SessionSigningKey = (byte[])_SessionBaseKey.Clone();
+                _SessionEncryptionKey = null;
+                _SessionDecryptionKey = null;
+                return;
+            }
+
+            SmbKeyDerivationInputs derivationInputs = new SmbKeyDerivationInputs
+            {
+                SessionKey = (byte[])_SessionBaseKey.Clone(),
+                Dialect = NegotiatedDialect.Value,
+                CipherAlgorithmId = _NegotiatedCipher
+            };
+
+            if (NegotiatedDialect.Value == SmbDialect.Smb311)
+            {
+                if (_PreauthHashAccumulator == null)
+                {
+                    throw new OpenCifsClientStateException("SMB 3.1.1 session key derivation requires a preauthentication transcript hash.");
+                }
+
+                derivationInputs.PreauthIntegrityHash = _PreauthHashAccumulator.CurrentHash;
+            }
+
+            SmbSessionKeySet keySet = SmbSessionKeyDerivation.DeriveKeys(derivationInputs);
+            _SessionSigningKey = keySet.SigningKey;
+
+            if (_IsSessionEncryptionRequired)
+            {
+                // SMB3 labels define the directions from the server perspective.
+                _SessionEncryptionKey = keySet.DecryptionKey;
+                _SessionDecryptionKey = keySet.EncryptionKey;
+                return;
+            }
+
+            _SessionEncryptionKey = null;
+            _SessionDecryptionKey = null;
+        }
+
+        private IMessageSigner CreateNegotiatedMessageSigner()
+        {
+            return MessageSignerFactory.Create(GetNegotiatedSigningAlgorithm());
+        }
+
+        private SigningAlgorithmId GetNegotiatedSigningAlgorithm()
+        {
+            if (!NegotiatedDialect.HasValue)
+            {
+                return SigningAlgorithmId.HmacSha256;
+            }
+
+            switch (NegotiatedDialect.Value)
+            {
+                case SmbDialect.Smb30:
+                case SmbDialect.Smb302:
+                    return SigningAlgorithmId.AesCmac;
+                default:
+                    return SigningAlgorithmId.HmacSha256;
+            }
+        }
+
         private byte[] GetSessionSigningKey(ulong sessionId)
         {
             if (sessionId == 0)
             {
-                throw new InvalidOperationException("A non-zero session identifier is required before SMB2 signing keys can be used.");
+                throw new OpenCifsClientStateException("A non-zero session identifier is required before SMB2 signing keys can be used.");
             }
 
             if (_SessionSigningKey == null || _SessionSigningKey.Length == 0)
             {
-                throw new InvalidOperationException("The client does not have a signing key for the authenticated SMB2 session.");
+                throw new OpenCifsClientStateException("The client does not have a signing key for the authenticated SMB2 session.");
             }
 
             if (!_SessionState.IsAuthenticated || SessionId != sessionId)
             {
-                throw new InvalidOperationException("The client does not have an authenticated SMB2 session for the supplied signing key request.");
+                throw new OpenCifsClientStateException("The client does not have an authenticated SMB2 session for the supplied signing key request.");
             }
 
             return _SessionSigningKey;
+        }
+
+        private byte[] GetSessionEncryptionKey(ulong sessionId)
+        {
+            if (!IsSessionEncryptionActive(sessionId) || _SessionEncryptionKey == null || _SessionEncryptionKey.Length == 0)
+            {
+                throw new OpenCifsClientStateException("The client does not have an outbound SMB3 encryption key for the authenticated session.");
+            }
+
+            return _SessionEncryptionKey;
+        }
+
+        private byte[] GetSessionDecryptionKey(ulong sessionId)
+        {
+            if (!IsSessionEncryptionActive(sessionId) || _SessionDecryptionKey == null || _SessionDecryptionKey.Length == 0)
+            {
+                throw new OpenCifsClientStateException("The client does not have an inbound SMB3 decryption key for the authenticated session.");
+            }
+
+            return _SessionDecryptionKey;
+        }
+
+        private bool IsSessionEncryptionActive(ulong sessionId)
+        {
+            return _IsSessionEncryptionRequired &&
+                _SessionState.IsAuthenticated &&
+                sessionId != 0 &&
+                SessionId == sessionId &&
+                NegotiatedDialect.HasValue &&
+                NegotiatedDialect.Value >= SmbDialect.Smb30 &&
+                (_NegotiatedServerCapabilities & Smb2GlobalCapabilities.Encryption) != 0;
+        }
+
+        private bool TryGetEncryptedPacketSessionId(Smb2CompoundPacket requestPacket, out ulong sessionId)
+        {
+            sessionId = 0;
+
+            if (!_IsSessionEncryptionRequired || requestPacket.Entries.Count == 0)
+            {
+                return false;
+            }
+
+            ulong candidateSessionId = requestPacket.Entries[0].Header.SessionId;
+
+            if (!IsSessionEncryptionActive(candidateSessionId))
+            {
+                return false;
+            }
+
+            for (int index = 0; index < requestPacket.Entries.Count; index++)
+            {
+                Smb2Header header = requestPacket.Entries[index].Header;
+
+                if (header.SessionId != candidateSessionId)
+                {
+                    throw new OpenCifsClientStateException("The bounded SMB3 encrypted packet path does not support compounded requests that mix SMB2 session identifiers.");
+                }
+
+                if (header.Command == Smb2Command.Negotiate || header.Command == Smb2Command.SessionSetup)
+                {
+                    throw new OpenCifsClientStateException("The bounded SMB3 encrypted packet path does not support encrypting negotiate or session-setup requests.");
+                }
+            }
+
+            sessionId = candidateSessionId;
+            return true;
         }
 
         private static NtlmNegotiateMessage CreateStandardNegotiateMessage(OpenCifsClientCredential credential)
@@ -2833,7 +3420,7 @@ namespace OpenCIFS.Client
 
             if (normalizedPath.Length == 0)
             {
-                throw new InvalidOperationException("The file path must resolve to a non-empty relative path.");
+                throw new OpenCifsClientStateException("The file path must resolve to a non-empty relative path.");
             }
 
             return normalizedPath;
@@ -2872,3 +3459,4 @@ namespace OpenCIFS.Client
         }
     }
 }
+

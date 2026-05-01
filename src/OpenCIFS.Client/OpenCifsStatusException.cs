@@ -6,7 +6,7 @@ namespace OpenCIFS.Client
     /// <summary>
     /// Exception raised when an SMB2 server returns a non-success NTSTATUS for a client operation.
     /// </summary>
-    public sealed class OpenCifsStatusException : InvalidOperationException
+    public sealed class OpenCifsStatusException : OpenCifsClientException
     {
         /// <summary>
         /// Initialize an exception for a server-returned SMB2 status without extended error data.
@@ -25,7 +25,7 @@ namespace OpenCIFS.Client
         /// <param name="status">Returned NTSTATUS value.</param>
         /// <param name="errorData">Decoded SMB2 error-data bytes when available.</param>
         public OpenCifsStatusException(Smb2Command command, NtStatus status, ReadOnlyMemory<byte> errorData)
-            : base(CreateMessage(command, status, errorData.Length))
+            : base(CreateMessage(command, status, errorData.Length), ClassifyCategory(status))
         {
             Command = command;
             Status = status;
@@ -56,6 +56,57 @@ namespace OpenCIFS.Client
         internal static OpenCifsStatusException CreateFromResponsePayload(Smb2Command command, NtStatus status, byte[]? responsePayload)
         {
             return new OpenCifsStatusException(command, status, DecodeErrorData(responsePayload));
+        }
+
+        private static OpenCifsErrorCategory ClassifyCategory(NtStatus status)
+        {
+            switch (status)
+            {
+                case NtStatus.NoSuchFile:
+                case NtStatus.ObjectNameNotFound:
+                case NtStatus.ObjectPathNotFound:
+                case NtStatus.PathNotCovered:
+                    return OpenCifsErrorCategory.NotFound;
+
+                case NtStatus.AccessDenied:
+                case NtStatus.CannotDelete:
+                    return OpenCifsErrorCategory.AccessDenied;
+
+                case NtStatus.SharingViolation:
+                case NtStatus.FileLockConflict:
+                case NtStatus.LockNotGranted:
+                case NtStatus.DeletePending:
+                case NtStatus.RangeNotLocked:
+                case NtStatus.ObjectNameCollision:
+                case NtStatus.FileIsADirectory:
+                case NtStatus.DirectoryNotEmpty:
+                case NtStatus.NotADirectory:
+                case NtStatus.InvalidDeviceState:
+                    return OpenCifsErrorCategory.Conflict;
+
+                case NtStatus.NotSupported:
+                case NtStatus.FsDriverRequired:
+                case NtStatus.InvalidInfoClass:
+                    return OpenCifsErrorCategory.Unsupported;
+
+                case NtStatus.EndOfFile:
+                case NtStatus.FileClosed:
+                    return OpenCifsErrorCategory.IoError;
+
+                case NtStatus.Cancelled:
+                    return OpenCifsErrorCategory.Cancelled;
+
+                case NtStatus.InvalidHandle:
+                case NtStatus.InvalidParameter:
+                case NtStatus.InfoLengthMismatch:
+                case NtStatus.BufferTooSmall:
+                case NtStatus.InvalidOplockProtocol:
+                case NtStatus.MoreProcessingRequired:
+                    return OpenCifsErrorCategory.ProtocolError;
+
+                default:
+                    return OpenCifsErrorCategory.Unknown;
+            }
         }
 
         private static string CreateMessage(Smb2Command command, NtStatus status, int errorDataLength)

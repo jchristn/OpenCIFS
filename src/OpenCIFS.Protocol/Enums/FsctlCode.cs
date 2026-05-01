@@ -16,6 +16,11 @@ namespace OpenCIFS.Protocol
         DfsGetReferralsEx = 0x000601B0,
 
         /// <summary>
+        /// Named-pipe transceive operation.
+        /// </summary>
+        PipeTransceive = 0x0011C017,
+
+        /// <summary>
         /// Named-pipe wait operation.
         /// </summary>
         PipeWait = 0x00110018,

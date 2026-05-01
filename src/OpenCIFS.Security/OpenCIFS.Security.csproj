@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
-    <Description>Shared OpenCIFS NTLMv2, SPNEGO, signing, and key-derivation helpers.</Description>
+    <Description>Shared OpenCIFS NTLMv2, SPNEGO, signing, encryption, and key-derivation helpers.</Description>
     <PackageTags>smb;cifs;security;ntlm;spnego</PackageTags>
     <PackageReadmeFile>PackageReadme.md</PackageReadmeFile>
   </PropertyGroup>

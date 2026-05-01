@@ -1,6 +1,7 @@
 namespace OpenCIFS.Protocol
 {
     using System;
+    using System.Collections.Generic;
 
     /// <summary>
     /// SMB2 negotiate response payload.
@@ -71,20 +72,90 @@ namespace OpenCIFS.Protocol
         }
 
         /// <summary>
+        /// SMB 3.1.1-style negotiate-context count carried by an SMB 3.1.1 response.
+        /// </summary>
+        public ushort NegotiateContextCount { get; set; }
+
+        /// <summary>
+        /// SMB 3.1.1-style negotiate-context absolute offset carried by an SMB 3.1.1 response.
+        /// </summary>
+        public uint NegotiateContextOffset { get; set; }
+
+        /// <summary>
+        /// Optional raw negotiate-context bytes carried by an SMB 3.1.1-style response.
+        /// </summary>
+        public byte[] NegotiateContextData
+        {
+            get
+            {
+                return _NegotiateContextData;
+            }
+            set
+            {
+                _NegotiateContextData = value ?? throw new ArgumentNullException(nameof(NegotiateContextData), "NegotiateContextData cannot be null.");
+            }
+        }
+
+        /// <summary>
+        /// Decode the carried SMB 3.1.1 negotiate-context list as typed entries.
+        /// </summary>
+        /// <returns>Typed negotiate-context entries, or an empty array when none are carried.</returns>
+        public Smb2NegotiateContextEntry[] DecodeNegotiateContextEntries()
+        {
+            if (NegotiateContextCount == 0 || NegotiateContextData.Length == 0)
+            {
+                return Array.Empty<Smb2NegotiateContextEntry>();
+            }
+
+            return Smb2NegotiateContextList.Decode(NegotiateContextData, NegotiateContextCount);
+        }
+
+        /// <summary>
+        /// Set the SMB 3.1.1 negotiate-context list from typed entries and update the carried context count and bytes.
+        /// </summary>
+        /// <param name="entries">Typed negotiate-context entries.</param>
+        public void SetNegotiateContextEntries(IReadOnlyList<Smb2NegotiateContextEntry> entries)
+        {
+            if (entries == null)
+            {
+                throw new ArgumentNullException(nameof(entries), "Entries cannot be null.");
+            }
+
+            if (entries.Count > UInt16.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(entries), "Entries cannot exceed 65535 contexts.");
+            }
+
+            NegotiateContextCount = (ushort)entries.Count;
+            NegotiateContextData = entries.Count == 0
+                ? Array.Empty<byte>()
+                : Smb2NegotiateContextList.Encode(entries);
+        }
+
+        /// <summary>
         /// Serialize the response body to wire format.
         /// </summary>
         /// <returns>Response-body bytes.</returns>
         public byte[] ToByteArray()
         {
             LittleEndianWriter writer = new LittleEndianWriter();
+            bool carriesSmb311Shape = Dialect == SmbDialect.Smb311;
+            bool carriesContexts = carriesSmb311Shape && (NegotiateContextCount != 0 || NegotiateContextData.Length != 0);
             ushort securityBufferOffset = SecurityBuffer.Length == 0
                 ? (ushort)0
                 : (ushort)(ProtocolConstants.Smb2HeaderLength + FixedBodyLength);
+            uint negotiateContextOffset = 0;
+
+            if (carriesContexts)
+            {
+                int unalignedAbsoluteContextOffset = ProtocolConstants.Smb2HeaderLength + FixedBodyLength + SecurityBuffer.Length;
+                negotiateContextOffset = (uint)AlignToEight(unalignedAbsoluteContextOffset);
+            }
 
             writer.WriteUInt16(StructureSize);
             writer.WriteUInt16((ushort)SecurityMode);
             writer.WriteUInt16(SmbDialectCatalog.ToSmb2WireDialect(Dialect));
-            writer.WriteUInt16(0);
+            writer.WriteUInt16(carriesSmb311Shape ? NegotiateContextCount : (ushort)0);
             writer.WriteBytes(ServerGuid.ToByteArray());
             writer.WriteUInt32((uint)Capabilities);
             writer.WriteUInt32(MaxTransactSize);
@@ -94,8 +165,22 @@ namespace OpenCIFS.Protocol
             writer.WriteUInt64(ServerStartTime);
             writer.WriteUInt16(securityBufferOffset);
             writer.WriteUInt16((ushort)SecurityBuffer.Length);
-            writer.WriteUInt32(0);
+            writer.WriteUInt32(carriesSmb311Shape ? negotiateContextOffset : 0U);
             writer.WriteBytes(SecurityBuffer);
+
+            if (carriesContexts)
+            {
+                int currentAbsoluteOffset = ProtocolConstants.Smb2HeaderLength + writer.Length;
+                int paddingLength = (int)negotiateContextOffset - currentAbsoluteOffset;
+
+                for (int index = 0; index < paddingLength; index++)
+                {
+                    writer.WriteByte(0);
+                }
+
+                writer.WriteBytes(NegotiateContextData);
+            }
+
             return writer.ToArray();
         }
 
@@ -132,7 +217,7 @@ namespace OpenCIFS.Protocol
             }
 
             response.Dialect = dialect;
-            reader.Skip(2);
+            ushort negotiateContextCount = reader.ReadUInt16();
             response.ServerGuid = new Guid(reader.ReadBytes(16));
             response.Capabilities = (Smb2GlobalCapabilities)reader.ReadUInt32();
             response.MaxTransactSize = reader.ReadUInt32();
@@ -142,35 +227,69 @@ namespace OpenCIFS.Protocol
             response.ServerStartTime = reader.ReadUInt64();
             ushort securityBufferOffset = reader.ReadUInt16();
             ushort securityBufferLength = reader.ReadUInt16();
-            reader.Skip(4);
+            uint negotiateContextOffset = reader.ReadUInt32();
+            bool carriesSmb311Shape = dialect == SmbDialect.Smb311;
 
-            if (securityBufferLength == 0)
+            if (carriesSmb311Shape)
             {
-                if (reader.RemainingBytes != 0)
+                response.NegotiateContextCount = negotiateContextCount;
+                response.NegotiateContextOffset = negotiateContextOffset;
+            }
+
+            if (securityBufferLength != 0)
+            {
+                int relativeSecurityBufferOffset = securityBufferOffset - ProtocolConstants.Smb2HeaderLength;
+
+                if (relativeSecurityBufferOffset < FixedBodyLength)
                 {
-                    throw new ProtocolEncodingException("The SMB2 negotiate response contains trailing bytes without a security buffer length.");
+                    throw new ProtocolEncodingException("The SMB2 negotiate response security-buffer offset is invalid.");
                 }
 
+                if (relativeSecurityBufferOffset + securityBufferLength > buffer.Length)
+                {
+                    throw new ProtocolEncodingException("The SMB2 negotiate response security buffer exceeds the available payload.");
+                }
+
+                response.SecurityBuffer = buffer.Slice(relativeSecurityBufferOffset, securityBufferLength).ToArray();
+            }
+            else
+            {
                 response.SecurityBuffer = Array.Empty<byte>();
-                return response;
             }
 
-            int relativeSecurityBufferOffset = securityBufferOffset - ProtocolConstants.Smb2HeaderLength;
-
-            if (relativeSecurityBufferOffset < FixedBodyLength)
+            if (carriesSmb311Shape && negotiateContextCount != 0)
             {
-                throw new ProtocolEncodingException("The SMB2 negotiate response security-buffer offset is invalid.");
-            }
+                if (negotiateContextOffset > Int32.MaxValue)
+                {
+                    throw new ProtocolEncodingException("The SMB 3.1.1 negotiate-context offset is malformed.");
+                }
 
-            if (relativeSecurityBufferOffset + securityBufferLength > buffer.Length)
+                int relativeNegotiateContextOffset = checked((int)negotiateContextOffset - ProtocolConstants.Smb2HeaderLength);
+
+                if (relativeNegotiateContextOffset < FixedBodyLength || relativeNegotiateContextOffset > buffer.Length)
+                {
+                    throw new ProtocolEncodingException("The SMB 3.1.1 negotiate-context offset is malformed.");
+                }
+
+                response.NegotiateContextData = buffer.Slice(relativeNegotiateContextOffset).ToArray();
+            }
+            else if (!carriesSmb311Shape && securityBufferLength == 0 && reader.RemainingBytes != 0)
             {
-                throw new ProtocolEncodingException("The SMB2 negotiate response security buffer exceeds the available payload.");
+                throw new ProtocolEncodingException("The SMB2 negotiate response contains trailing bytes without a security buffer length.");
             }
 
-            response.SecurityBuffer = buffer.Slice(relativeSecurityBufferOffset, securityBufferLength).ToArray();
             return response;
         }
 
         private byte[] _SecurityBuffer = Array.Empty<byte>();
+        private byte[] _NegotiateContextData = Array.Empty<byte>();
+
+        private static int AlignToEight(int value)
+        {
+            int remainder = value % 8;
+            return remainder == 0
+                ? value
+                : value + (8 - remainder);
+        }
     }
 }

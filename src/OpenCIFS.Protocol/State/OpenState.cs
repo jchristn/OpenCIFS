@@ -53,6 +53,26 @@ namespace OpenCIFS.Protocol
         public bool IsDurable { get; private set; } = false;
 
         /// <summary>
+        /// Whether the open uses the SMB 3.x durable-handle v2 create-context family.
+        /// </summary>
+        public bool UsesDurableHandleV2 { get; private set; } = false;
+
+        /// <summary>
+        /// Durable-handle create GUID for SMB 3.x durable-handle v2 flows.
+        /// </summary>
+        public Guid DurableCreateGuid { get; private set; } = Guid.Empty;
+
+        /// <summary>
+        /// Durable reconnect timeout, in milliseconds, granted for the open.
+        /// </summary>
+        public uint DurableTimeoutMs { get; private set; } = 0;
+
+        /// <summary>
+        /// Whether the durable open is persistent.
+        /// </summary>
+        public bool IsPersistent { get; private set; } = false;
+
+        /// <summary>
         /// Lease key bytes when the open is backed by an SMB 2.1 lease.
         /// </summary>
         public byte[] LeaseKey
@@ -125,10 +145,23 @@ namespace OpenCIFS.Protocol
         /// Update whether the open is durable.
         /// </summary>
         /// <param name="isDurable">Durable state.</param>
-        public void SetDurable(bool isDurable)
+        /// <param name="usesDurableHandleV2">Whether the open uses SMB 3.x durable-handle v2 contexts.</param>
+        /// <param name="durableCreateGuid">Durable-handle v2 create GUID.</param>
+        /// <param name="durableTimeoutMs">Granted durable reconnect timeout, in milliseconds.</param>
+        /// <param name="isPersistent">Whether the durable open is persistent.</param>
+        public void SetDurable(bool isDurable, bool usesDurableHandleV2 = false, Guid durableCreateGuid = default, uint durableTimeoutMs = 0, bool isPersistent = false)
         {
             EnsureNotDisposed();
+            if (isDurable && usesDurableHandleV2 && durableCreateGuid == Guid.Empty)
+            {
+                throw new ArgumentException("SMB 3.x durable-handle v2 opens require a non-empty durable create GUID.", nameof(durableCreateGuid));
+            }
+
             IsDurable = isDurable;
+            UsesDurableHandleV2 = isDurable && usesDurableHandleV2;
+            DurableCreateGuid = IsDurable && usesDurableHandleV2 ? durableCreateGuid : Guid.Empty;
+            DurableTimeoutMs = IsDurable ? durableTimeoutMs : 0;
+            IsPersistent = IsDurable && isPersistent;
         }
 
         /// <summary>

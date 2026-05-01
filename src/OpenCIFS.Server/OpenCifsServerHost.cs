@@ -3,6 +3,7 @@ namespace OpenCIFS.Server
     using System;
     using System.Collections.Concurrent;
     using System.Collections.Generic;
+    using System.Formats.Asn1;
     using System.IO;
     using System.IO.Enumeration;
     using System.Security.Cryptography;
@@ -15,7 +16,7 @@ namespace OpenCIFS.Server
     using SystemFileAttributes = System.IO.FileAttributes;
 
     /// <summary>
-        /// In-memory server host for the currently implemented SMB 2.1-or-earlier negotiate, session, tree, and file-I/O slices.
+        /// In-memory server host for the currently implemented SMB 3.0.2-or-earlier negotiate, session, tree, and file-I/O slices.
     /// </summary>
     public sealed class OpenCifsServerHost
     {
@@ -41,6 +42,9 @@ namespace OpenCIFS.Server
         private const uint FileSystemSectorsPerAllocationUnit = 8;
         private const int FileSystemMaximumComponentNameLength = 255;
         private const string DefaultFileSystemName = "NTFS";
+        private const uint DefaultDurableHandleTimeoutMs = 300000;
+        private const string IpcShareName = "IPC$";
+        private const string NamedPipePseudoRootPath = "[named-pipes]";
 
         private readonly Dictionary<string, OpenCifsServerAccount> _Accounts = new Dictionary<string, OpenCifsServerAccount>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<ulong> _AvailableMessageIds = new HashSet<ulong>();
@@ -49,7 +53,11 @@ namespace OpenCIFS.Server
         private readonly Dictionary<ulong, PendingChangeNotifySubscription> _PendingChangeNotifySubscriptions = new Dictionary<ulong, PendingChangeNotifySubscription>();
         private readonly ConcurrentQueue<OpenCifsServerAsyncResponse> _ReadyAsyncResponses = new ConcurrentQueue<OpenCifsServerAsyncResponse>();
         private readonly Dictionary<string, RegisteredShareRecord> _RegisteredShares = new Dictionary<string, RegisteredShareRecord>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, OpenCifsServerNamedPipeEndpoint> _NamedPipeEndpoints = new Dictionary<string, OpenCifsServerNamedPipeEndpoint>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<OpenCifsServerDfsReferral>> _DfsReferralsByShare = new Dictionary<string, List<OpenCifsServerDfsReferral>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<ulong, ServerSessionRecord> _Sessions = new Dictionary<ulong, ServerSessionRecord>();
+        private readonly Dictionary<ulong, byte[]> _RetainedResponseSigningKeys = new Dictionary<ulong, byte[]>();
+        private readonly Dictionary<ulong, byte[]> _RetainedResponseEncryptionKeys = new Dictionary<ulong, byte[]>();
         private readonly Dictionary<string, ulong> _DeclaredAllocationSizes = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TrackedFileTimestamps> _TrackedFileTimestamps = new Dictionary<string, TrackedFileTimestamps>(StringComparer.OrdinalIgnoreCase);
         private readonly OpenCifsServerSharedState _SharedState;
@@ -63,6 +71,9 @@ namespace OpenCIFS.Server
         private Smb2GlobalCapabilities _NegotiatedServerCapabilities = Smb2GlobalCapabilities.None;
         private SmbDialect[] _NegotiatedClientDialects = Array.Empty<SmbDialect>();
         private SmbDialect? _NegotiatedDialect;
+        private PreauthIntegrityHashAccumulator? _PreauthHashAccumulator;
+        private SmbCipherAlgorithmId _NegotiatedCipher = SmbCipherAlgorithmId.Aes128Ccm;
+        private string? _ReceivedClientNetname;
         private ulong _NextMessageIdToGrant = 1;
         private ulong _NextSessionId = 1;
         private uint _NextTreeId = 1;
@@ -142,7 +153,7 @@ namespace OpenCIFS.Server
 
             if (_RegisteredShares.ContainsKey(shareRecord.ShareName))
             {
-                throw new InvalidOperationException("A filesystem-backed share with the same name is already registered.");
+                throw new OpenCifsServerConfigurationException("A filesystem-backed share with the same name is already registered.");
             }
 
             _RegisteredShares.Add(shareRecord.ShareName, shareRecord);
@@ -155,6 +166,106 @@ namespace OpenCIFS.Server
         public void RegisterShare(OpenCifsServerFileSystemShare share)
         {
             RegisterShare((OpenCifsServerShareBackend)share);
+        }
+
+        /// <summary>
+        /// Register a named-pipe endpoint under the implicit <c>IPC$</c> share.
+        /// </summary>
+        /// <param name="endpoint">Named-pipe endpoint definition.</param>
+        public void RegisterNamedPipeEndpoint(OpenCifsServerNamedPipeEndpoint endpoint)
+        {
+            if (endpoint == null)
+            {
+                throw new ArgumentNullException(nameof(endpoint), "Endpoint cannot be null.");
+            }
+
+            if (_NamedPipeEndpoints.ContainsKey(endpoint.PipeName))
+            {
+                throw new OpenCifsServerConfigurationException("A named-pipe endpoint with the same name is already registered.");
+            }
+
+            _NamedPipeEndpoints.Add(endpoint.PipeName, endpoint);
+        }
+
+        /// <summary>
+        /// Register a bounded DFS referral configuration.
+        /// </summary>
+        /// <param name="referral">DFS referral definition.</param>
+        public void RegisterDfsReferral(OpenCifsServerDfsReferral referral)
+        {
+            if (referral == null)
+            {
+                throw new ArgumentNullException(nameof(referral), "Referral cannot be null.");
+            }
+
+            OpenCifsServerDfsReferral clonedReferral = referral.Clone();
+
+            if (!_DfsReferralsByShare.TryGetValue(clonedReferral.NamespaceShareName, out List<OpenCifsServerDfsReferral>? referrals) || referrals == null)
+            {
+                referrals = new List<OpenCifsServerDfsReferral>();
+                _DfsReferralsByShare.Add(clonedReferral.NamespaceShareName, referrals);
+            }
+
+            if (referrals.Exists(existing =>
+                StringComparer.OrdinalIgnoreCase.Equals(NormalizeDfsRelativePath(existing.NamespacePath), NormalizeDfsRelativePath(clonedReferral.NamespacePath)) &&
+                StringComparer.OrdinalIgnoreCase.Equals(existing.TargetServerName, clonedReferral.TargetServerName) &&
+                StringComparer.OrdinalIgnoreCase.Equals(existing.TargetShareName, clonedReferral.TargetShareName) &&
+                StringComparer.OrdinalIgnoreCase.Equals(NormalizeDfsRelativePath(existing.TargetPath), NormalizeDfsRelativePath(clonedReferral.TargetPath))))
+            {
+                throw new OpenCifsServerConfigurationException("An equivalent DFS referral is already registered.");
+            }
+
+            referrals.Add(clonedReferral);
+        }
+
+        /// <summary>
+        /// Get immutable snapshots for the shares exposed by this host.
+        /// </summary>
+        /// <returns>Available share snapshots.</returns>
+        public IReadOnlyList<OpenCifsServerShareInfo> GetAvailableShares()
+        {
+            bool exposeIpcShare = ShouldExposeIpcShare();
+
+            if (_RegisteredShares.Count == 0)
+            {
+                List<OpenCifsServerShareInfo> implicitShareInfos = new List<OpenCifsServerShareInfo>
+                {
+                    CreateImplicitOptionsShareInfo(Options)
+                };
+
+                if (exposeIpcShare)
+                {
+                    implicitShareInfos.Add(CreateIpcShareInfo());
+                }
+
+                return implicitShareInfos;
+            }
+
+            OpenCifsServerShareInfo[] configuredShareInfos = new OpenCifsServerShareInfo[_RegisteredShares.Count + (exposeIpcShare ? 1 : 0)];
+            int shareIndex = 0;
+
+            foreach (RegisteredShareRecord shareRecord in _RegisteredShares.Values)
+            {
+                configuredShareInfos[shareIndex++] = CreateShareInfo(
+                    shareRecord.ShareName,
+                    shareRecord.RootPath,
+                    shareRecord.Backend.CreateRootIfMissing,
+                    shareRecord.Backend.GetType().Name,
+                    isImplicitOptionsShare: false,
+                    shareRecord.Backend.Capabilities);
+            }
+
+            if (exposeIpcShare)
+            {
+                configuredShareInfos[shareIndex] = CreateIpcShareInfo();
+            }
+
+            return configuredShareInfos;
+        }
+
+        private bool ShouldExposeIpcShare()
+        {
+            return _NamedPipeEndpoints.Count != 0 || HasAnyDfsReferrals();
         }
 
         /// <summary>
@@ -257,6 +368,10 @@ namespace OpenCIFS.Server
             OpenCifsServerDurableOpenRecord durableOpenRecord = new OpenCifsServerDurableOpenRecord
             {
                 PersistentFileId = openRecord.State.PersistentFileId,
+                UsesDurableHandleV2 = openRecord.State.UsesDurableHandleV2,
+                DurableCreateGuid = openRecord.State.DurableCreateGuid,
+                DurableTimeoutMs = openRecord.State.DurableTimeoutMs,
+                IsPersistent = openRecord.State.IsPersistent,
                 DurableOwnerUserName = sessionRecord.UserName,
                 DurableOwnerUserDomain = sessionRecord.UserDomain,
                 ShareName = openRecord.ShareName,
@@ -272,6 +387,7 @@ namespace OpenCIFS.Server
                 CanWriteData = openRecord.CanWriteData,
                 CanDelete = openRecord.CanDelete,
                 GrantedOplockLevel = openRecord.GrantedOplockLevel,
+                LeaseRecord = openRecord.LeaseRecord,
                 IsDeletePending = openRecord.State.IsDeletePending,
                 SuppressAccessTimeUpdates = openRecord.SuppressAccessTimeUpdates,
                 SuppressModificationTimeUpdates = openRecord.SuppressModificationTimeUpdates,
@@ -300,7 +416,18 @@ namespace OpenCIFS.Server
         {
             return openRecord.State.IsDurable &&
                 !openRecord.IsDirectory &&
-                !openRecord.IsOplockBreakInProgress;
+                !openRecord.IsOplockBreakInProgress &&
+                (openRecord.LeaseRecord == null || !openRecord.LeaseRecord.IsBreaking);
+        }
+
+        private static uint GetGrantedDurableHandleTimeoutMs(uint requestedTimeoutMs)
+        {
+            if (requestedTimeoutMs == 0)
+            {
+                return DefaultDurableHandleTimeoutMs;
+            }
+
+            return Math.Min(requestedTimeoutMs, DefaultDurableHandleTimeoutMs);
         }
 
         /// <summary>
@@ -309,7 +436,7 @@ namespace OpenCIFS.Server
         /// <returns>Advertised SMB2/3 dialects.</returns>
         public SmbDialect[] GetAdvertisedDialects()
         {
-            SmbDialect maximumImplementedDialect = SmbDialect.Smb21;
+            SmbDialect maximumImplementedDialect = GetMaximumImplementedDialect();
             SmbDialect effectiveMaximumDialect = Options.MaximumDialect < maximumImplementedDialect
                 ? Options.MaximumDialect
                 : maximumImplementedDialect;
@@ -457,7 +584,24 @@ namespace OpenCIFS.Server
             }
 
             byte[] packetBytes = responsePacket.ToByteArray();
-            IMessageSigner signer = MessageSignerFactory.Create(SigningAlgorithmId.HmacSha256);
+
+            if (TryGetEncryptedResponsePacketSessionId(responsePacket, out ulong encryptedSessionId) &&
+                TryGetResponseEncryptionKey(encryptedSessionId, out byte[]? encryptionKey, out bool retainedEncryptionKey) &&
+                encryptionKey != null)
+            {
+                byte[] encryptedPacket = Smb3MessageTransform.EncryptPacket(packetBytes, encryptedSessionId, encryptionKey, _NegotiatedCipher);
+                _RetainedResponseSigningKeys.Remove(encryptedSessionId);
+
+                if (retainedEncryptionKey)
+                {
+                    _RetainedResponseEncryptionKeys.Remove(encryptedSessionId);
+                }
+
+                return encryptedPacket;
+            }
+
+            IMessageSigner signer = CreateNegotiatedMessageSigner();
+            HashSet<ulong>? consumedRetainedSigningKeys = null;
             int offset = 0;
 
             for (int index = 0; index < responsePacket.Entries.Count; index++)
@@ -468,15 +612,32 @@ namespace OpenCIFS.Server
                     : checked((int)responseEntry.Header.NextCommand);
 
                 if ((responseEntry.Header.Flags & Smb2HeaderFlags.Signed) != 0 &&
-                    TryGetSessionSigningKey(responseEntry.Header.SessionId, out byte[]? signingKey) &&
+                    TryGetResponseSigningKey(responseEntry.Header.SessionId, out byte[]? signingKey, out bool retainedSigningKey) &&
                     signingKey != null)
                 {
                     Array.Clear(packetBytes, offset + Smb2HeaderSignatureOffset, Smb2HeaderSignatureLength);
-                    byte[] signature = signer.Sign(packetBytes.AsSpan(offset, entryLength), signingKey, ReadOnlySpan<byte>.Empty);
+                    ReadOnlySpan<byte> serverSignNonce = signer.RequiresNonce
+                        ? Smb2SigningNonce.BuildSmb311GmacNonce(responseEntry.Header.MessageId, isServerToClient: true)
+                        : ReadOnlySpan<byte>.Empty;
+                    byte[] signature = signer.Sign(packetBytes.AsSpan(offset, entryLength), signingKey, serverSignNonce);
                     Buffer.BlockCopy(signature, 0, packetBytes, offset + Smb2HeaderSignatureOffset, signature.Length);
+
+                    if (retainedSigningKey)
+                    {
+                        consumedRetainedSigningKeys ??= new HashSet<ulong>();
+                        consumedRetainedSigningKeys.Add(responseEntry.Header.SessionId);
+                    }
                 }
 
                 offset += entryLength;
+            }
+
+            if (consumedRetainedSigningKeys != null)
+            {
+                foreach (ulong sessionId in consumedRetainedSigningKeys)
+                {
+                    _RetainedResponseSigningKeys.Remove(sessionId);
+                }
             }
 
             return packetBytes;
@@ -487,14 +648,15 @@ namespace OpenCIFS.Server
         /// </summary>
         /// <param name="requestPacket">Parsed SMB2 request packet.</param>
         /// <param name="packetBytes">Serialized SMB2 request bytes.</param>
-        public void ValidateRequestPacket(Smb2CompoundPacket requestPacket, ReadOnlyMemory<byte> packetBytes)
+        /// <param name="wasEncrypted">Whether the supplied SMB2 bytes were decrypted from an SMB3 transform packet.</param>
+        public void ValidateRequestPacket(Smb2CompoundPacket requestPacket, ReadOnlyMemory<byte> packetBytes, bool wasEncrypted = false)
         {
             if (requestPacket == null)
             {
                 throw new ArgumentNullException(nameof(requestPacket), "RequestPacket cannot be null.");
             }
 
-            IMessageSigner signer = MessageSignerFactory.Create(SigningAlgorithmId.HmacSha256);
+            IMessageSigner signer = CreateNegotiatedMessageSigner();
             int offset = 0;
 
             for (int index = 0; index < requestPacket.Entries.Count; index++)
@@ -504,7 +666,8 @@ namespace OpenCIFS.Server
                 int entryLength = requestHeader.NextCommand == 0
                     ? packetBytes.Length - offset
                     : checked((int)requestHeader.NextCommand);
-                bool requestMustBeSigned = ShouldRequireSignedRequest(requestHeader, out byte[]? signingKey);
+                byte[]? signingKey = null;
+                bool requestMustBeSigned = !wasEncrypted && ShouldRequireSignedRequest(requestHeader, out signingKey);
 
                 if (requestHeader.Command == Smb2Command.Negotiate && (requestHeader.Flags & Smb2HeaderFlags.Signed) != 0)
                 {
@@ -522,6 +685,12 @@ namespace OpenCIFS.Server
                     continue;
                 }
 
+                if (wasEncrypted)
+                {
+                    offset += entryLength;
+                    continue;
+                }
+
                 if (signingKey == null || signingKey.Length == 0)
                 {
                     throw new ProtocolValidationException("The server does not have a signing key for the signed SMB2 request.", nameof(requestPacket));
@@ -529,14 +698,43 @@ namespace OpenCIFS.Server
 
                 byte[] expectedMessage = packetBytes.Slice(offset, entryLength).ToArray();
                 Array.Clear(expectedMessage, Smb2HeaderSignatureOffset, Smb2HeaderSignatureLength);
+                ReadOnlySpan<byte> serverVerifyNonce = signer.RequiresNonce
+                    ? Smb2SigningNonce.BuildSmb311GmacNonce(requestHeader.MessageId, isServerToClient: false)
+                    : ReadOnlySpan<byte>.Empty;
 
-                if (!signer.Verify(expectedMessage, signingKey, ReadOnlySpan<byte>.Empty, requestHeader.Signature))
+                if (!signer.Verify(expectedMessage, signingKey, serverVerifyNonce, requestHeader.Signature))
                 {
                     throw new ProtocolValidationException("The SMB2 request signature did not verify.", nameof(requestPacket));
                 }
 
                 offset += entryLength;
             }
+        }
+
+        /// <summary>
+        /// Decrypt an inbound SMB3 transform packet when the session requires encryption.
+        /// Plain SMB2 packets are returned unchanged.
+        /// </summary>
+        /// <param name="requestPacketBytes">Inbound direct-TCP packet payload.</param>
+        /// <param name="wasEncrypted">Whether the returned SMB2 packet bytes were decrypted from an SMB3 transform packet.</param>
+        /// <returns>Plain SMB2 packet bytes.</returns>
+        public byte[] UnwrapRequestPacket(ReadOnlyMemory<byte> requestPacketBytes, out bool wasEncrypted)
+        {
+            if (!Smb2TransformHeader.LooksLikeTransformHeader(requestPacketBytes.Span))
+            {
+                wasEncrypted = false;
+                return requestPacketBytes.ToArray();
+            }
+
+            Smb2TransformHeader header = Smb2TransformHeader.ReadFrom(requestPacketBytes);
+
+            if (!TryGetSessionDecryptionKey(header.SessionId, out byte[]? decryptionKey) || decryptionKey == null)
+            {
+                throw new ProtocolValidationException("The server does not have an SMB3 decryption key for the encrypted request session.", nameof(requestPacketBytes));
+            }
+
+            wasEncrypted = true;
+            return Smb3MessageTransform.DecryptPacket(requestPacketBytes, decryptionKey, expectedSessionId: header.SessionId, cipher: _NegotiatedCipher);
         }
 
         /// <summary>
@@ -629,6 +827,11 @@ namespace OpenCIFS.Server
             if (!TryGetOpen(sessionRecord, requestHeader.TreeId, request.PersistentFileId, request.VolatileFileId, out ServerOpenRecord? openRecord) || openRecord == null)
             {
                 return CreateChangeNotifyErrorResponse(requestHeader, NtStatus.FileClosed, requestHeader.SessionId, requestHeader.TreeId);
+            }
+
+            if (openRecord.IsNamedPipeEndpoint)
+            {
+                return CreateChangeNotifyErrorResponse(requestHeader, NtStatus.NotSupported, requestHeader.SessionId, requestHeader.TreeId);
             }
 
             if (!openRecord.IsDirectory)
@@ -779,19 +982,40 @@ namespace OpenCIFS.Server
         {
             Smb2NegotiateRequestValidator.Validate(request);
             SmbDialect[] advertisedDialects = GetAdvertisedDialects();
+            WriteDiagnostic(
+                "Negotiate request received: capabilities=" + request.Capabilities +
+                ", dialects=[" + String.Join(", ", request.Dialects) + "]" +
+                ", negotiateContextCount=" + request.NegotiateContextCount +
+                ", negotiateContextBytes=" + request.NegotiateContextData.Length +
+                ", requireEncryptionForSmb3=" + Options.RequireEncryptionForSmb3 + ".");
 
             if (advertisedDialects.Length == 0)
             {
-                throw new InvalidOperationException("The configured server dialect range does not include any currently implemented SMB2 dialects.");
+                throw new OpenCifsServerConfigurationException("The configured server dialect range does not include any currently implemented SMB2 dialects.");
+            }
+
+            SmbDialect maximumAdvertisedDialect = advertisedDialects[advertisedDialects.Length - 1];
+            bool clientAdvertisedLegacySmb3Encryption = (request.Capabilities & Smb2GlobalCapabilities.Encryption) != 0;
+            bool clientAdvertisedSmb311NegotiationShape =
+                Array.IndexOf(request.Dialects, SmbDialect.Smb311) >= 0 &&
+                (request.NegotiateContextCount != 0 || request.NegotiateContextData.Length != 0);
+
+            if (Options.RequireEncryptionForSmb3 &&
+                !clientAdvertisedLegacySmb3Encryption &&
+                !clientAdvertisedSmb311NegotiationShape &&
+                advertisedDialects[0] <= SmbDialect.Smb21 &&
+                maximumAdvertisedDialect > SmbDialect.Smb21)
+            {
+                maximumAdvertisedDialect = SmbDialect.Smb21;
             }
 
             if (!SmbDialectCatalog.TrySelectHighestCommonSmb2Dialect(
                 clientDialects: request.Dialects,
                 minimumServerDialect: advertisedDialects[0],
-                maximumServerDialect: advertisedDialects[advertisedDialects.Length - 1],
+                maximumServerDialect: maximumAdvertisedDialect,
                 negotiatedDialect: out SmbDialect negotiatedDialect))
             {
-                throw new InvalidOperationException("No common SMB2 dialect is available for negotiation.");
+                throw new OpenCifsServerStateException("No common SMB2 dialect is available for negotiation.");
             }
 
             Smb2SecurityMode securityMode = Smb2SecurityMode.SigningEnabled;
@@ -806,9 +1030,7 @@ namespace OpenCIFS.Server
                 SecurityMode = securityMode,
                 Dialect = negotiatedDialect,
                 ServerGuid = ServerGuid,
-                Capabilities = negotiatedDialect >= SmbDialect.Smb21
-                    ? Smb2GlobalCapabilities.LargeMtu
-                    : Smb2GlobalCapabilities.None,
+                Capabilities = GetNegotiatedServerCapabilities(negotiatedDialect),
                 MaxTransactSize = ImplementedMaxTransactSize,
                 MaxReadSize = GetImplementedReadWriteSizeForDialect(negotiatedDialect),
                 MaxWriteSize = GetImplementedReadWriteSizeForDialect(negotiatedDialect),
@@ -825,8 +1047,179 @@ namespace OpenCIFS.Server
             _NegotiatedServerCapabilities = response.Capabilities;
             _NegotiatedDialect = response.Dialect;
 
+            if (Options.EnableSmb311Preview && clientAdvertisedSmb311NegotiationShape)
+            {
+                _PreauthHashAccumulator = new PreauthIntegrityHashAccumulator(HashAlgorithmId.Sha512);
+
+                if (negotiatedDialect == SmbDialect.Smb311)
+                {
+                    PopulateSmb311NegotiateResponseContexts(request, response);
+                }
+                else
+                {
+                    _NegotiatedCipher = SmbCipherAlgorithmId.Aes128Ccm;
+                    _ReceivedClientNetname = null;
+                }
+            }
+            else
+            {
+                _PreauthHashAccumulator = null;
+                _NegotiatedCipher = SmbCipherAlgorithmId.Aes128Ccm;
+                _ReceivedClientNetname = null;
+            }
+
             Smb2NegotiateResponseValidator.Validate(response);
             return response;
+        }
+
+        private void PopulateSmb311NegotiateResponseContexts(Smb2NegotiateRequest request, Smb2NegotiateResponse response)
+        {
+            Smb2NegotiateContextEntry[] clientEntries = request.DecodeNegotiateContextEntries();
+            PreauthIntegrityCapabilities? clientPreauth = null;
+            EncryptionCapabilities? clientEncryption = null;
+            SigningCapabilities? clientSigning = null;
+
+            for (int index = 0; index < clientEntries.Length; index++)
+            {
+                Smb2NegotiateContextEntry entry = clientEntries[index];
+
+                switch (entry.ContextType)
+                {
+                    case Smb2NegotiateContextType.PreauthIntegrityCapabilities:
+                        clientPreauth = PreauthIntegrityCapabilities.ReadFrom(entry.Payload);
+                        break;
+                    case Smb2NegotiateContextType.EncryptionCapabilities:
+                        clientEncryption = EncryptionCapabilities.ReadFrom(entry.Payload);
+                        break;
+                    case Smb2NegotiateContextType.SigningCapabilities:
+                        clientSigning = SigningCapabilities.ReadFrom(entry.Payload);
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            if (clientPreauth == null)
+            {
+                throw new ProtocolEncodingException("SMB 3.1.1 negotiate requests must include a preauth integrity context.");
+            }
+
+            HashAlgorithmId selectedHash = Smb311NegotiateContextSelector.SelectPreauthHashAlgorithm(clientPreauth);
+            SigningAlgorithmId selectedSigning = Smb311NegotiateContextSelector.SelectSigningAlgorithm(clientSigning);
+            SmbCipherAlgorithmId? selectedCipher = Smb311NegotiateContextSelector.SelectCipher(clientEncryption);
+            _NegotiatedCipher = selectedCipher ?? SmbCipherAlgorithmId.Aes128Ccm;
+
+            for (int index = 0; index < clientEntries.Length; index++)
+            {
+                if (clientEntries[index].ContextType == Smb2NegotiateContextType.Netname)
+                {
+                    NetnameNegotiateContext clientNetname = NetnameNegotiateContext.ReadFrom(clientEntries[index].Payload);
+                    _ReceivedClientNetname = clientNetname.ServerName;
+                    break;
+                }
+            }
+
+            byte[] serverSalt = new byte[32];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(serverSalt);
+
+            List<Smb2NegotiateContextEntry> responseEntries = new List<Smb2NegotiateContextEntry>(3)
+            {
+                new Smb2NegotiateContextEntry
+                {
+                    ContextType = Smb2NegotiateContextType.PreauthIntegrityCapabilities,
+                    Payload = new PreauthIntegrityCapabilities
+                    {
+                        HashAlgorithms = new HashAlgorithmId[] { selectedHash },
+                        Salt = serverSalt
+                    }.ToByteArray()
+                }
+            };
+
+            if (selectedCipher.HasValue)
+            {
+                responseEntries.Add(new Smb2NegotiateContextEntry
+                {
+                    ContextType = Smb2NegotiateContextType.EncryptionCapabilities,
+                    Payload = new EncryptionCapabilities
+                    {
+                        Ciphers = new SmbCipherAlgorithmId[] { selectedCipher.Value }
+                    }.ToByteArray()
+                });
+            }
+
+            if (clientSigning != null)
+            {
+                responseEntries.Add(new Smb2NegotiateContextEntry
+                {
+                    ContextType = Smb2NegotiateContextType.SigningCapabilities,
+                    Payload = new SigningCapabilities
+                    {
+                        SigningAlgorithms = new SigningAlgorithmId[] { selectedSigning }
+                    }.ToByteArray()
+                });
+            }
+
+            response.SetNegotiateContextEntries(responseEntries);
+        }
+
+        /// <summary>
+        /// Append the bytes of an SMB2 message to the SMB 3.1.1 preauthentication transcript hash.
+        /// </summary>
+        /// <param name="header">Message header.</param>
+        /// <param name="body">Message body bytes.</param>
+        /// <remarks>
+        /// This is a no-op when the SMB 3.1.1 preview opt-in is not enabled or when the negotiate
+        /// request did not carry SMB 3.1.1-shaped contexts. The bytes appended are the concatenation
+        /// of <see cref="Smb2Header.ToByteArray()" /> and the supplied body, matching the wire-message
+        /// form per MS-SMB2.
+        /// </remarks>
+        public void AppendPreauthMessageBytes(Smb2Header header, byte[] body)
+        {
+            if (_PreauthHashAccumulator == null)
+            {
+                return;
+            }
+
+            if (header == null)
+            {
+                throw new ArgumentNullException(nameof(header), "Header cannot be null.");
+            }
+
+            if (body == null)
+            {
+                throw new ArgumentNullException(nameof(body), "Body cannot be null.");
+            }
+
+            byte[] headerBytes = header.ToByteArray();
+            byte[] message = new byte[headerBytes.Length + body.Length];
+            Buffer.BlockCopy(headerBytes, 0, message, 0, headerBytes.Length);
+            Buffer.BlockCopy(body, 0, message, headerBytes.Length, body.Length);
+            _PreauthHashAccumulator.Append(message);
+        }
+
+        /// <summary>
+        /// Get the current SMB 3.1.1 preauthentication transcript hash, or <c>null</c> when the
+        /// preview opt-in is not enabled or the host has not yet allocated the accumulator.
+        /// </summary>
+        /// <returns>Current transcript hash bytes, or <c>null</c>.</returns>
+        public byte[]? GetCurrentPreauthIntegrityHash()
+        {
+            return _PreauthHashAccumulator?.CurrentHash;
+        }
+
+        /// <summary>
+        /// Get the most-recent <c>SMB2_NETNAME_NEGOTIATE_CONTEXT_ID</c> server name
+        /// received from an SMB 3.1.1 preview client during negotiate.
+        /// </summary>
+        /// <remarks>
+        /// Per MS-SMB2 §3.3.5.4 the NETNAME context is informational; the server SHOULD record
+        /// it but is not required to reject mismatches. Returns <c>null</c> when no SMB 3.1.1
+        /// negotiate request has been processed or when the request did not carry a NETNAME context.
+        /// </remarks>
+        /// <returns>Received NETNAME server name, or <c>null</c>.</returns>
+        public string? GetReceivedClientNetname()
+        {
+            return _ReceivedClientNetname;
         }
 
         /// <summary>
@@ -866,6 +1259,8 @@ namespace OpenCIFS.Server
                 };
             }
 
+            RetainResponseSigningKey(sessionId, sessionRecord);
+            RetainResponseEncryptionKey(sessionId, sessionRecord);
             CleanupSessionRecord(sessionRecord);
             _Sessions.Remove(sessionId);
 
@@ -960,15 +1355,17 @@ namespace OpenCIFS.Server
             {
                 ShareName = shareRecord.ShareName,
                 ShareRootPath = shareRecord.RootPath,
-                Backend = shareRecord.Backend
+                Backend = shareRecord.Backend,
+                IsNamedPipeShare = shareRecord.IsNamedPipeShare
             };
-            treeRecord.State.Connect(treeId, shareRecord.ShareName);
+            Smb2ShareFlags shareFlags = GetShareFlags(shareRecord.ShareName, shareRecord.IsNamedPipeShare);
+            treeRecord.State.Connect(treeId, shareRecord.ShareName, shareFlags);
             sessionRecord.Trees[treeId] = treeRecord;
 
             Smb2TreeConnectResponse response = new Smb2TreeConnectResponse
             {
-                ShareType = Smb2ShareType.Disk,
-                ShareFlags = 0,
+                ShareType = shareRecord.IsNamedPipeShare ? Smb2ShareType.Pipe : Smb2ShareType.Disk,
+                ShareFlags = (uint)shareFlags,
                 Capabilities = 0,
                 MaximalAccess = 0x001F01FF
             };
@@ -998,6 +1395,11 @@ namespace OpenCIFS.Server
                 return CreateOperationResult(NtStatus.AccessDenied, new Smb2CreateResponse());
             }
 
+            if (TryMatchDfsReferral(treeRecord.ShareName, request.Name, out _, out _))
+            {
+                return CreateOperationResult(NtStatus.PathNotCovered, new Smb2CreateResponse());
+            }
+
             Smb2CreateContext[] createContexts;
 
             try
@@ -1010,9 +1412,9 @@ namespace OpenCIFS.Server
             }
 
             bool durableHandleRequested = false;
-            bool hasUnsupportedDurableV2Context = false;
-            bool hasUnsupportedLeaseV2Context = false;
+            Smb2DurableHandleRequestV2Context? durableHandleRequestV2Context = null;
             Smb2DurableHandleReconnectContext? durableHandleReconnectContext = null;
+            Smb2DurableHandleReconnectV2Context? durableHandleReconnectV2Context = null;
             Smb2CreateRequestLeaseContext? leaseRequestContext = null;
 
             for (int index = 0; index < createContexts.Length; index++)
@@ -1031,10 +1433,16 @@ namespace OpenCIFS.Server
                     continue;
                 }
 
-                if (IsCreateContextName(createContext, 0x44, 0x48, 0x32, 0x51) ||
-                    IsCreateContextName(createContext, 0x44, 0x48, 0x32, 0x43))
+                if (Smb2DurableHandleRequestV2Context.IsMatch(createContext))
                 {
-                    hasUnsupportedDurableV2Context = true;
+                    durableHandleRequested = true;
+                    durableHandleRequestV2Context = Smb2DurableHandleRequestV2Context.ReadFrom(createContext);
+                    continue;
+                }
+
+                if (Smb2DurableHandleReconnectV2Context.IsMatch(createContext))
+                {
+                    durableHandleReconnectV2Context = Smb2DurableHandleReconnectV2Context.ReadFrom(createContext);
                     continue;
                 }
 
@@ -1046,11 +1454,27 @@ namespace OpenCIFS.Server
 
                 if (Smb2CreateRequestLeaseContext.HasLeaseContextName(createContext))
                 {
-                    hasUnsupportedLeaseV2Context = true;
+                    continue;
                 }
             }
 
-            if (hasUnsupportedDurableV2Context || hasUnsupportedLeaseV2Context)
+            if (treeRecord.IsNamedPipeShare)
+            {
+                return HandleNamedPipeCreate(sessionRecord, treeRecord, request, createContexts);
+            }
+
+            if ((durableHandleRequestV2Context != null || durableHandleReconnectV2Context != null) &&
+                (_NegotiatedDialect == null || _NegotiatedDialect.Value < SmbDialect.Smb30))
+            {
+                return CreateOperationResult(NtStatus.InvalidParameter, new Smb2CreateResponse());
+            }
+
+            if (durableHandleRequestV2Context != null && (durableHandleRequestV2Context.Flags & Smb2DurableHandleFlags.Persistent) != 0)
+            {
+                return CreateOperationResult(NtStatus.InvalidParameter, new Smb2CreateResponse());
+            }
+
+            if (durableHandleReconnectV2Context != null && (durableHandleReconnectV2Context.Flags & Smb2DurableHandleFlags.Persistent) != 0)
             {
                 return CreateOperationResult(NtStatus.InvalidParameter, new Smb2CreateResponse());
             }
@@ -1069,7 +1493,28 @@ namespace OpenCIFS.Server
 
             if (durableHandleReconnectContext != null)
             {
-                return HandleDurableReconnectCreate(sessionRecord, treeRecord, request, fullPath, durableHandleReconnectContext);
+                return HandleDurableReconnectCreate(
+                    sessionRecord,
+                    treeRecord,
+                    request,
+                    fullPath,
+                    durableHandleReconnectContext.PersistentFileId,
+                    durableHandleReconnectContext.VolatileFileId,
+                    durableCreateGuid: null,
+                    leaseRequestContext);
+            }
+
+            if (durableHandleReconnectV2Context != null)
+            {
+                return HandleDurableReconnectCreate(
+                    sessionRecord,
+                    treeRecord,
+                    request,
+                    fullPath,
+                    durableHandleReconnectV2Context.PersistentFileId,
+                    durableHandleReconnectV2Context.VolatileFileId,
+                    durableHandleReconnectV2Context.CreateGuid,
+                    leaseRequestContext);
             }
 
             if (Options.RequestCallbacks?.CreateCallback != null)
@@ -1116,7 +1561,7 @@ namespace OpenCIFS.Server
             }
 
             bool exists = isDirectoryRequest ? existsDirectory : existsFile;
-            bool requiresWriteAccessForOpen = !isDirectoryRequest && (!exists ||
+            bool requiresWriteAccessForOpen = !isDirectoryRequest && (
                 request.CreateDisposition == Smb2CreateDisposition.Create ||
                 request.CreateDisposition == Smb2CreateDisposition.OpenIf ||
                 request.CreateDisposition == Smb2CreateDisposition.Overwrite ||
@@ -1337,12 +1782,24 @@ namespace OpenCIFS.Server
                 }
             }
 
-            bool durableHandleGranted = durableHandleRequested && grantedOplockLevel == Smb2OplockLevel.Batch;
+            bool durableHandleGranted = durableHandleRequested &&
+                !isDirectoryRequest &&
+                (grantedOplockLevel == Smb2OplockLevel.Batch ||
+                 (leaseRequested && leaseRequestContext != null && LeaseStateSupportsDurableReconnect(leaseRequestContext.LeaseState)));
+            bool durableHandleV2Granted = durableHandleGranted && durableHandleRequestV2Context != null;
+            uint grantedDurableTimeoutMs = durableHandleGranted
+                ? GetGrantedDurableHandleTimeoutMs(durableHandleRequestV2Context?.Timeout ?? 0)
+                : 0;
             ulong fileId = _SharedState.AllocateFileId();
             OpenState openState = new OpenState();
             openState.Bind(fileId, fileId, request.Name.Length == 0 ? "\\" : request.Name);
             openState.SetOplockLevel(grantedOplockLevel);
-            openState.SetDurable(durableHandleGranted);
+            openState.SetDurable(
+                durableHandleGranted,
+                durableHandleV2Granted,
+                durableHandleRequestV2Context?.CreateGuid ?? Guid.Empty,
+                grantedDurableTimeoutMs,
+                isPersistent: false);
             OpenCifsServerLeaseRecord? attachedLeaseRecord = null;
 
             if (leaseRequested && leaseRequestContext != null)
@@ -1420,7 +1877,13 @@ namespace OpenCIFS.Server
 
             if (durableHandleGranted)
             {
-                responseCreateContexts.Add(Smb2DurableHandleResponseContext.Create());
+                responseCreateContexts.Add(durableHandleV2Granted
+                    ? new Smb2DurableHandleResponseV2Context
+                    {
+                        Timeout = grantedDurableTimeoutMs,
+                        Flags = Smb2DurableHandleFlags.None
+                    }.ToCreateContext()
+                    : Smb2DurableHandleResponseContext.Create());
             }
 
             if (attachedLeaseRecord != null)
@@ -1482,7 +1945,10 @@ namespace OpenCIFS.Server
             ServerTreeRecord treeRecord,
             Smb2CreateRequest request,
             string fullPath,
-            Smb2DurableHandleReconnectContext reconnectContext)
+            ulong persistentFileId,
+            ulong originalVolatileFileId,
+            Guid? durableCreateGuid,
+            Smb2CreateRequestLeaseContext? leaseRequestContext)
         {
             if (request.Name.Length == 0 ||
                 (request.CreateOptions & Smb2CreateOptions.DirectoryFile) != 0)
@@ -1490,7 +1956,7 @@ namespace OpenCIFS.Server
                 return CreateOperationResult(NtStatus.InvalidParameter, new Smb2CreateResponse());
             }
 
-            if (!_SharedState.TryTakeDetachedDurableOpen(reconnectContext.PersistentFileId, out OpenCifsServerDurableOpenRecord? durableOpenRecord) ||
+            if (!_SharedState.TryTakeDetachedDurableOpen(persistentFileId, out OpenCifsServerDurableOpenRecord? durableOpenRecord) ||
                 durableOpenRecord == null)
             {
                 return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
@@ -1517,12 +1983,70 @@ namespace OpenCIFS.Server
                     return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
                 }
 
-                ulong volatileFileId = _SharedState.AllocateFileId();
+                if (durableOpenRecord.UsesDurableHandleV2)
+                {
+                    if (!durableCreateGuid.HasValue || durableCreateGuid.Value == Guid.Empty)
+                    {
+                        return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
+                    }
+
+                    if (durableOpenRecord.DurableCreateGuid != durableCreateGuid.Value)
+                    {
+                        return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
+                    }
+                }
+                else if (durableCreateGuid.HasValue)
+                {
+                    return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
+                }
+
+                OpenCifsServerLeaseRecord? attachedLeaseRecord = durableOpenRecord.LeaseRecord;
+
+                if ((attachedLeaseRecord == null) != (leaseRequestContext == null))
+                {
+                    return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
+                }
+
+                if (attachedLeaseRecord != null)
+                {
+                    if (attachedLeaseRecord.ClientGuid != _NegotiatedClientGuid ||
+                        leaseRequestContext == null ||
+                        !attachedLeaseRecord.LeaseKey.AsSpan().SequenceEqual(leaseRequestContext.LeaseKey) ||
+                        !LeaseStateSupportsDurableReconnect(attachedLeaseRecord.LeaseState))
+                    {
+                        return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
+                    }
+                }
+                else if (durableOpenRecord.GrantedOplockLevel != Smb2OplockLevel.Batch)
+                {
+                    return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
+                }
+
+                ulong newVolatileFileId = _SharedState.AllocateFileId();
                 OpenState openState = new OpenState();
-                openState.Bind(durableOpenRecord.PersistentFileId, volatileFileId, durableOpenRecord.RelativePath);
+                openState.Bind(durableOpenRecord.PersistentFileId, newVolatileFileId, durableOpenRecord.RelativePath);
                 openState.SetDeletePending(durableOpenRecord.IsDeletePending);
                 openState.SetOplockLevel(durableOpenRecord.GrantedOplockLevel);
-                openState.SetDurable(true);
+                openState.SetDurable(
+                    true,
+                    durableOpenRecord.UsesDurableHandleV2,
+                    durableOpenRecord.DurableCreateGuid,
+                    durableOpenRecord.DurableTimeoutMs,
+                    durableOpenRecord.IsPersistent);
+                bool leaseBreakInProgress = attachedLeaseRecord != null && attachedLeaseRecord.IsBreaking;
+
+                if (attachedLeaseRecord != null)
+                {
+                    attachedLeaseRecord.FullPath = fullPath;
+                    attachedLeaseRecord.LeaseState = DetermineGrantedCreateLeaseState(fullPath, attachedLeaseRecord, attachedLeaseRecord.LeaseState);
+
+                    if (!leaseBreakInProgress)
+                    {
+                        attachedLeaseRecord.PendingBreakLeaseState = attachedLeaseRecord.LeaseState;
+                    }
+
+                    openState.SetLease(attachedLeaseRecord.LeaseKey, attachedLeaseRecord.LeaseState);
+                }
 
                 ServerOpenRecord openRecord = new ServerOpenRecord
                 {
@@ -1543,6 +2067,7 @@ namespace OpenCIFS.Server
                     IsDirectory = false,
                     GrantedOplockLevel = durableOpenRecord.GrantedOplockLevel,
                     PendingOplockBreakLevel = durableOpenRecord.GrantedOplockLevel,
+                    LeaseRecord = attachedLeaseRecord,
                     Stream = durableOpenRecord.Stream,
                     State = openState,
                     SuppressAccessTimeUpdates = durableOpenRecord.SuppressAccessTimeUpdates,
@@ -1555,7 +2080,7 @@ namespace OpenCIFS.Server
                     OpenCifsServerDetachedByteRangeLock detachedLock = durableOpenRecord.Locks[index];
                     openRecord.Locks.Add(new ServerByteRangeLock
                     {
-                        OwnerVolatileFileId = volatileFileId,
+                        OwnerVolatileFileId = newVolatileFileId,
                         Offset = detachedLock.Offset,
                         Length = detachedLock.Length,
                         IsShared = detachedLock.IsShared
@@ -1563,9 +2088,35 @@ namespace OpenCIFS.Server
                 }
 
                 durableOpenRecord.Stream = null;
-                sessionRecord.Opens[volatileFileId] = openRecord;
+                sessionRecord.Opens[newVolatileFileId] = openRecord;
+
+                if (attachedLeaseRecord != null)
+                {
+                    UpdateLeaseStateForTrackedOpens(attachedLeaseRecord);
+                }
 
                 FileMetadata metadata = BuildFileMetadata(treeRecord.Backend, fullPath);
+                List<Smb2CreateContext> responseCreateContexts = new List<Smb2CreateContext>
+                {
+                    durableOpenRecord.UsesDurableHandleV2
+                        ? new Smb2DurableHandleResponseV2Context
+                        {
+                            Timeout = durableOpenRecord.DurableTimeoutMs,
+                            Flags = durableOpenRecord.IsPersistent ? Smb2DurableHandleFlags.Persistent : Smb2DurableHandleFlags.None
+                        }.ToCreateContext()
+                        : Smb2DurableHandleResponseContext.Create()
+                };
+
+                if (attachedLeaseRecord != null)
+                {
+                    responseCreateContexts.Add(new Smb2CreateResponseLeaseContext
+                    {
+                        LeaseKey = attachedLeaseRecord.LeaseKey,
+                        LeaseState = attachedLeaseRecord.LeaseState,
+                        LeaseFlags = leaseBreakInProgress ? Smb2LeaseFlags.BreakInProgress : Smb2LeaseFlags.None
+                    }.ToCreateContext());
+                }
+
                 Smb2CreateResponse response = new Smb2CreateResponse
                 {
                     OplockLevel = durableOpenRecord.GrantedOplockLevel,
@@ -1579,11 +2130,8 @@ namespace OpenCIFS.Server
                     EndOfFile = metadata.EndOfFile,
                     FileAttributes = metadata.FileAttributes,
                     PersistentFileId = durableOpenRecord.PersistentFileId,
-                    VolatileFileId = volatileFileId,
-                    CreateContexts = Smb2CreateContextCodec.Encode(new Smb2CreateContext[]
-                    {
-                        Smb2DurableHandleResponseContext.Create()
-                    })
+                    VolatileFileId = newVolatileFileId,
+                    CreateContexts = Smb2CreateContextCodec.Encode(responseCreateContexts)
                 };
                 Smb2CreateResponseValidator.Validate(response);
                 reconnectAccepted = true;
@@ -1596,6 +2144,82 @@ namespace OpenCIFS.Server
                     _SharedState.PutDetachedDurableOpen(durableOpenRecord);
                 }
             }
+        }
+
+        private OpenCifsServerOperationResult<Smb2CreateResponse> HandleNamedPipeCreate(
+            ServerSessionRecord sessionRecord,
+            ServerTreeRecord treeRecord,
+            Smb2CreateRequest request,
+            IReadOnlyList<Smb2CreateContext> createContexts)
+        {
+            if ((request.CreateOptions & Smb2CreateOptions.DirectoryFile) != 0 ||
+                request.Name.Length == 0 ||
+                request.RequestedOplockLevel != Smb2OplockLevel.None ||
+                createContexts.Count != 0)
+            {
+                return CreateOperationResult(NtStatus.InvalidParameter, new Smb2CreateResponse());
+            }
+
+            if (request.CreateDisposition != Smb2CreateDisposition.Open &&
+                request.CreateDisposition != Smb2CreateDisposition.OpenIf)
+            {
+                return CreateOperationResult(NtStatus.InvalidParameter, new Smb2CreateResponse());
+            }
+
+            string normalizedPipeName = request.Name.Replace('/', '\\').Trim('\\');
+
+            if (normalizedPipeName.Length == 0 ||
+                normalizedPipeName.IndexOf('\\') >= 0 ||
+                !_NamedPipeEndpoints.TryGetValue(normalizedPipeName, out OpenCifsServerNamedPipeEndpoint? endpoint) ||
+                endpoint == null)
+            {
+                return CreateOperationResult(NtStatus.ObjectNameNotFound, new Smb2CreateResponse());
+            }
+
+            ulong fileId = _SharedState.AllocateFileId();
+            OpenState openState = new OpenState();
+            openState.Bind(fileId, fileId, normalizedPipeName);
+            ServerOpenRecord openRecord = new ServerOpenRecord
+            {
+                OwnerHost = this,
+                SessionId = sessionRecord.State.SessionId,
+                TreeId = treeRecord.State.TreeId,
+                ShareName = treeRecord.ShareName,
+                ShareRootPath = treeRecord.ShareRootPath,
+                DesiredAccess = request.DesiredAccess,
+                ShareAccess = request.ShareAccess,
+                CanRead = CanRead(request.DesiredAccess),
+                CanWrite = CanWrite(request.DesiredAccess),
+                CanReadData = CanReadData(request.DesiredAccess),
+                CanWriteData = CanWriteData(request.DesiredAccess),
+                CanDelete = CanDelete(request.DesiredAccess),
+                IsDirectory = false,
+                State = openState,
+                IsNamedPipeEndpoint = true,
+                NamedPipeEndpoint = endpoint,
+                FullPath = normalizedPipeName
+            };
+            sessionRecord.Opens[fileId] = openRecord;
+
+            ulong currentFileTime = ToFileTimeUtc(DateTimeOffset.UtcNow);
+            Smb2CreateResponse response = new Smb2CreateResponse
+            {
+                OplockLevel = Smb2OplockLevel.None,
+                Flags = 0,
+                CreateAction = Smb2CreateAction.Opened,
+                CreationTime = currentFileTime,
+                LastAccessTime = currentFileTime,
+                LastWriteTime = currentFileTime,
+                ChangeTime = currentFileTime,
+                AllocationSize = 0,
+                EndOfFile = 0,
+                FileAttributes = ProtocolFileAttributes.Normal,
+                PersistentFileId = fileId,
+                VolatileFileId = fileId,
+                CreateContexts = Array.Empty<byte>()
+            };
+            Smb2CreateResponseValidator.Validate(response);
+            return CreateOperationResult(NtStatus.Success, response);
         }
 
         /// <summary>
@@ -1713,6 +2337,11 @@ namespace OpenCIFS.Server
                 return CreateOperationResult(NtStatus.FileClosed, new Smb2ReadResponse());
             }
 
+            if (openRecord.IsNamedPipeEndpoint)
+            {
+                return CreateOperationResult(NtStatus.NotSupported, new Smb2ReadResponse());
+            }
+
             if (!openRecord.CanReadData)
             {
                 return CreateOperationResult(NtStatus.AccessDenied, new Smb2ReadResponse());
@@ -1798,6 +2427,11 @@ namespace OpenCIFS.Server
                 return CreateOperationResult(NtStatus.FileClosed, new Smb2WriteResponse());
             }
 
+            if (openRecord.IsNamedPipeEndpoint)
+            {
+                return CreateOperationResult(NtStatus.NotSupported, new Smb2WriteResponse());
+            }
+
             if (!openRecord.CanWriteData)
             {
                 return CreateOperationResult(NtStatus.AccessDenied, new Smb2WriteResponse());
@@ -1864,6 +2498,11 @@ namespace OpenCIFS.Server
                 return CreateOperationResult(NtStatus.FileClosed, new Smb2FlushResponse());
             }
 
+            if (openRecord.IsNamedPipeEndpoint)
+            {
+                return CreateOperationResult(NtStatus.NotSupported, new Smb2FlushResponse());
+            }
+
             if (openRecord.IsDirectory || openRecord.Stream == null)
             {
                 return CreateOperationResult(NtStatus.InvalidParameter, new Smb2FlushResponse());
@@ -1902,6 +2541,11 @@ namespace OpenCIFS.Server
             if (!TryGetOpen(sessionRecord, treeId, request.PersistentFileId, request.VolatileFileId, out ServerOpenRecord? openRecord) || openRecord == null)
             {
                 return CreateOperationResult(NtStatus.FileClosed, new Smb2LockResponse());
+            }
+
+            if (openRecord.IsNamedPipeEndpoint)
+            {
+                return CreateOperationResult(NtStatus.NotSupported, new Smb2LockResponse());
             }
 
             if (openRecord.IsDirectory)
@@ -2001,10 +2645,14 @@ namespace OpenCIFS.Server
 
             switch ((FsctlCode)request.CtlCode)
             {
+                case FsctlCode.DfsGetReferrals:
+                    return HandleDfsGetReferralsIoctl(request);
                 case FsctlCode.ValidateNegotiateInfo:
                     return HandleValidateNegotiateInfoIoctl(request);
                 case FsctlCode.SrvEnumerateSnapshots:
                     return HandleEnumerateSnapshotsIoctl(request, openRecord!);
+                case FsctlCode.PipeTransceive:
+                    return HandlePipeTransceiveIoctl(sessionRecord, treeId, request, openRecord);
                 default:
                     return CreateOperationResult(NtStatus.NotSupported, defaultResponse);
             }
@@ -2033,9 +2681,9 @@ namespace OpenCIFS.Server
 
             FileMetadata metadata = default;
 
-            if ((request.Flags & Smb2CloseFlags.PostQueryAttributes) != 0)
+            if ((request.Flags & Smb2CloseFlags.PostQueryAttributes) != 0 && !openRecord.IsNamedPipeEndpoint)
             {
-                metadata = BuildFileMetadata(openRecord.Backend, openRecord.FullPath);
+                metadata = BuildFileMetadata(openRecord.Backend!, openRecord.FullPath);
             }
 
             CloseOpenRecord(sessionRecord, request.VolatileFileId);
@@ -2074,6 +2722,11 @@ namespace OpenCIFS.Server
             if (!TryGetOpen(sessionRecord, treeId, request.PersistentFileId, request.VolatileFileId, out ServerOpenRecord? openRecord) || openRecord == null)
             {
                 return CreateOperationResult(NtStatus.FileClosed, new Smb2QueryInfoResponse());
+            }
+
+            if (openRecord.IsNamedPipeEndpoint)
+            {
+                return CreateOperationResult(NtStatus.NotSupported, new Smb2QueryInfoResponse());
             }
 
             byte[] outputBuffer;
@@ -2487,6 +3140,11 @@ namespace OpenCIFS.Server
                 return CreateOperationResult(NtStatus.FileClosed, new Smb2QueryDirectoryResponse());
             }
 
+            if (openRecord.IsNamedPipeEndpoint)
+            {
+                return CreateOperationResult(NtStatus.NotSupported, new Smb2QueryDirectoryResponse());
+            }
+
             if (Options.RequestCallbacks?.QueryDirectoryCallback != null)
             {
                 NtStatus? callbackStatus = Options.RequestCallbacks.QueryDirectoryCallback(new OpenCifsServerQueryDirectoryContext
@@ -2610,6 +3268,11 @@ namespace OpenCIFS.Server
             if (!TryGetOpen(sessionRecord, treeId, request.PersistentFileId, request.VolatileFileId, out ServerOpenRecord? openRecord) || openRecord == null)
             {
                 return CreateOperationResult(NtStatus.FileClosed, new Smb2SetInfoResponse());
+            }
+
+            if (openRecord.IsNamedPipeEndpoint)
+            {
+                return CreateOperationResult(NtStatus.NotSupported, new Smb2SetInfoResponse());
             }
 
             if (Options.RequestCallbacks?.SetInfoCallback != null)
@@ -2816,6 +3479,7 @@ namespace OpenCIFS.Server
             ServerSessionRecord sessionRecord = new ServerSessionRecord
             {
                 SessionSetupFlavor = SessionSetupFlavor.LegacyOpenCifs,
+                SpnegoMechanismTypes = (string[])initToken.MechanismTypes.Clone(),
                 UserName = negotiateToken.UserName,
                 UserDomain = negotiateToken.UserDomain,
                 ServerChallenge = serverChallenge,
@@ -2867,6 +3531,9 @@ namespace OpenCIFS.Server
             ServerSessionRecord sessionRecord = new ServerSessionRecord
             {
                 SessionSetupFlavor = initialToken.Flavor,
+                SpnegoMechanismTypes = initialToken.SpnegoInitToken == null
+                    ? null
+                    : (string[])initialToken.SpnegoInitToken.MechanismTypes.Clone(),
                 ServerChallenge = serverChallenge,
                 ExpectedServerName = expectedServerName,
                 ExpectedUserDomain = expectedUserDomain,
@@ -2981,11 +3648,11 @@ namespace OpenCIFS.Server
 
             sessionRecord.State.Authenticate();
             sessionRecord.SessionBaseKey = verifiedResponseSet.SessionBaseKey;
-            sessionRecord.SessionKey = verifiedResponseSet.SessionBaseKey;
+            ApplyAuthenticatedSessionKeys(sessionRecord, verifiedResponseSet.SessionBaseKey);
 
             Smb2SessionSetupResponse response = new Smb2SessionSetupResponse
             {
-                SessionFlags = Smb2SessionFlags.None,
+                SessionFlags = sessionRecord.EncryptData ? Smb2SessionFlags.EncryptData : Smb2SessionFlags.None,
                 SecurityBuffer = SpnegoTokenCodec.EncodeNegTokenResp(new SpnegoNegTokenResp
                 {
                     NegotiationState = SpnegoNegState.AcceptCompleted,
@@ -3129,19 +3796,33 @@ namespace OpenCIFS.Server
             sessionRecord.UserDomain = userDomain;
             sessionRecord.State.Authenticate();
             sessionRecord.SessionBaseKey = verifiedResponseSet.SessionBaseKey;
-            sessionRecord.SessionKey = sessionKey;
+            ApplyAuthenticatedSessionKeys(sessionRecord, sessionKey);
+
+            byte[]? mechanismListMic = null;
+
+            if (sessionRecord.SessionSetupFlavor == SessionSetupFlavor.SpnegoNtlm &&
+                authenticateMessage.MessageIntegrityCodeOffset != 0 &&
+                sessionRecord.SpnegoMechanismTypes != null &&
+                sessionRecord.SpnegoMechanismTypes.Length != 0)
+            {
+                mechanismListMic = ComputeSpnegoMechanismListMic(
+                    sessionRecord.SpnegoMechanismTypes,
+                    authenticateMessage.Flags,
+                    sessionKey);
+            }
 
             byte[] responseSecurityBuffer = sessionRecord.SessionSetupFlavor == SessionSetupFlavor.SpnegoNtlm
                 ? SpnegoTokenCodec.EncodeNegTokenResp(new SpnegoNegTokenResp
                 {
                     NegotiationState = SpnegoNegState.AcceptCompleted,
-                    SupportedMechanism = SpnegoMechanismOid.Ntlm
+                    SupportedMechanism = SpnegoMechanismOid.Ntlm,
+                    MechanismListMic = mechanismListMic
                 })
                 : Array.Empty<byte>();
 
             Smb2SessionSetupResponse response = new Smb2SessionSetupResponse
             {
-                SessionFlags = Smb2SessionFlags.None,
+                SessionFlags = sessionRecord.EncryptData ? Smb2SessionFlags.EncryptData : Smb2SessionFlags.None,
                 SecurityBuffer = responseSecurityBuffer
             };
             Smb2SessionSetupResponseValidator.Validate(response);
@@ -3332,6 +4013,294 @@ namespace OpenCIFS.Server
             return false;
         }
 
+        private bool TryGetSessionEncryptionKey(ulong sessionId, out byte[]? encryptionKey)
+        {
+            if (_Sessions.TryGetValue(sessionId, out ServerSessionRecord? sessionRecord) &&
+                sessionRecord != null &&
+                sessionRecord.State.IsAuthenticated &&
+                sessionRecord.EncryptData &&
+                sessionRecord.EncryptionKey != null &&
+                sessionRecord.EncryptionKey.Length != 0)
+            {
+                encryptionKey = sessionRecord.EncryptionKey;
+                return true;
+            }
+
+            encryptionKey = null;
+            return false;
+        }
+
+        private bool TryGetSessionDecryptionKey(ulong sessionId, out byte[]? decryptionKey)
+        {
+            if (_Sessions.TryGetValue(sessionId, out ServerSessionRecord? sessionRecord) &&
+                sessionRecord != null &&
+                sessionRecord.State.IsAuthenticated &&
+                sessionRecord.EncryptData &&
+                sessionRecord.DecryptionKey != null &&
+                sessionRecord.DecryptionKey.Length != 0)
+            {
+                decryptionKey = sessionRecord.DecryptionKey;
+                return true;
+            }
+
+            decryptionKey = null;
+            return false;
+        }
+
+        private bool IsSessionEncryptionActive(ulong sessionId)
+        {
+            return sessionId != 0 &&
+                _Sessions.TryGetValue(sessionId, out ServerSessionRecord? sessionRecord) &&
+                sessionRecord != null &&
+                sessionRecord.State.IsAuthenticated &&
+                sessionRecord.EncryptData;
+        }
+
+        private SmbDialect GetMaximumImplementedDialect()
+        {
+            return Options.EnableSmb311Preview ? SmbDialect.Smb311 : SmbDialect.Smb302;
+        }
+
+        private Smb2GlobalCapabilities GetNegotiatedServerCapabilities(SmbDialect negotiatedDialect)
+        {
+            Smb2GlobalCapabilities capabilities = Smb2GlobalCapabilities.None;
+
+            if (negotiatedDialect >= SmbDialect.Smb21)
+            {
+                capabilities |= Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing;
+
+                if (HasAnyDfsReferrals())
+                {
+                    capabilities |= Smb2GlobalCapabilities.Dfs;
+                }
+            }
+
+            if (negotiatedDialect >= SmbDialect.Smb30)
+            {
+                capabilities |= Smb2GlobalCapabilities.Encryption;
+            }
+
+            return capabilities;
+        }
+
+        private bool ShouldEnableSessionEncryptionForNegotiatedSession()
+        {
+            return _NegotiatedDialect.HasValue &&
+                _NegotiatedDialect.Value >= SmbDialect.Smb30 &&
+                (_NegotiatedServerCapabilities & Smb2GlobalCapabilities.Encryption) != 0 &&
+                (_NegotiatedClientCapabilities & Smb2GlobalCapabilities.Encryption) != 0;
+        }
+
+        private void ApplyAuthenticatedSessionKeys(ServerSessionRecord sessionRecord, byte[] sessionKey)
+        {
+            if (sessionRecord == null)
+            {
+                throw new ArgumentNullException(nameof(sessionRecord), "SessionRecord cannot be null.");
+            }
+
+            if (sessionKey == null)
+            {
+                throw new ArgumentNullException(nameof(sessionKey), "SessionKey cannot be null.");
+            }
+
+            if (_NegotiatedDialect == null || _NegotiatedDialect.Value < SmbDialect.Smb30)
+            {
+                sessionRecord.SessionKey = (byte[])sessionKey.Clone();
+                sessionRecord.EncryptionKey = null;
+                sessionRecord.DecryptionKey = null;
+                sessionRecord.EncryptData = false;
+                return;
+            }
+
+            SmbKeyDerivationInputs derivationInputs = new SmbKeyDerivationInputs
+            {
+                SessionKey = (byte[])sessionKey.Clone(),
+                Dialect = _NegotiatedDialect.Value,
+                CipherAlgorithmId = _NegotiatedCipher
+            };
+
+            if (_NegotiatedDialect.Value == SmbDialect.Smb311)
+            {
+                if (_PreauthHashAccumulator == null)
+                {
+                    throw new OpenCifsServerStateException("SMB 3.1.1 session key derivation requires a preauthentication transcript hash.");
+                }
+
+                derivationInputs.PreauthIntegrityHash = _PreauthHashAccumulator.CurrentHash;
+            }
+
+            SmbSessionKeySet keySet = SmbSessionKeyDerivation.DeriveKeys(derivationInputs);
+            sessionRecord.SessionKey = keySet.SigningKey;
+
+            if (ShouldEnableSessionEncryptionForNegotiatedSession())
+            {
+                sessionRecord.EncryptionKey = keySet.EncryptionKey;
+                sessionRecord.DecryptionKey = keySet.DecryptionKey;
+                sessionRecord.EncryptData = true;
+                return;
+            }
+
+            sessionRecord.EncryptionKey = null;
+            sessionRecord.DecryptionKey = null;
+            sessionRecord.EncryptData = false;
+        }
+
+        private byte[] CreateAuthenticatedSessionSigningKey(byte[] sessionKey)
+        {
+            if (sessionKey == null)
+            {
+                throw new ArgumentNullException(nameof(sessionKey), "SessionKey cannot be null.");
+            }
+
+            if (_NegotiatedDialect == null || _NegotiatedDialect.Value < SmbDialect.Smb30)
+            {
+                return (byte[])sessionKey.Clone();
+            }
+
+            SmbKeyDerivationInputs signingInputs = new SmbKeyDerivationInputs
+            {
+                SessionKey = (byte[])sessionKey.Clone(),
+                Dialect = _NegotiatedDialect.Value,
+                CipherAlgorithmId = _NegotiatedCipher
+            };
+
+            if (_NegotiatedDialect.Value == SmbDialect.Smb311)
+            {
+                if (_PreauthHashAccumulator == null)
+                {
+                    throw new OpenCifsServerStateException("SMB 3.1.1 signing-key derivation requires a preauthentication transcript hash.");
+                }
+
+                signingInputs.PreauthIntegrityHash = _PreauthHashAccumulator.CurrentHash;
+            }
+
+            return SmbSessionKeyDerivation.DeriveSigningKey(signingInputs);
+        }
+
+        private IMessageSigner CreateNegotiatedMessageSigner()
+        {
+            return MessageSignerFactory.Create(GetNegotiatedSigningAlgorithm());
+        }
+
+        private SigningAlgorithmId GetNegotiatedSigningAlgorithm()
+        {
+            if (_NegotiatedDialect == null)
+            {
+                return SigningAlgorithmId.HmacSha256;
+            }
+
+            switch (_NegotiatedDialect.Value)
+            {
+                case SmbDialect.Smb30:
+                case SmbDialect.Smb302:
+                    return SigningAlgorithmId.AesCmac;
+                default:
+                    return SigningAlgorithmId.HmacSha256;
+            }
+        }
+
+        private bool TryGetResponseSigningKey(ulong sessionId, out byte[]? signingKey, out bool retainedSigningKey)
+        {
+            if (TryGetSessionSigningKey(sessionId, out signingKey))
+            {
+                retainedSigningKey = false;
+                return true;
+            }
+
+            if (_RetainedResponseSigningKeys.TryGetValue(sessionId, out byte[]? retainedKey) &&
+                retainedKey != null &&
+                retainedKey.Length != 0)
+            {
+                signingKey = retainedKey;
+                retainedSigningKey = true;
+                return true;
+            }
+
+            signingKey = null;
+            retainedSigningKey = false;
+            return false;
+        }
+
+        private bool TryGetResponseEncryptionKey(ulong sessionId, out byte[]? encryptionKey, out bool retainedEncryptionKey)
+        {
+            if (TryGetSessionEncryptionKey(sessionId, out encryptionKey))
+            {
+                retainedEncryptionKey = false;
+                return true;
+            }
+
+            if (_RetainedResponseEncryptionKeys.TryGetValue(sessionId, out byte[]? retainedKey) &&
+                retainedKey != null &&
+                retainedKey.Length != 0)
+            {
+                encryptionKey = retainedKey;
+                retainedEncryptionKey = true;
+                return true;
+            }
+
+            encryptionKey = null;
+            retainedEncryptionKey = false;
+            return false;
+        }
+
+        private void RetainResponseSigningKey(ulong sessionId, ServerSessionRecord sessionRecord)
+        {
+            if (sessionRecord.SessionKey == null || sessionRecord.SessionKey.Length == 0)
+            {
+                _RetainedResponseSigningKeys.Remove(sessionId);
+                return;
+            }
+
+            _RetainedResponseSigningKeys[sessionId] = (byte[])sessionRecord.SessionKey.Clone();
+        }
+
+        private void RetainResponseEncryptionKey(ulong sessionId, ServerSessionRecord sessionRecord)
+        {
+            if (sessionRecord.EncryptionKey == null || sessionRecord.EncryptionKey.Length == 0 || !sessionRecord.EncryptData)
+            {
+                _RetainedResponseEncryptionKeys.Remove(sessionId);
+                return;
+            }
+
+            _RetainedResponseEncryptionKeys[sessionId] = (byte[])sessionRecord.EncryptionKey.Clone();
+        }
+
+        private bool TryGetEncryptedResponsePacketSessionId(Smb2CompoundPacket responsePacket, out ulong sessionId)
+        {
+            sessionId = 0;
+
+            if (responsePacket.Entries.Count == 0)
+            {
+                return false;
+            }
+
+            ulong candidateSessionId = responsePacket.Entries[0].Header.SessionId;
+
+            if (candidateSessionId == 0 ||
+                (!IsSessionEncryptionActive(candidateSessionId) && !_RetainedResponseEncryptionKeys.ContainsKey(candidateSessionId)))
+            {
+                return false;
+            }
+
+            for (int index = 0; index < responsePacket.Entries.Count; index++)
+            {
+                Smb2Header header = responsePacket.Entries[index].Header;
+
+                if (header.SessionId != candidateSessionId)
+                {
+                    throw new OpenCifsServerStateException("The bounded SMB3 encrypted response path does not support compounded packets that mix SMB2 session identifiers.");
+                }
+
+                if (header.Command == Smb2Command.Negotiate || header.Command == Smb2Command.SessionSetup)
+                {
+                    return false;
+                }
+            }
+
+            sessionId = candidateSessionId;
+            return true;
+        }
+
         private static bool IsCreateContextName(Smb2CreateContext createContext, byte b0, byte b1, byte b2, byte b3)
         {
             return createContext.Name.Length == 4 &&
@@ -3357,6 +4326,11 @@ namespace OpenCIFS.Server
                 return false;
             }
 
+            if (IsSessionEncryptionActive(requestHeader.SessionId))
+            {
+                return false;
+            }
+
             return Options.RequireSigning || IsSessionSigningRequired();
         }
 
@@ -3370,7 +4344,8 @@ namespace OpenCIFS.Server
         {
             Smb2HeaderFlags flags = Smb2HeaderFlags.ServerToRedir;
 
-            if (TryGetSessionSigningKey(openRecord.SessionId, out byte[]? _) &&
+            if (!IsSessionEncryptionActive(openRecord.SessionId) &&
+                TryGetSessionSigningKey(openRecord.SessionId, out byte[]? _) &&
                 (Options.RequireSigning || IsSessionSigningRequired()))
             {
                 flags |= Smb2HeaderFlags.Signed;
@@ -3448,19 +4423,32 @@ namespace OpenCIFS.Server
                     Smb2NegotiateRequest negotiateRequest = Smb2NegotiateRequest.ReadFrom(trimmedPayload);
                     ValidateAndAcceptRequestHeader(requestHeader, Smb2Command.Negotiate);
                     Smb2NegotiateResponse negotiateResponse = HandleNegotiate(negotiateRequest);
+                    Smb2Header negotiateResponseHeader = CreateResponseHeader(requestHeader, NtStatus.Success);
+                    byte[] negotiateResponseBody = negotiateResponse.ToByteArray();
+                    AppendPreauthMessageBytes(requestHeader, trimmedPayload);
+                    AppendPreauthMessageBytes(negotiateResponseHeader, negotiateResponseBody);
                     return new Smb2CompoundPacketEntry(
-                        CreateResponseHeader(requestHeader, NtStatus.Success),
-                        negotiateResponse.ToByteArray());
+                        negotiateResponseHeader,
+                        negotiateResponseBody);
                 case Smb2Command.SessionSetup:
                     Smb2SessionSetupRequest sessionSetupRequest = Smb2SessionSetupRequest.ReadFrom(trimmedPayload);
                     ValidateAndAcceptRequestHeader(requestHeader, Smb2Command.SessionSetup, expectedSessionId: requestHeader.SessionId);
+                    AppendPreauthMessageBytes(requestHeader, trimmedPayload);
                     OpenCifsServerSessionSetupResult sessionSetupResult = HandleSessionSetup(requestHeader.SessionId, sessionSetupRequest);
                     Smb2HeaderFlags sessionSetupResponseFlags = sessionSetupResult.Status == NtStatus.Success
                         ? Smb2HeaderFlags.Signed
                         : Smb2HeaderFlags.None;
+                    Smb2Header sessionSetupResponseHeader = CreateResponseHeader(requestHeader, sessionSetupResult.Status, sessionId: sessionSetupResult.SessionId, additionalFlags: sessionSetupResponseFlags);
+                    byte[] sessionSetupResponseBody = sessionSetupResult.Response.ToByteArray();
+
+                    if (sessionSetupResult.Status == NtStatus.MoreProcessingRequired)
+                    {
+                        AppendPreauthMessageBytes(sessionSetupResponseHeader, sessionSetupResponseBody);
+                    }
+
                     return new Smb2CompoundPacketEntry(
-                        CreateResponseHeader(requestHeader, sessionSetupResult.Status, sessionId: sessionSetupResult.SessionId, additionalFlags: sessionSetupResponseFlags),
-                        sessionSetupResult.Response.ToByteArray());
+                        sessionSetupResponseHeader,
+                        sessionSetupResponseBody);
                 case Smb2Command.Logoff:
                     Smb2LogoffRequest logoffRequest = Smb2LogoffRequest.ReadFrom(trimmedPayload);
                     ValidateAndAcceptRequestHeader(requestHeader, Smb2Command.Logoff, expectedSessionId: requestHeader.SessionId);
@@ -3658,7 +4646,7 @@ namespace OpenCIFS.Server
 
             if (!isFirstEntry)
             {
-                effectiveHeader.Flags = Smb2HeaderFlags.RelatedOperations;
+                effectiveHeader.Flags = (requestHeader.Flags & Smb2HeaderFlags.Signed) | Smb2HeaderFlags.RelatedOperations;
 
                 if (CommandRequiresSessionId(requestHeader.Command))
                 {
@@ -4370,6 +5358,51 @@ namespace OpenCIFS.Server
             return CreateOperationResult(NtStatus.Success, response);
         }
 
+        private OpenCifsServerOperationResult<Smb2IoctlResponse> HandlePipeTransceiveIoctl(
+            ServerSessionRecord sessionRecord,
+            uint treeId,
+            Smb2IoctlRequest request,
+            ServerOpenRecord? openRecord)
+        {
+            Smb2IoctlResponse defaultResponse = CreateIoctlResponse(request);
+
+            if (openRecord == null || !openRecord.IsNamedPipeEndpoint || openRecord.NamedPipeEndpoint == null)
+            {
+                return CreateOperationResult(NtStatus.NotSupported, defaultResponse);
+            }
+
+            OpenCifsServerNamedPipeRequestContext context = new OpenCifsServerNamedPipeRequestContext(
+                Options.ServerName,
+                sessionRecord.State.SessionId,
+                treeId,
+                openRecord.State.Path,
+                sessionRecord.UserName,
+                sessionRecord.UserDomain,
+                _NegotiatedDialect,
+                request.InputBuffer,
+                request.MaxOutputResponse,
+                GetAvailableShares());
+            OpenCifsServerNamedPipeResponse endpointResponse = openRecord.NamedPipeEndpoint.Transceive(context);
+            byte[] outputBuffer = endpointResponse.OutputBuffer;
+
+            if ((uint)outputBuffer.Length > request.MaxOutputResponse)
+            {
+                return CreateOperationResult(NtStatus.BufferOverflow, defaultResponse);
+            }
+
+            Smb2IoctlResponse response = new Smb2IoctlResponse
+            {
+                CtlCode = request.CtlCode,
+                PersistentFileId = request.PersistentFileId,
+                VolatileFileId = request.VolatileFileId,
+                InputBuffer = Array.Empty<byte>(),
+                OutputBuffer = outputBuffer,
+                Flags = 0
+            };
+            Smb2IoctlResponseValidator.Validate(response);
+            return CreateOperationResult(endpointResponse.Status, response);
+        }
+
         private OpenCifsServerOperationResult<Smb2IoctlResponse> HandleValidateNegotiateInfoIoctl(Smb2IoctlRequest request)
         {
             Smb2IoctlResponse defaultResponse = CreateIoctlResponse(request);
@@ -4398,8 +5431,7 @@ namespace OpenCIFS.Server
             if (validateRequest.ClientGuid != _NegotiatedClientGuid ||
                 validateRequest.SecurityMode != _NegotiatedClientSecurityMode ||
                 validateRequest.Capabilities != _NegotiatedClientCapabilities ||
-                !TrySelectRequestedValidateDialect(validateRequest.Dialects, out SmbDialect matchedDialect) ||
-                matchedDialect != _NegotiatedDialect.Value)
+                !HasEquivalentValidateDialects(validateRequest.Dialects))
             {
                 return CreateOperationResult(NtStatus.InvalidParameter, defaultResponse);
             }
@@ -4426,6 +5458,114 @@ namespace OpenCIFS.Server
             return CreateOperationResult(NtStatus.Success, response);
         }
 
+        private OpenCifsServerOperationResult<Smb2IoctlResponse> HandleDfsGetReferralsIoctl(Smb2IoctlRequest request)
+        {
+            Smb2IoctlResponse defaultResponse = CreateIoctlResponse(request);
+
+            if (!HasAnyDfsReferrals())
+            {
+                return CreateOperationResult(NtStatus.FsDriverRequired, defaultResponse);
+            }
+
+            DfsReferralRequest referralRequest;
+
+            try
+            {
+                referralRequest = DfsReferralRequest.ReadFrom(request.InputBuffer);
+            }
+            catch (ProtocolEncodingException)
+            {
+                return CreateOperationResult(NtStatus.InvalidParameter, defaultResponse);
+            }
+
+            if (referralRequest.MaxReferralLevel < 2)
+            {
+                return CreateOperationResult(NtStatus.InvalidParameter, defaultResponse);
+            }
+
+            if (!TryCreateDfsReferralResponse(referralRequest.RequestPath, out DfsReferralResponse? referralResponse) || referralResponse == null)
+            {
+                return CreateOperationResult(NtStatus.ObjectPathNotFound, defaultResponse);
+            }
+
+            byte[] outputBuffer = referralResponse.ToByteArray();
+            NtStatus status = NtStatus.Success;
+
+            if (outputBuffer.Length > request.MaxOutputResponse && request.MaxOutputResponse != 0)
+            {
+                status = NtStatus.BufferOverflow;
+                byte[] truncatedBuffer = new byte[request.MaxOutputResponse];
+                Array.Copy(outputBuffer, truncatedBuffer, truncatedBuffer.Length);
+                outputBuffer = truncatedBuffer;
+            }
+
+            Smb2IoctlResponse response = new Smb2IoctlResponse
+            {
+                CtlCode = request.CtlCode,
+                PersistentFileId = WildcardIoctlFileId,
+                VolatileFileId = WildcardIoctlFileId,
+                InputBuffer = Array.Empty<byte>(),
+                OutputBuffer = outputBuffer,
+                Flags = 0
+            };
+            Smb2IoctlResponseValidator.Validate(response);
+            return CreateOperationResult(status, response);
+        }
+
+        private bool HasAnyDfsReferrals()
+        {
+            return _DfsReferralsByShare.Count != 0;
+        }
+
+        private Smb2ShareFlags GetShareFlags(string shareName, bool isNamedPipeShare)
+        {
+            if (isNamedPipeShare)
+            {
+                return Smb2ShareFlags.None;
+            }
+
+            return _DfsReferralsByShare.TryGetValue(shareName, out List<OpenCifsServerDfsReferral>? referrals) && referrals != null && referrals.Count != 0
+                ? (Smb2ShareFlags.Dfs | Smb2ShareFlags.DfsRoot)
+                : Smb2ShareFlags.None;
+        }
+
+        private bool TryCreateDfsReferralResponse(string requestPath, out DfsReferralResponse? response)
+        {
+            response = null;
+
+            if (!TryMatchDfsReferralByRequestPath(requestPath, out DfsReferralMatch? match) || match == null)
+            {
+                return false;
+            }
+
+            OpenCifsServerDfsReferral[] referrals = match.Referrals;
+            DfsReferralEntryV2[] entries = new DfsReferralEntryV2[referrals.Length];
+            string matchedDfsPath = BuildDfsRequestPath(match.ServerName, match.ShareName, match.NamespacePath);
+
+            for (int index = 0; index < referrals.Length; index++)
+            {
+                OpenCifsServerDfsReferral referral = referrals[index];
+                string targetPath = NormalizeDfsRelativePath(referral.TargetPath);
+                string networkAddress = BuildDfsRequestPath(referral.TargetServerName, referral.TargetShareName, targetPath);
+                entries[index] = new DfsReferralEntryV2
+                {
+                    IsRootTarget = false,
+                    TimeToLive = referral.TimeToLiveSeconds,
+                    DfsPath = matchedDfsPath,
+                    DfsAlternatePath = matchedDfsPath,
+                    NetworkAddress = networkAddress
+                };
+            }
+
+            response = new DfsReferralResponse
+            {
+                PathConsumed = checked((ushort)(matchedDfsPath.Length * 2)),
+                HeaderFlags = DfsReferralHeaderFlags.StorageServers,
+                Entries = entries
+            };
+            return true;
+        }
+
         private static bool IsConnectionScopedFsctl(uint ctlCode)
         {
             switch ((FsctlCode)ctlCode)
@@ -4446,27 +5586,27 @@ namespace OpenCIFS.Server
             return persistentFileId == WildcardIoctlFileId && volatileFileId == WildcardIoctlFileId;
         }
 
-        private bool TrySelectRequestedValidateDialect(IReadOnlyList<SmbDialect> requestDialects, out SmbDialect matchedDialect)
+        private bool HasEquivalentValidateDialects(IReadOnlyList<SmbDialect> requestDialects)
         {
-            matchedDialect = default;
-
-            if (_NegotiatedClientDialects.Length == 0 || _NegotiatedDialect == null)
+            if (_NegotiatedClientDialects.Length == 0)
             {
                 return false;
             }
 
-            SmbDialect[] requestDialectArray = new SmbDialect[requestDialects.Count];
+            if (requestDialects.Count != _NegotiatedClientDialects.Length)
+            {
+                return false;
+            }
 
             for (int index = 0; index < requestDialects.Count; index++)
             {
-                requestDialectArray[index] = requestDialects[index];
+                if (requestDialects[index] != _NegotiatedClientDialects[index])
+                {
+                    return false;
+                }
             }
 
-            return SmbDialectCatalog.TrySelectHighestCommonSmb2Dialect(
-                clientDialects: requestDialectArray,
-                minimumServerDialect: _NegotiatedDialect.Value,
-                maximumServerDialect: _NegotiatedDialect.Value,
-                negotiatedDialect: out matchedDialect);
+            return true;
         }
 
         private void CleanupTreeOpenRecords(ServerSessionRecord sessionRecord, uint treeId)
@@ -5262,6 +6402,11 @@ namespace OpenCIFS.Server
         private static Smb2LeaseState NormalizeLeaseState(Smb2LeaseState leaseState)
         {
             return leaseState & (Smb2LeaseState.ReadCaching | Smb2LeaseState.HandleCaching | Smb2LeaseState.WriteCaching);
+        }
+
+        private static bool LeaseStateSupportsDurableReconnect(Smb2LeaseState leaseState)
+        {
+            return (NormalizeLeaseState(leaseState) & Smb2LeaseState.HandleCaching) != 0;
         }
 
         private Smb2LeaseState DetermineGrantedCreateLeaseState(string fullPath, OpenCifsServerLeaseRecord? existingLeaseRecord, Smb2LeaseState requestedLeaseState)
@@ -6934,6 +8079,153 @@ namespace OpenCIFS.Server
             return parts[1];
         }
 
+        private bool TryMatchDfsReferral(string shareName, string relativePath, out OpenCifsServerDfsReferral[] referrals, out string matchedNamespacePath)
+        {
+            referrals = Array.Empty<OpenCifsServerDfsReferral>();
+            matchedNamespacePath = string.Empty;
+
+            if (!_DfsReferralsByShare.TryGetValue(shareName, out List<OpenCifsServerDfsReferral>? configuredReferrals) || configuredReferrals == null || configuredReferrals.Count == 0)
+            {
+                return false;
+            }
+
+            string normalizedRelativePath = NormalizeDfsRelativePath(relativePath);
+            string? bestNamespacePath = null;
+            int bestMatchLength = -1;
+
+            for (int index = 0; index < configuredReferrals.Count; index++)
+            {
+                string candidateNamespacePath = NormalizeDfsRelativePath(configuredReferrals[index].NamespacePath);
+
+                if (!PathFallsUnderDfsNamespace(candidateNamespacePath, normalizedRelativePath))
+                {
+                    continue;
+                }
+
+                if (candidateNamespacePath.Length > bestMatchLength)
+                {
+                    bestMatchLength = candidateNamespacePath.Length;
+                    bestNamespacePath = candidateNamespacePath;
+                }
+            }
+
+            if (bestNamespacePath == null)
+            {
+                return false;
+            }
+
+            List<OpenCifsServerDfsReferral> matches = configuredReferrals.FindAll(
+                referral => StringComparer.OrdinalIgnoreCase.Equals(NormalizeDfsRelativePath(referral.NamespacePath), bestNamespacePath));
+
+            if (matches.Count == 0)
+            {
+                return false;
+            }
+
+            referrals = matches.ToArray();
+            matchedNamespacePath = bestNamespacePath;
+            return true;
+        }
+
+        private bool TryMatchDfsReferralByRequestPath(string requestPath, out DfsReferralMatch? match)
+        {
+            match = null;
+            string normalizedRequestPath = NormalizeDfsRequestPath(requestPath);
+            string[] parts = normalizedRequestPath.Trim('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length < 2)
+            {
+                return false;
+            }
+
+            string serverName = parts[0];
+            string shareName = parts[1];
+            string relativePath = parts.Length <= 2 ? string.Empty : string.Join("\\", parts, 2, parts.Length - 2);
+
+            if (!TryMatchDfsReferral(shareName, relativePath, out OpenCifsServerDfsReferral[] referrals, out string matchedNamespacePath))
+            {
+                return false;
+            }
+
+            match = new DfsReferralMatch
+            {
+                ServerName = serverName,
+                ShareName = shareName,
+                NamespacePath = matchedNamespacePath,
+                Referrals = referrals
+            };
+            return true;
+        }
+
+        private static bool PathFallsUnderDfsNamespace(string namespacePath, string relativePath)
+        {
+            if (string.IsNullOrEmpty(namespacePath))
+            {
+                return true;
+            }
+
+            if (string.Equals(namespacePath, relativePath, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return relativePath.StartsWith(namespacePath + "\\", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeDfsRelativePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || path == "/" || path == "\\")
+            {
+                return string.Empty;
+            }
+
+            return path.Trim().Replace('/', '\\').Trim('\\');
+        }
+
+        private static string NormalizeDfsRequestPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                throw new ProtocolEncodingException("The DFS request path cannot be empty.");
+            }
+
+            string normalizedPath = path.Trim().Replace('/', '\\');
+
+            while (normalizedPath.StartsWith("\\\\", StringComparison.Ordinal))
+            {
+                normalizedPath = normalizedPath.Substring(1);
+            }
+
+            normalizedPath = "\\" + normalizedPath.Trim('\\');
+
+            while (normalizedPath.Contains("\\\\", StringComparison.Ordinal))
+            {
+                normalizedPath = normalizedPath.Replace("\\\\", "\\", StringComparison.Ordinal);
+            }
+
+            return normalizedPath;
+        }
+
+        private static string BuildDfsRequestPath(string serverName, string shareName, string? relativePath = null)
+        {
+            if (string.IsNullOrWhiteSpace(serverName))
+            {
+                throw new ArgumentNullException(nameof(serverName), "ServerName cannot be null or whitespace.");
+            }
+
+            if (string.IsNullOrWhiteSpace(shareName))
+            {
+                throw new ArgumentNullException(nameof(shareName), "ShareName cannot be null or whitespace.");
+            }
+
+            string normalizedServerName = serverName.Trim().Trim('\\');
+            string normalizedShareName = shareName.Trim().Trim('\\');
+            string normalizedRelativePath = NormalizeDfsRelativePath(relativePath ?? string.Empty);
+            return string.IsNullOrEmpty(normalizedRelativePath)
+                ? "\\" + normalizedServerName + "\\" + normalizedShareName
+                : "\\" + normalizedServerName + "\\" + normalizedShareName + "\\" + normalizedRelativePath;
+        }
+
         private static string FormatQueryInfoClass(Smb2QueryInfoRequest request)
         {
             if (request.InfoType == Smb2InfoType.FileSystem)
@@ -6951,6 +8243,12 @@ namespace OpenCIFS.Server
                 return true;
             }
 
+            if (ShouldExposeIpcShare() && string.Equals(shareName, IpcShareName, StringComparison.OrdinalIgnoreCase))
+            {
+                shareRecord = CreateNamedPipeShareRecord();
+                return true;
+            }
+
             if (_RegisteredShares.Count == 0 && string.Equals(shareName, Options.ShareName, StringComparison.OrdinalIgnoreCase))
             {
                 shareRecord = NormalizeRegisteredShare(new OpenCifsServerFileSystemShare
@@ -6964,6 +8262,17 @@ namespace OpenCIFS.Server
 
             shareRecord = null;
             return false;
+        }
+
+        private RegisteredShareRecord CreateNamedPipeShareRecord()
+        {
+            return new RegisteredShareRecord
+            {
+                ShareName = IpcShareName,
+                RootPath = NamedPipePseudoRootPath,
+                Backend = null!,
+                IsNamedPipeShare = true
+            };
         }
 
         private static RegisteredShareRecord NormalizeRegisteredShare(OpenCifsServerShareBackend share)
@@ -6990,8 +8299,76 @@ namespace OpenCIFS.Server
             {
                 ShareName = share.ShareName,
                 RootPath = rootPath,
-                Backend = share.Clone()
+                Backend = share.Clone(),
+                IsNamedPipeShare = false
             };
+        }
+
+        private OpenCifsServerShareInfo CreateIpcShareInfo()
+        {
+            return CreateShareInfo(
+                IpcShareName,
+                NamedPipePseudoRootPath,
+                createRootIfMissing: false,
+                nameof(OpenCifsServerNamedPipeEndpoint),
+                isImplicitOptionsShare: false,
+                new OpenCifsServerShareCapabilities
+                {
+                    SupportsFiles = false,
+                    SupportsDirectories = false,
+                    SupportsMetadata = false,
+                    SupportsLocking = false,
+                    SupportsNotifications = false,
+                    SupportsNamedStreams = false
+                });
+        }
+
+        private static OpenCifsServerShareInfo CreateImplicitOptionsShareInfo(OpenCifsServerOptions options)
+        {
+            return CreateShareInfo(
+                options.ShareName,
+                ResolveShareRootPath(options.SharePath),
+                createRootIfMissing: true,
+                nameof(OpenCifsServerFileSystemShare),
+                isImplicitOptionsShare: true,
+                new OpenCifsServerShareCapabilities
+                {
+                    SupportsFiles = true,
+                    SupportsDirectories = true,
+                    SupportsMetadata = true,
+                    SupportsLocking = true,
+                    SupportsNotifications = true,
+                    SupportsNamedStreams = false
+                });
+        }
+
+        private static OpenCifsServerShareInfo CreateShareInfo(
+            string shareName,
+            string rootPath,
+            bool createRootIfMissing,
+            string backendKind,
+            bool isImplicitOptionsShare,
+            OpenCifsServerShareCapabilities capabilities)
+        {
+            return new OpenCifsServerShareInfo(
+                shareName,
+                rootPath,
+                createRootIfMissing,
+                backendKind,
+                isImplicitOptionsShare,
+                capabilities);
+        }
+
+        private static string ResolveShareRootPath(string rootPath)
+        {
+            try
+            {
+                return Path.GetFullPath(rootPath);
+            }
+            catch (Exception exception)
+            {
+                throw new ArgumentException("RootPath could not be resolved to a filesystem location.", nameof(rootPath), exception);
+            }
         }
 
         private static string NormalizeRenamePath(string path)
@@ -7229,6 +8606,114 @@ namespace OpenCIFS.Server
             return span.Length >= signature.Length && span.Slice(0, signature.Length).SequenceEqual(signature);
         }
 
+        private static byte[] ComputeSpnegoMechanismListMic(IReadOnlyList<string> mechanismTypes, NtlmNegotiateFlags flags, ReadOnlySpan<byte> sessionKey)
+        {
+            if (mechanismTypes == null)
+            {
+                throw new ArgumentNullException(nameof(mechanismTypes), "MechanismTypes cannot be null.");
+            }
+
+            if (mechanismTypes.Count == 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(mechanismTypes), "At least one SPNEGO mechanism type is required.");
+            }
+
+            if (sessionKey.Length == 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(sessionKey), "The exported NTLM session key cannot be empty.");
+            }
+
+            byte[] mechanismTypeList = EncodeSpnegoMechanismTypeList(mechanismTypes);
+            byte[] signature = new byte[16];
+            LittleEndianWriter writer = new LittleEndianWriter();
+            writer.WriteUInt32(0);
+            writer.WriteBytes(mechanismTypeList);
+            byte[] checksum = HmacMd5.HashData(
+                CreateNtlmSigningKey(flags, sessionKey, serverToClient: true),
+                writer.ToArray());
+
+            if ((flags & NtlmNegotiateFlags.KeyExchange) != 0)
+            {
+                checksum = Rc4.Transform(
+                    CreateNtlmSealingKey(flags, sessionKey, serverToClient: true),
+                    checksum.AsSpan(0, 8));
+            }
+
+            LittleEndianWriter signatureWriter = new LittleEndianWriter();
+            signatureWriter.WriteUInt32(1);
+            signatureWriter.WriteBytes(checksum.AsSpan(0, 8));
+            signatureWriter.WriteUInt32(0);
+            return signatureWriter.ToArray();
+        }
+
+        private static byte[] EncodeSpnegoMechanismTypeList(IReadOnlyList<string> mechanismTypes)
+        {
+            AsnWriter writer = new AsnWriter(AsnEncodingRules.DER);
+            writer.PushSequence();
+
+            for (int index = 0; index < mechanismTypes.Count; index++)
+            {
+                if (string.IsNullOrWhiteSpace(mechanismTypes[index]))
+                {
+                    throw new ArgumentException("MechanismTypes cannot contain null or whitespace entries.", nameof(mechanismTypes));
+                }
+
+                writer.WriteObjectIdentifier(mechanismTypes[index]);
+            }
+
+            writer.PopSequence();
+            return writer.Encode();
+        }
+
+        private static byte[] CreateNtlmSigningKey(NtlmNegotiateFlags flags, ReadOnlySpan<byte> sessionKey, bool serverToClient)
+        {
+            if ((flags & NtlmNegotiateFlags.ExtendedSessionSecurity) == 0)
+            {
+                if ((flags & NtlmNegotiateFlags.AlwaysSign) != 0)
+                {
+                    return Array.Empty<byte>();
+                }
+
+                throw new NotSupportedException("The bounded SPNEGO mechListMIC helper requires NTLM extended session security.");
+            }
+
+            string direction = serverToClient ? "server-to-client" : "client-to-server";
+            byte[] suffix = Encoding.ASCII.GetBytes("session key to " + direction + " signing key magic constant\0");
+            byte[] material = new byte[sessionKey.Length + suffix.Length];
+            sessionKey.CopyTo(material);
+            suffix.CopyTo(material.AsSpan(sessionKey.Length));
+            return MD5.HashData(material);
+        }
+
+        private static byte[] CreateNtlmSealingKey(NtlmNegotiateFlags flags, ReadOnlySpan<byte> sessionKey, bool serverToClient)
+        {
+            ReadOnlySpan<byte> baseSealKey;
+
+            if ((flags & NtlmNegotiateFlags.ExtendedSessionSecurity) != 0)
+            {
+                if ((flags & NtlmNegotiateFlags.Key128) != 0)
+                {
+                    baseSealKey = sessionKey;
+                }
+                else if ((flags & NtlmNegotiateFlags.Key56) != 0)
+                {
+                    baseSealKey = sessionKey.Slice(0, Math.Min(7, sessionKey.Length));
+                }
+                else
+                {
+                    baseSealKey = sessionKey.Slice(0, Math.Min(5, sessionKey.Length));
+                }
+
+                string direction = serverToClient ? "server-to-client" : "client-to-server";
+                byte[] material = new byte[baseSealKey.Length + ("session key to " + direction + " sealing key magic constant\0").Length];
+                baseSealKey.CopyTo(material);
+                Encoding.ASCII.GetBytes("session key to " + direction + " sealing key magic constant\0").CopyTo(material.AsSpan(baseSealKey.Length));
+                return MD5.HashData(material);
+            }
+
+            throw new NotSupportedException("The bounded SPNEGO mechListMIC helper requires NTLM extended session security.");
+        }
+
         private sealed class InitialSessionSetupToken
         {
             public SessionSetupFlavor Flavor { get; set; }
@@ -7276,6 +8761,14 @@ namespace OpenCIFS.Server
             public byte[]? SessionBaseKey { get; set; }
 
             public byte[]? SessionKey { get; set; }
+
+            public string[]? SpnegoMechanismTypes { get; set; }
+
+            public byte[]? EncryptionKey { get; set; }
+
+            public byte[]? DecryptionKey { get; set; }
+
+            public bool EncryptData { get; set; }
         }
 
         private sealed class ServerOpenRecord : IDisposable
@@ -7309,6 +8802,10 @@ namespace OpenCIFS.Server
             public bool CanDelete { get; set; }
 
             public bool IsDirectory { get; set; }
+
+            public bool IsNamedPipeEndpoint { get; set; }
+
+            public OpenCifsServerNamedPipeEndpoint? NamedPipeEndpoint { get; set; }
 
             public Smb2OplockLevel GrantedOplockLevel { get; set; } = Smb2OplockLevel.None;
 
@@ -7348,6 +8845,19 @@ namespace OpenCIFS.Server
             public string RootPath { get; set; } = string.Empty;
 
             public OpenCifsServerShareBackend Backend { get; set; } = null!;
+
+            public bool IsNamedPipeShare { get; set; }
+        }
+
+        private sealed class DfsReferralMatch
+        {
+            public string ServerName { get; set; } = string.Empty;
+
+            public string ShareName { get; set; } = string.Empty;
+
+            public string NamespacePath { get; set; } = string.Empty;
+
+            public OpenCifsServerDfsReferral[] Referrals { get; set; } = Array.Empty<OpenCifsServerDfsReferral>();
         }
 
         private sealed class ServerTreeRecord
@@ -7359,6 +8869,8 @@ namespace OpenCIFS.Server
             public string ShareRootPath { get; set; } = string.Empty;
 
             public OpenCifsServerShareBackend Backend { get; set; } = null!;
+
+            public bool IsNamedPipeShare { get; set; }
         }
 
         private sealed class ServerByteRangeLock

@@ -1,9 +1,15 @@
 param(
     [string]$Configuration = "Debug",
-    [string]$Framework = "net8.0"
+    [string]$Framework = "net8.0",
+    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302"),
+    [int]$LargePayloadLength = 200000
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($LargePayloadLength -lt 65536) {
+    throw "LargePayloadLength must be at least 65536 bytes so the deeper Samba interop path exercises bounded large-I/O behavior."
+}
 
 function Assert-LastExitCode {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -52,6 +58,43 @@ function Get-FreeTcpPort {
     }
 }
 
+function Get-DialectMetadata {
+    param([string]$Dialect)
+
+    switch ($Dialect) {
+        "Smb2002" {
+            return [pscustomobject]@{
+                Dialect = "Smb2002"
+                DialectId = "smb2002"
+                Label = "SMB 2.0.2"
+                RequireEncryptionForSmb3 = $false
+                SmbClientProtectionArgument = ""
+            }
+        }
+        "Smb21" {
+            return [pscustomobject]@{
+                Dialect = "Smb21"
+                DialectId = "smb21"
+                Label = "SMB 2.1"
+                RequireEncryptionForSmb3 = $false
+                SmbClientProtectionArgument = ""
+            }
+        }
+        "Smb302" {
+            return [pscustomobject]@{
+                Dialect = "Smb302"
+                DialectId = "smb302"
+                Label = "SMB 3.0.2"
+                RequireEncryptionForSmb3 = $true
+                SmbClientProtectionArgument = "--client-protection=encrypt"
+            }
+        }
+        default {
+            throw "Unsupported dialect '$Dialect'."
+        }
+    }
+}
+
 $repositoryRoot = Join-Path $PSScriptRoot ".."
 $artifactRoot = Join-Path $repositoryRoot "artifacts\samba-interop"
 $sambaShareRoot = Join-Path $artifactRoot "samba-server-share"
@@ -64,8 +107,9 @@ $sampleServerPort = Get-FreeTcpPort
 while ($sampleServerPort -eq $sambaServerPort) {
     $sampleServerPort = Get-FreeTcpPort
 }
+
 $sambaServerContainerName = "opencifs-samba-server-" + [Guid]::NewGuid().ToString("N").Substring(0, 12)
-$sambaServerLogPath = Join-Path $artifactRoot "samba-server.log"
+$combinedSambaServerLogPath = Join-Path $artifactRoot "samba-server.log"
 $sambaVersionsPath = Join-Path $artifactRoot "samba-versions.txt"
 $openCifsClientSmokePath = Join-Path $artifactRoot "open-cifs-client-to-samba.json"
 $sampleServerConfigPath = Join-Path $artifactRoot "sample-server.config.txt"
@@ -85,6 +129,11 @@ if (Test-Path $sampleShareRoot) {
 New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $sambaShareRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $sampleShareRoot | Out-Null
+Set-Content -Path $combinedSambaServerLogPath -Value ""
+Set-Content -Path $sampleServerConfigPath -Value ""
+Set-Content -Path $sampleServerLogPath -Value ""
+Set-Content -Path $sampleServerErrorPath -Value ""
+Set-Content -Path $sambaClientLogPath -Value ""
 
 & docker build -t $imageName $dockerContext
 Assert-LastExitCode "Failed to build the Samba interop image."
@@ -96,6 +145,8 @@ Assert-LastExitCode "Failed to read the Samba server version from the interop im
 Set-Content -Path $sambaVersionsPath -Value ("smbclient=" + $smbclientVersion + [Environment]::NewLine + "smbd=" + $smbdVersion)
 
 $resolvedSambaShareRoot = (Resolve-Path $sambaShareRoot).Path
+$openCifsClientResults = New-Object System.Collections.Generic.List[object]
+$sambaClientResults = New-Object System.Collections.Generic.List[object]
 
 & docker run -d `
     --name $sambaServerContainerName `
@@ -112,23 +163,39 @@ Assert-LastExitCode "Failed to start the Samba server container."
 
 try {
     Wait-ForTcpPort -HostName "127.0.0.1" -Port $sambaServerPort
-    & dotnet run `
-        --project (Join-Path $repositoryRoot "src\OpenCIFS.SambaInterop.Console\OpenCIFS.SambaInterop.Console.csproj") `
-        --configuration $Configuration `
-        --framework $Framework `
-        --no-build `
-        -- `
-        --server "127.0.0.1" `
-        --port $sambaServerPort `
-        --share "share" `
-        --username "alice" `
-        --password "Password123!" `
-        --domain "WORKGROUP" `
-        --output $openCifsClientSmokePath
-    Assert-LastExitCode "The OpenCIFS.Client to Samba smoke run failed."
+
+    foreach ($dialect in $Dialects) {
+        $dialectMetadata = Get-DialectMetadata -Dialect $dialect
+        $dialectArtifactRoot = Join-Path $artifactRoot $dialectMetadata.DialectId
+        New-Item -ItemType Directory -Force -Path $dialectArtifactRoot | Out-Null
+        $dialectOpenCifsClientSmokePath = Join-Path $dialectArtifactRoot "open-cifs-client-to-samba.json"
+
+        & dotnet run `
+            --project (Join-Path $repositoryRoot "src\OpenCIFS.SambaInterop.Console\OpenCIFS.SambaInterop.Console.csproj") `
+            --configuration $Configuration `
+            --framework $Framework `
+            --no-build `
+            -- `
+            --server "127.0.0.1" `
+            --port $sambaServerPort `
+            --share "share" `
+            --username "alice" `
+            --password "Password123!" `
+            --domain "WORKGROUP" `
+            --dialect $dialect `
+            --large-payload-length $LargePayloadLength `
+            --output $dialectOpenCifsClientSmokePath
+        Assert-LastExitCode "The OpenCIFS.Client to Samba smoke run failed for $($dialectMetadata.Label)."
+
+        $openCifsClientResults.Add([pscustomobject]@{
+            dialect_id = $dialectMetadata.DialectId
+            dialect = $dialectMetadata.Label
+            summary = (Get-Content -Path $dialectOpenCifsClientSmokePath -Raw | ConvertFrom-Json)
+        })
+    }
 }
 finally {
-    cmd /c "docker logs $sambaServerContainerName > `"$sambaServerLogPath`" 2>&1"
+    cmd /c "docker logs $sambaServerContainerName >> `"$combinedSambaServerLogPath`" 2>&1"
 
     try {
         & docker rm -f $sambaServerContainerName | Out-Null
@@ -138,174 +205,227 @@ finally {
 }
 
 $projectPath = Join-Path $repositoryRoot "src\Sample.OpenCifsServer\Sample.OpenCifsServer.csproj"
-$sampleServerArguments = @(
-    "--server-name", "127.0.0.1",
-    "--bind-address", "127.0.0.1",
-    "--bind-port", $sampleServerPort.ToString(),
-    "--share-name", "share",
-    "--share-path", $sampleShareRoot,
-    "--minimum-dialect", "Smb21",
-    "--maximum-dialect", "Smb21",
-    "--require-signing", "true",
-    "--require-ntlmv2", "true",
-    "--allow-anonymous", "false",
-    "--enable-smb1", "false",
-    "--require-encryption-for-smb3", "false",
-    "--account-username", "alice",
-    "--account-domain", "WORKGROUP",
-    "--account-password", "Password123!"
-)
-$printArguments = @(
-    "run",
-    "--project", $projectPath,
-    "--configuration", $Configuration,
-    "--framework", $Framework,
-    "--no-build",
-    "--",
-    "--print-config"
-) + $sampleServerArguments
 
-& dotnet $printArguments | Tee-Object -FilePath $sampleServerConfigPath | Out-Null
-Assert-LastExitCode "Failed to print the effective Sample.OpenCifsServer configuration for Samba interop."
+foreach ($dialect in $Dialects) {
+    $dialectMetadata = Get-DialectMetadata -Dialect $dialect
+    $dialectArtifactRoot = Join-Path $artifactRoot $dialectMetadata.DialectId
+    $dialectSampleShareRoot = Join-Path $sampleShareRoot $dialectMetadata.DialectId
+    $dialectSampleServerConfigPath = Join-Path $dialectArtifactRoot "sample-server.config.txt"
+    $dialectSampleServerLogPath = Join-Path $dialectArtifactRoot "sample-server.log"
+    $dialectSampleServerErrorPath = Join-Path $dialectArtifactRoot "sample-server.err.log"
+    $dialectSambaClientLogPath = Join-Path $dialectArtifactRoot "sample-server-samba-client.log"
+    $dialectSambaClientSummaryPath = Join-Path $dialectArtifactRoot "sample-server-samba-client.json"
 
-$serverArguments = @(
-    "run",
-    "--project", $projectPath,
-    "--configuration", $Configuration,
-    "--framework", $Framework,
-    "--no-build",
-    "--"
-) + $sampleServerArguments
+    if (Test-Path $dialectSampleShareRoot) {
+        Get-ChildItem -Force -Path $dialectSampleShareRoot | Remove-Item -Recurse -Force
+    }
 
-$serverProcess = Start-Process `
-    -FilePath "dotnet" `
-    -ArgumentList $serverArguments `
-    -WorkingDirectory $repositoryRoot `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $sampleServerLogPath `
-    -RedirectStandardError $sampleServerErrorPath `
-    -PassThru
+    New-Item -ItemType Directory -Force -Path $dialectSampleShareRoot | Out-Null
 
-try {
-    Wait-ForTcpPort -HostName "127.0.0.1" -Port $sampleServerPort
+    $sampleServerArguments = @(
+        "--server-name", "127.0.0.1",
+        "--bind-address", "127.0.0.1",
+        "--bind-port", $sampleServerPort.ToString(),
+        "--share-name", "share",
+        "--share-path", $dialectSampleShareRoot,
+        "--minimum-dialect", $dialectMetadata.Dialect,
+        "--maximum-dialect", $dialectMetadata.Dialect,
+        "--require-signing", "true",
+        "--require-ntlmv2", "true",
+        "--allow-anonymous", "false",
+        "--enable-smb1", "false",
+        "--require-encryption-for-smb3", $dialectMetadata.RequireEncryptionForSmb3.ToString().ToLowerInvariant(),
+        "--account-username", "alice",
+        "--account-domain", "WORKGROUP",
+        "--account-password", "Password123!"
+    )
+    $printArguments = @(
+        "run",
+        "--project", $projectPath,
+        "--configuration", $Configuration,
+        "--framework", $Framework,
+        "--no-build",
+        "--",
+        "--print-config"
+    ) + $sampleServerArguments
 
-    $remoteDirectory = "samba-client-smoke-" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
-    $remoteNestedDirectory = "nested"
-    $remoteFile = "smoke.txt"
-    $renamedFile = "renamed-smoke.txt"
-    $payloadText = "hello from smbclient"
+    & dotnet $printArguments | Tee-Object -FilePath $dialectSampleServerConfigPath | Out-Null
+    Assert-LastExitCode "Failed to print the effective Sample.OpenCifsServer configuration for Samba interop under $($dialectMetadata.Label)."
+
+    Add-Content -Path $sampleServerConfigPath -Value ("==== " + $dialectMetadata.Label + " ====")
+    Get-Content -Path $dialectSampleServerConfigPath | Add-Content -Path $sampleServerConfigPath
+    Add-Content -Path $sampleServerConfigPath -Value ""
+
+    $serverArguments = @(
+        "run",
+        "--project", $projectPath,
+        "--configuration", $Configuration,
+        "--framework", $Framework,
+        "--no-build",
+        "--"
+    ) + $sampleServerArguments
+
+    $serverProcess = Start-Process `
+        -FilePath "dotnet" `
+        -ArgumentList $serverArguments `
+        -WorkingDirectory $repositoryRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $dialectSampleServerLogPath `
+        -RedirectStandardError $dialectSampleServerErrorPath `
+        -PassThru
+
+    try {
+        Wait-ForTcpPort -HostName "127.0.0.1" -Port $sampleServerPort
+
+        $remoteDirectory = "samba-client-smoke-" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
+        $remoteNestedDirectory = "nested"
+        $remoteFile = "smoke.txt"
+        $remoteLargeFile = "large.bin"
+        $renamedFile = "renamed-smoke.txt"
+        $payloadText = "hello from smbclient"
+        $smbClientProtectionArgument = $dialectMetadata.SmbClientProtectionArgument
 $sambaClientCommand = @'
 set -euo pipefail
 printf '%s' '{0}' > /tmp/payload.txt
+head -c {6} /dev/zero | tr '\000' 'A' > /tmp/large.bin
 cat > /tmp/smbclient-commands.txt <<'EOF'
 mkdir {2}
 cd {2}
 mkdir {5}
 put /tmp/payload.txt {3}
 get {3} /tmp/readback.txt
-rename {3} {4}
+put /tmp/large.bin {4}
+get {4} /tmp/large-readback.bin
+rename {3} {7}
 ls
 quit
 EOF
-smbclient //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {1} < /tmp/smbclient-commands.txt 2>&1 | tee /tmp/smbclient-output.txt
-grep -F '{4}' /tmp/smbclient-output.txt >/dev/null
+smbclient {8} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {1} < /tmp/smbclient-commands.txt 2>&1 | tee /tmp/smbclient-output.txt
+grep -F '{7}' /tmp/smbclient-output.txt >/dev/null
 grep -F '{5}' /tmp/smbclient-output.txt >/dev/null
 cmp /tmp/payload.txt /tmp/readback.txt
-'@ -f $payloadText, $sampleServerPort, $remoteDirectory, $remoteFile, $renamedFile, $remoteNestedDirectory
+cmp /tmp/large.bin /tmp/large-readback.bin
+'@ -f $payloadText, $sampleServerPort, $remoteDirectory, $remoteFile, $remoteLargeFile, $remoteNestedDirectory, $LargePayloadLength, $renamedFile, $smbClientProtectionArgument
 
-    $sambaClientOutput = & docker run --rm $imageName bash -lc $sambaClientCommand 2>&1
-    $sambaClientOutput | Tee-Object -FilePath $sambaClientLogPath | Out-Null
-    Assert-LastExitCode "The Samba client to Sample.OpenCifsServer smoke run failed."
+        $sambaClientOutput = & docker run --rm $imageName bash -lc $sambaClientCommand 2>&1
+        $sambaClientOutput | Tee-Object -FilePath $dialectSambaClientLogPath | Out-Null
+        Assert-LastExitCode "The Samba client to Sample.OpenCifsServer smoke run failed for $($dialectMetadata.Label)."
 
-    $nonEmptyDirectoryDeleteCommand = @'
+$nonEmptyDirectoryDeleteCommand = @'
 set -euo pipefail
-output=$(smbclient //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {0} -c "rmdir {1}" 2>&1 || true)
+output=$(smbclient {2} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {0} -c "rmdir {1}" 2>&1 || true)
 printf '%s\n' "$output" | tee /tmp/smbclient-rmdir-output.txt
 printf '%s' "$output" | grep -E 'NT_STATUS_DIRECTORY_NOT_EMPTY|directory is not empty' >/dev/null
-'@ -f $sampleServerPort, $remoteDirectory
+'@ -f $sampleServerPort, $remoteDirectory, $smbClientProtectionArgument
 
-    $nonEmptyDirectoryDeleteStdoutPath = Join-Path $artifactRoot "sample-server-samba-client.rmdir.stdout.txt"
-    $nonEmptyDirectoryDeleteStderrPath = Join-Path $artifactRoot "sample-server-samba-client.rmdir.stderr.txt"
+        $nonEmptyDirectoryDeleteStdoutPath = Join-Path $dialectArtifactRoot "sample-server-samba-client.rmdir.stdout.txt"
+        $nonEmptyDirectoryDeleteStderrPath = Join-Path $dialectArtifactRoot "sample-server-samba-client.rmdir.stderr.txt"
 
-    Remove-Item -LiteralPath $nonEmptyDirectoryDeleteStdoutPath -ErrorAction Ignore
-    Remove-Item -LiteralPath $nonEmptyDirectoryDeleteStderrPath -ErrorAction Ignore
+        Remove-Item -LiteralPath $nonEmptyDirectoryDeleteStdoutPath -ErrorAction Ignore
+        Remove-Item -LiteralPath $nonEmptyDirectoryDeleteStderrPath -ErrorAction Ignore
 
-    $nonEmptyDirectoryDeleteProcess = Start-Process -FilePath "docker" `
-        -ArgumentList @("run", "--rm", $imageName, "bash", "-lc", $nonEmptyDirectoryDeleteCommand) `
-        -NoNewWindow `
-        -PassThru `
-        -Wait `
-        -RedirectStandardOutput $nonEmptyDirectoryDeleteStdoutPath `
-        -RedirectStandardError $nonEmptyDirectoryDeleteStderrPath
+        $nonEmptyDirectoryDeleteProcess = Start-Process -FilePath "docker" `
+            -ArgumentList @("run", "--rm", $imageName, "bash", "-lc", $nonEmptyDirectoryDeleteCommand) `
+            -NoNewWindow `
+            -PassThru `
+            -Wait `
+            -RedirectStandardOutput $nonEmptyDirectoryDeleteStdoutPath `
+            -RedirectStandardError $nonEmptyDirectoryDeleteStderrPath
 
-    $LASTEXITCODE = $nonEmptyDirectoryDeleteProcess.ExitCode
-    $nonEmptyDirectoryDeleteOutput = @()
+        $LASTEXITCODE = $nonEmptyDirectoryDeleteProcess.ExitCode
+        $nonEmptyDirectoryDeleteOutput = @()
 
-    if (Test-Path $nonEmptyDirectoryDeleteStdoutPath) {
-        $nonEmptyDirectoryDeleteOutput += Get-Content -Path $nonEmptyDirectoryDeleteStdoutPath
-    }
+        if (Test-Path $nonEmptyDirectoryDeleteStdoutPath) {
+            $nonEmptyDirectoryDeleteOutput += Get-Content -Path $nonEmptyDirectoryDeleteStdoutPath
+        }
 
-    if (Test-Path $nonEmptyDirectoryDeleteStderrPath) {
-        $nonEmptyDirectoryDeleteOutput += Get-Content -Path $nonEmptyDirectoryDeleteStderrPath
-    }
+        if (Test-Path $nonEmptyDirectoryDeleteStderrPath) {
+            $nonEmptyDirectoryDeleteOutput += Get-Content -Path $nonEmptyDirectoryDeleteStderrPath
+        }
 
-    Add-Content -Path $sambaClientLogPath -Value ""
-    Add-Content -Path $sambaClientLogPath -Value "==== non-empty delete rejection ===="
-    $nonEmptyDirectoryDeleteOutput | Add-Content -Path $sambaClientLogPath
-    Assert-LastExitCode "The Samba client non-empty directory delete rejection check failed."
+        Add-Content -Path $dialectSambaClientLogPath -Value ""
+        Add-Content -Path $dialectSambaClientLogPath -Value "==== non-empty delete rejection ===="
+        $nonEmptyDirectoryDeleteOutput | Add-Content -Path $dialectSambaClientLogPath
+        Assert-LastExitCode "The Samba client non-empty directory delete rejection check failed for $($dialectMetadata.Label)."
 
-    $cleanupCommand = @'
+        $cleanupCommand = @'
 set -euo pipefail
 cat > /tmp/smbclient-cleanup-commands.txt <<'EOF'
 cd {1}
 del {2}
+del {4}
 rmdir {3}
 cd ..
 rmdir {1}
 quit
 EOF
-smbclient //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {0} < /tmp/smbclient-cleanup-commands.txt 2>&1 | tee /tmp/smbclient-cleanup-output.txt
-'@ -f $sampleServerPort, $remoteDirectory, $renamedFile, $remoteNestedDirectory
+smbclient {5} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {0} < /tmp/smbclient-cleanup-commands.txt 2>&1 | tee /tmp/smbclient-cleanup-output.txt
+'@ -f $sampleServerPort, $remoteDirectory, $renamedFile, $remoteNestedDirectory, $remoteLargeFile, $smbClientProtectionArgument
 
-    $cleanupOutput = & docker run --rm $imageName bash -lc $cleanupCommand 2>&1
-    Add-Content -Path $sambaClientLogPath -Value ""
-    Add-Content -Path $sambaClientLogPath -Value "==== cleanup ===="
-    $cleanupOutput | Add-Content -Path $sambaClientLogPath
-    Assert-LastExitCode "The Samba client cleanup against Sample.OpenCifsServer failed."
+        $cleanupOutput = & docker run --rm $imageName bash -lc $cleanupCommand 2>&1
+        Add-Content -Path $dialectSambaClientLogPath -Value ""
+        Add-Content -Path $dialectSambaClientLogPath -Value "==== cleanup ===="
+        $cleanupOutput | Add-Content -Path $dialectSambaClientLogPath
+        Assert-LastExitCode "The Samba client cleanup against Sample.OpenCifsServer failed for $($dialectMetadata.Label)."
 
-    if (Test-Path (Join-Path $sampleShareRoot $remoteDirectory)) {
-        throw "The Samba client smoke left the remote sample-server directory behind."
+        if (Test-Path (Join-Path $dialectSampleShareRoot $remoteDirectory)) {
+            throw "The Samba client smoke left the remote sample-server directory behind for $($dialectMetadata.Label)."
+        }
+
+        $sambaClientSummary = [ordered]@{
+            dialect = $dialectMetadata.Label
+            dialect_id = $dialectMetadata.DialectId
+            server = "host.docker.internal"
+            port = $sampleServerPort
+            share = "share"
+            directory = $remoteDirectory
+            nested_directory = ($remoteDirectory + "\" + $remoteNestedDirectory)
+            file = $remoteFile
+            large_file = $remoteLargeFile
+            large_payload_length = $LargePayloadLength
+            renamed_file = $renamedFile
+            payload = $payloadText
+            listing_contains_renamed_file = $true
+            listing_contains_nested_directory = $true
+            non_empty_directory_delete_rejected = $true
+            smbclient_version = $smbclientVersion
+        }
+        $sambaClientSummary | ConvertTo-Json -Depth 5 | Set-Content -Path $dialectSambaClientSummaryPath
+        $sambaClientResults.Add($sambaClientSummary)
+
+        Add-Content -Path $sambaClientLogPath -Value ("==== " + $dialectMetadata.Label + " ====")
+        Get-Content -Path $dialectSambaClientLogPath | Add-Content -Path $sambaClientLogPath
+        Add-Content -Path $sambaClientLogPath -Value ""
+        Add-Content -Path $sampleServerLogPath -Value ("==== " + $dialectMetadata.Label + " ====")
+        Get-Content -Path $dialectSampleServerLogPath | Add-Content -Path $sampleServerLogPath
+        Add-Content -Path $sampleServerLogPath -Value ""
+        Add-Content -Path $sampleServerErrorPath -Value ("==== " + $dialectMetadata.Label + " ====")
+        Get-Content -Path $dialectSampleServerErrorPath | Add-Content -Path $sampleServerErrorPath
+        Add-Content -Path $sampleServerErrorPath -Value ""
     }
-
-    $sambaClientSummary = [ordered]@{
-        server = "host.docker.internal"
-        port = $sampleServerPort
-        share = "share"
-        dialect = "SMB 2.0.2"
-        directory = $remoteDirectory
-        nested_directory = ($remoteDirectory + "\" + $remoteNestedDirectory)
-        file = $remoteFile
-        renamed_file = $renamedFile
-        payload = $payloadText
-        listing_contains_renamed_file = $true
-        listing_contains_nested_directory = $true
-        non_empty_directory_delete_rejected = $true
-        smbclient_version = $smbclientVersion
+    finally {
+        if (-not $serverProcess.HasExited) {
+            Stop-Process -Id $serverProcess.Id -Force
+            $serverProcess.WaitForExit()
+        }
     }
-    $sambaClientSummary | ConvertTo-Json -Depth 5 | Set-Content -Path $sambaClientSummaryPath
 }
-finally {
-    if (-not $serverProcess.HasExited) {
-        Stop-Process -Id $serverProcess.Id -Force
-        $serverProcess.WaitForExit()
-    }
-}
+
+[pscustomobject]@{
+    generated_at_utc = [DateTime]::UtcNow.ToString("o", [System.Globalization.CultureInfo]::InvariantCulture)
+    runs = $openCifsClientResults
+} | ConvertTo-Json -Depth 8 | Set-Content -Path $openCifsClientSmokePath -Encoding UTF8
+
+[pscustomobject]@{
+    generated_at_utc = [DateTime]::UtcNow.ToString("o", [System.Globalization.CultureInfo]::InvariantCulture)
+    runs = $sambaClientResults
+} | ConvertTo-Json -Depth 8 | Set-Content -Path $sambaClientSummaryPath -Encoding UTF8
 
 Write-Host "Samba interop smoke completed. Evidence:"
 Write-Host "  $openCifsClientSmokePath"
 Write-Host "  $sambaClientSummaryPath"
 Write-Host "  $sambaClientLogPath"
-Write-Host "  $sambaServerLogPath"
+Write-Host "  $combinedSambaServerLogPath"
 Write-Host "  $sampleServerConfigPath"
 Write-Host "  $sampleServerLogPath"
 Write-Host "  $sampleServerErrorPath"

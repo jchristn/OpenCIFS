@@ -1,8 +1,9 @@
-namespace OpenCIFS.Client.Tests.Shared
+﻿namespace OpenCIFS.Client.Tests.Shared
 {
     using System;
     using System.Collections.Generic;
     using System.IO;
+    using System.Linq;
     using System.Net;
     using System.Net.Sockets;
     using System.Threading;
@@ -46,6 +47,7 @@ namespace OpenCIFS.Client.Tests.Shared
                     ClientOplockSuite(),
                     ClientLeaseSuite(),
                     ClientConnectionSuite(),
+                    ClientPrimarySuite(),
                     ClientFacadeSuite()
                 };
             }
@@ -127,6 +129,46 @@ namespace OpenCIFS.Client.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Client.Defaults",
+                        caseId: "ClientStatusExceptionsReturnNormalizedCategoriesForRepresentativeNtStatusValues",
+                        displayName: "Client status exceptions return normalized categories for representative NTSTATUS values",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            TestAssertions.Equal(OpenCifsErrorCategory.NotFound, new OpenCifsStatusException(Smb2Command.Create, NtStatus.ObjectNameNotFound).Category, "Expected STATUS_OBJECT_NAME_NOT_FOUND to normalize to NotFound.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.AccessDenied, new OpenCifsStatusException(Smb2Command.SetInfo, NtStatus.AccessDenied).Category, "Expected STATUS_ACCESS_DENIED to normalize to AccessDenied.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.Conflict, new OpenCifsStatusException(Smb2Command.Create, NtStatus.SharingViolation).Category, "Expected STATUS_SHARING_VIOLATION to normalize to Conflict.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.Unsupported, new OpenCifsStatusException(Smb2Command.Ioctl, NtStatus.NotSupported).Category, "Expected STATUS_NOT_SUPPORTED to normalize to Unsupported.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.ProtocolError, new OpenCifsStatusException(Smb2Command.QueryInfo, NtStatus.BufferTooSmall).Category, "Expected STATUS_BUFFER_TOO_SMALL to normalize to ProtocolError.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.IoError, new OpenCifsStatusException(Smb2Command.Close, NtStatus.FileClosed).Category, "Expected STATUS_FILE_CLOSED to normalize to IoError.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.Cancelled, new OpenCifsStatusException(Smb2Command.ChangeNotify, NtStatus.Cancelled).Category, "Expected STATUS_CANCELLED to normalize to Cancelled.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Defaults",
+                        caseId: "ClientPublicSurfaceExposesTypedExceptionsForRepresentativeStateAndProtocolFailures",
+                        displayName: "Client public surface exposes typed exceptions for representative state and protocol failures",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsStatusException statusException = new OpenCifsStatusException(Smb2Command.Create, NtStatus.ObjectNameNotFound);
+                            TestAssertions.True(statusException is OpenCifsClientException, "Expected SMB status failures to derive from the typed client exception hierarchy.");
+
+                            OpenCifsClientConnection disconnectedConnection = new OpenCifsClientConnection(new OpenCifsClientOptions());
+                            TestAssertions.Throws<OpenCifsClientStateException>(
+                                () => disconnectedConnection.TreeConnectAsync("public", token).GetAwaiter().GetResult(),
+                                "Expected tree connect before authentication to raise a typed client-state exception.");
+
+                            OpenCifsClientSession session = CreateNegotiatedClient();
+                            Smb2Header requestHeader = session.CreateRequestHeader(Smb2Command.SessionSetup, sessionId: 0);
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
+                                () => session.ApplyResponseHeader(CreateResponseHeader(requestHeader, flags: Smb2HeaderFlags.None)),
+                                "Expected malformed response headers on the advanced session surface to raise a typed client-protocol exception.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Defaults",
                         caseId: "ClientSuitesExposePositiveAndNegativeVariants",
                         displayName: "Client shared suites expose positive and negative variants",
                         executeAsync: token =>
@@ -152,7 +194,7 @@ namespace OpenCIFS.Client.Tests.Shared
                     new TestCaseDescriptor(
                         suiteId: "Client.Negotiate",
                         caseId: "ClientAdvertisesImplementedDialects",
-                        displayName: "Client negotiate request advertises the implemented SMB 2.0.2 and SMB 2.1 dialects",
+                        displayName: "Client negotiate request advertises the implemented SMB 2.0.2 through SMB 3.0.2 dialects",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -160,14 +202,17 @@ namespace OpenCIFS.Client.Tests.Shared
                             OpenCifsClientSession session = new OpenCifsClientSession(new OpenCifsClientOptions());
                             Smb2NegotiateRequest request = session.CreateNegotiateRequest();
 
-                            if (request.Dialects.Length != 2)
+                            if (request.Dialects.Length != 4)
                             {
-                                throw new InvalidOperationException("Expected exactly two currently implemented client dialects.");
+                                throw new InvalidOperationException("Expected exactly four currently implemented client dialects.");
                             }
 
-                            if (request.Dialects[0] != SmbDialect.Smb2002 || request.Dialects[1] != SmbDialect.Smb21)
+                            if (request.Dialects[0] != SmbDialect.Smb2002 ||
+                                request.Dialects[1] != SmbDialect.Smb21 ||
+                                request.Dialects[2] != SmbDialect.Smb30 ||
+                                request.Dialects[3] != SmbDialect.Smb302)
                             {
-                                throw new InvalidOperationException("Expected SMB 2.0.2 and SMB 2.1 to be the currently implemented client dialects.");
+                                throw new InvalidOperationException("Expected SMB 2.0.2 through SMB 3.0.2 to be the currently implemented client dialects.");
                             }
 
                             if (request.ClientGuid != session.ClientGuid)
@@ -240,7 +285,7 @@ namespace OpenCIFS.Client.Tests.Shared
                             Smb2NegotiateResponse response = new Smb2NegotiateResponse
                             {
                                 SecurityMode = Smb2SecurityMode.SigningEnabled,
-                                Dialect = SmbDialect.Smb30,
+                                Dialect = SmbDialect.Smb311,
                                 ServerGuid = Guid.NewGuid(),
                                 MaxTransactSize = 65536,
                                 MaxReadSize = 65536,
@@ -275,6 +320,329 @@ namespace OpenCIFS.Client.Tests.Shared
 
                             TestAssertions.Equal(1, request.Dialects.Length, "Expected the client dialect list to clamp to SMB 2.0.2.");
                             TestAssertions.Equal(SmbDialect.Smb2002, request.Dialects[0], "Expected the configured maximum dialect to clamp the client negotiate request.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Negotiate",
+                        caseId: "ClientAdvertisesOptInSmb302DialectsWhenEncryptionIsNotPreferred",
+                        displayName: "Client negotiate request advertises SMB 3.0 and SMB 3.0.2 while omitting encryption capability when encryption is not preferred",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                PreferEncryption = false
+                            });
+                            Smb2NegotiateRequest request = session.CreateNegotiateRequest();
+
+                            TestAssertions.Equal(4, request.Dialects.Length, "Expected the opt-in client dialect list to include the bounded SMB 3.0 and SMB 3.0.2 slice.");
+                            TestAssertions.Equal(SmbDialect.Smb2002, request.Dialects[0], "Unexpected first opt-in client dialect.");
+                            TestAssertions.Equal(SmbDialect.Smb21, request.Dialects[1], "Unexpected second opt-in client dialect.");
+                            TestAssertions.Equal(SmbDialect.Smb30, request.Dialects[2], "Unexpected third opt-in client dialect.");
+                            TestAssertions.Equal(SmbDialect.Smb302, request.Dialects[3], "Unexpected fourth opt-in client dialect.");
+                            TestAssertions.Equal(
+                                Smb2GlobalCapabilities.Dfs | Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing,
+                                request.Capabilities,
+                                "Expected the opt-in client negotiate request to advertise the bounded DFS, large-MTU, and leasing capability set.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Negotiate",
+                        caseId: "ClientAdvertisesSmb302DialectsAndEncryptionCapabilityWhenEncryptionIsPreferred",
+                        displayName: "Client negotiate request advertises SMB 3.0 and SMB 3.0.2 plus encryption capability when encryption is preferred",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                MaximumDialect = SmbDialect.Smb302,
+                                PreferEncryption = true
+                            });
+                            Smb2NegotiateRequest request = session.CreateNegotiateRequest();
+
+                            TestAssertions.Equal(4, request.Dialects.Length, "Expected the preferred-encryption client dialect list to include the bounded SMB 3.0 and SMB 3.0.2 slice.");
+                            TestAssertions.Equal(
+                                Smb2GlobalCapabilities.Dfs | Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                request.Capabilities,
+                                "Expected the preferred-encryption client negotiate request to advertise encryption alongside the bounded DFS, large-MTU, and leasing capability set.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Negotiate",
+                        caseId: "ClientSmb311PreviewAdvertisesDialectAndEmitsTypedNegotiateContextEntries",
+                        displayName: "Client SMB 3.1.1 preview advertises the dialect and emits typed negotiate-context entries when opted in",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession defaultSession = new OpenCifsClientSession(new OpenCifsClientOptions());
+                            Smb2NegotiateRequest defaultRequest = defaultSession.CreateNegotiateRequest();
+                            TestAssertions.True(
+                                Array.IndexOf(defaultRequest.Dialects, SmbDialect.Smb311) < 0,
+                                "Expected the default opt-out client to omit SMB 3.1.1 from the advertised dialect list.");
+                            TestAssertions.Equal((ushort)0, defaultRequest.NegotiateContextCount, "Expected the default opt-out client to omit SMB 3.1.1 negotiate contexts.");
+
+                            OpenCifsClientSession previewSession = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                EnableSmb311Preview = true,
+                                ServerName = "files.example.test"
+                            });
+                            Smb2NegotiateRequest previewRequest = previewSession.CreateNegotiateRequest();
+                            TestAssertions.True(
+                                Array.IndexOf(previewRequest.Dialects, SmbDialect.Smb311) >= 0,
+                                "Expected the SMB 3.1.1 preview client to include SMB 3.1.1 in the advertised dialect list.");
+                            TestAssertions.Equal((ushort)4, previewRequest.NegotiateContextCount, "Expected the SMB 3.1.1 preview client to emit four typed negotiate-context entries.");
+
+                            byte[] wireBytes = previewRequest.ToByteArray();
+                            Smb2NegotiateRequest parsedRequest = Smb2NegotiateRequest.ReadFrom(wireBytes);
+                            TestAssertions.Equal((ushort)4, parsedRequest.NegotiateContextCount, "Wire round-trip should preserve the SMB 3.1.1 preview context count.");
+                            Smb2NegotiateContextEntry[] decodedEntries = parsedRequest.DecodeNegotiateContextEntries();
+                            TestAssertions.Equal(4, decodedEntries.Length, "Wire round-trip should preserve SMB 3.1.1 preview context entries.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.PreauthIntegrityCapabilities, decodedEntries[0].ContextType, "First context should be preauth integrity.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.EncryptionCapabilities, decodedEntries[1].ContextType, "Second context should be encryption capabilities.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.SigningCapabilities, decodedEntries[2].ContextType, "Third context should be signing capabilities.");
+                            TestAssertions.Equal(Smb2NegotiateContextType.Netname, decodedEntries[3].ContextType, "Fourth context should be NETNAME.");
+
+                            PreauthIntegrityCapabilities decodedPreauth = PreauthIntegrityCapabilities.ReadFrom(decodedEntries[0].Payload);
+                            TestAssertions.Equal(HashAlgorithmId.Sha512, decodedPreauth.HashAlgorithms[0], "Preview should advertise SHA-512 preauth integrity.");
+                            TestAssertions.Equal(32, decodedPreauth.Salt.Length, "Preview should generate a 32-byte preauth salt.");
+                            EncryptionCapabilities decodedEncryption = EncryptionCapabilities.ReadFrom(decodedEntries[1].Payload);
+                            TestAssertions.Equal(2, decodedEncryption.Ciphers.Length, "Preview should advertise both AES-128-GCM and AES-128-CCM ciphers.");
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes128Gcm, decodedEncryption.Ciphers[0], "Preview should prefer AES-128-GCM as the first cipher offer.");
+                            TestAssertions.Equal(SmbCipherAlgorithmId.Aes128Ccm, decodedEncryption.Ciphers[1], "Preview should fall back to AES-128-CCM as the second cipher offer.");
+                            SigningCapabilities decodedSigning = SigningCapabilities.ReadFrom(decodedEntries[2].Payload);
+                            TestAssertions.Equal(3, decodedSigning.SigningAlgorithms.Length, "Preview should advertise three signing algorithms.");
+                            TestAssertions.Equal(SigningAlgorithmId.AesGmac, decodedSigning.SigningAlgorithms[0], "Preview should prefer AES-GMAC as the first signing offer.");
+                            TestAssertions.Equal(SigningAlgorithmId.AesCmac, decodedSigning.SigningAlgorithms[1], "Preview should fall back to AES-CMAC as the second signing offer.");
+                            TestAssertions.Equal(SigningAlgorithmId.HmacSha256, decodedSigning.SigningAlgorithms[2], "Preview should fall back to HMAC-SHA256 as the third signing offer.");
+                            NetnameNegotiateContext decodedNetname = NetnameNegotiateContext.ReadFrom(decodedEntries[3].Payload);
+                            TestAssertions.Equal("files.example.test", decodedNetname.ServerName, "Preview should advertise the configured server name in NETNAME.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Negotiate",
+                        caseId: "ClientSmb311PreviewAccumulatesPreauthIntegrityTranscriptAcrossNegotiate",
+                        displayName: "Client SMB 3.1.1 preview accumulates the preauth integrity transcript across the negotiate request and response",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession defaultSession = new OpenCifsClientSession(new OpenCifsClientOptions());
+                            defaultSession.CreateNegotiateRequest();
+                            byte[]? defaultHash = defaultSession.GetCurrentPreauthIntegrityHash();
+                            TestAssertions.True(defaultHash == null, "Expected the default opt-out client to leave the preauth hash unallocated.");
+
+                            OpenCifsClientSession previewSession = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                EnableSmb311Preview = true
+                            });
+                            Smb2Header requestHeader = previewSession.CreateRequestHeader(Smb2Command.Negotiate);
+                            Smb2NegotiateRequest request = previewSession.CreateNegotiateRequest();
+
+                            byte[]? initialHash = previewSession.GetCurrentPreauthIntegrityHash();
+                            TestAssertions.True(initialHash != null, "Expected the preview opt-in client to allocate the preauth hash accumulator.");
+                            TestAssertions.Equal(64, initialHash!.Length, "Expected the SHA-512 preauth hash to be 64 bytes wide.");
+
+                            byte[] zeros = new byte[64];
+                            TestAssertions.SequenceEqual(zeros, initialHash, "Expected the preauth hash to start at all zeros per MS-SMB2.");
+
+                            byte[] requestBody = request.ToByteArray();
+                            previewSession.AppendPreauthMessageBytes(requestHeader, requestBody);
+                            byte[]? afterRequest = previewSession.GetCurrentPreauthIntegrityHash();
+                            TestAssertions.True(afterRequest != null && !afterRequest.AsSpan().SequenceEqual(zeros), "Expected the preauth hash to advance after appending the negotiate request.");
+
+                            Smb2Header responseHeader = new Smb2Header
+                            {
+                                Command = Smb2Command.Negotiate,
+                                CreditRequest = 1,
+                                Flags = Smb2HeaderFlags.ServerToRedir,
+                                MessageId = requestHeader.MessageId,
+                                Signature = new byte[16]
+                            };
+                            byte[] responseBody = new Smb2NegotiateResponse
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Dialect = SmbDialect.Smb302,
+                                ServerGuid = Guid.Parse("D9F1A4C2-1234-4567-89AB-CDEF01234567"),
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing,
+                                MaxTransactSize = 65536,
+                                MaxReadSize = 65536,
+                                MaxWriteSize = 65536,
+                                SystemTime = 0x01D811223344AA00UL,
+                                ServerStartTime = 0x01D811223344BB00UL,
+                                SecurityBuffer = Array.Empty<byte>()
+                            }.ToByteArray();
+                            previewSession.AppendPreauthMessageBytes(responseHeader, responseBody);
+                            byte[]? afterResponse = previewSession.GetCurrentPreauthIntegrityHash();
+                            TestAssertions.True(afterResponse != null && !afterResponse.AsSpan().SequenceEqual(afterRequest!), "Expected the preauth hash to advance again after appending the negotiate response.");
+                            TestAssertions.Equal(64, afterResponse!.Length, "Expected the preauth hash to remain 64 bytes wide after the response.");
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Negotiate",
+                        caseId: "ClientSmb311PreviewRejectsMalformedSmb311ResponsesMissingPreauthOrCarryingNoContexts",
+                        displayName: "Client SMB 3.1.1 preview rejects malformed SMB 3.1.1 responses missing the preauth context or carrying no contexts at all",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession previewSession = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                EnableSmb311Preview = true
+                            });
+                            previewSession.CreateNegotiateRequest();
+
+                            Smb2NegotiateResponse responseMissingContexts = new Smb2NegotiateResponse
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Dialect = SmbDialect.Smb311,
+                                ServerGuid = Guid.NewGuid(),
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing,
+                                MaxTransactSize = 65536,
+                                MaxReadSize = 65536,
+                                MaxWriteSize = 65536,
+                                SystemTime = 0x01D811223344AA00UL,
+                                ServerStartTime = 0x01D811223344BB00UL,
+                                SecurityBuffer = Array.Empty<byte>()
+                            };
+                            TestAssertions.Throws<OpenCifsClientStateException>(
+                                () => previewSession.ApplyNegotiateResponse(responseMissingContexts),
+                                "Client should reject SMB 3.1.1 negotiate responses that carry no negotiate-context entries.");
+
+                            OpenCifsClientSession previewSession2 = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                EnableSmb311Preview = true
+                            });
+                            previewSession2.CreateNegotiateRequest();
+
+                            Smb2NegotiateResponse responseMissingPreauth = new Smb2NegotiateResponse
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Dialect = SmbDialect.Smb311,
+                                ServerGuid = Guid.NewGuid(),
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing,
+                                MaxTransactSize = 65536,
+                                MaxReadSize = 65536,
+                                MaxWriteSize = 65536,
+                                SystemTime = 0x01D811223344AA00UL,
+                                ServerStartTime = 0x01D811223344BB00UL,
+                                SecurityBuffer = Array.Empty<byte>()
+                            };
+                            responseMissingPreauth.SetNegotiateContextEntries(new[]
+                            {
+                                new Smb2NegotiateContextEntry
+                                {
+                                    ContextType = Smb2NegotiateContextType.EncryptionCapabilities,
+                                    Payload = new EncryptionCapabilities
+                                    {
+                                        Ciphers = new SmbCipherAlgorithmId[] { SmbCipherAlgorithmId.Aes128Gcm }
+                                    }.ToByteArray()
+                                }
+                            });
+                            TestAssertions.Throws<OpenCifsClientStateException>(
+                                () => previewSession2.ApplyNegotiateResponse(responseMissingPreauth),
+                                "Client should reject SMB 3.1.1 negotiate responses that omit the mandatory preauth integrity context.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Negotiate",
+                        caseId: "ClientSmb311PreviewIsToleratedByExistingServersThatNegotiateSmb302",
+                        displayName: "Client SMB 3.1.1 preview is tolerated by existing servers and still negotiates SMB 3.0.2",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession previewSession = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                EnableSmb311Preview = true,
+                                PreferEncryption = false
+                            });
+                            Smb2NegotiateRequest previewRequest = previewSession.CreateNegotiateRequest();
+                            TestAssertions.True(
+                                Array.IndexOf(previewRequest.Dialects, SmbDialect.Smb311) >= 0,
+                                "Preview client should advertise SMB 3.1.1.");
+
+                            Smb2NegotiateResponse response = new Smb2NegotiateResponse
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Dialect = SmbDialect.Smb302,
+                                ServerGuid = Guid.NewGuid(),
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing,
+                                MaxTransactSize = 65536,
+                                MaxReadSize = 65536,
+                                MaxWriteSize = 65536,
+                                SystemTime = 0x01D811223344AA00UL,
+                                ServerStartTime = 0x01D811223344BB00UL,
+                                SecurityBuffer = Array.Empty<byte>()
+                            };
+                            previewSession.ApplyNegotiateResponse(response);
+                            TestAssertions.True(previewSession.NegotiatedDialect.HasValue, "Preview session should have a negotiated dialect after a successful response.");
+                            TestAssertions.Equal(SmbDialect.Smb302, previewSession.NegotiatedDialect!.Value, "Preview client should accept SMB 3.0.2 selected by the existing tolerance path.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Negotiate",
+                        caseId: "ClientAppliesOptInSmb302NegotiationResponse",
+                        displayName: "Client negotiate handling accepts an opt-in SMB 3.0.2 response",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                PreferEncryption = false
+                            });
+                            session.CreateNegotiateRequest();
+                            Smb2NegotiateResponse response = new Smb2NegotiateResponse
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Dialect = SmbDialect.Smb302,
+                                ServerGuid = Guid.NewGuid(),
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                MaxTransactSize = 65536,
+                                MaxReadSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(SmbDialect.Smb302),
+                                MaxWriteSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(SmbDialect.Smb302)
+                            };
+
+                            session.ApplyNegotiateResponse(response);
+
+                            TestAssertions.Equal(SmbDialect.Smb302, session.NegotiatedDialect!.Value, "Expected the opt-in client session to negotiate SMB 3.0.2.");
+                            TestAssertions.Equal(response.MaxReadSize, session.NegotiatedMaxReadSize, "Expected the opt-in client session to preserve the negotiated max read size.");
+                            TestAssertions.True(session.IsSigningRequired, "Expected signing to remain required after SMB 3.0.2 negotiation.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Negotiate",
+                        caseId: "ClientAppliesOptInSmb30NegotiationResponseWhenServerClamps",
+                        displayName: "Client negotiate handling accepts an opt-in SMB 3.0 response when the server clamps below SMB 3.0.2",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                PreferEncryption = false
+                            });
+                            session.CreateNegotiateRequest();
+                            Smb2NegotiateResponse response = new Smb2NegotiateResponse
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Dialect = SmbDialect.Smb30,
+                                ServerGuid = Guid.NewGuid(),
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                MaxTransactSize = 65536,
+                                MaxReadSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(SmbDialect.Smb30),
+                                MaxWriteSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(SmbDialect.Smb30)
+                            };
+
+                            session.ApplyNegotiateResponse(response);
+
+                            TestAssertions.Equal(SmbDialect.Smb30, session.NegotiatedDialect!.Value, "Expected the opt-in client session to negotiate SMB 3.0 when the server clamps below SMB 3.0.2.");
+                            TestAssertions.Equal(response.MaxReadSize, session.NegotiatedMaxReadSize, "Expected the opt-in client session to preserve the negotiated SMB 3.0 max read size.");
+                            TestAssertions.True(session.IsSigningRequired, "Expected signing to remain required after SMB 3.0 negotiation.");
                             return Task.CompletedTask;
                         })
                 });
@@ -363,6 +731,182 @@ namespace OpenCIFS.Client.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Client.SessionTree",
+                        caseId: "ClientEncryptsOutboundSmb302PacketsAndDecryptsInboundResponsesWhenSessionRequiresEncryption",
+                        displayName: "Client encrypts outbound SMB 3.0.2 packets and decrypts inbound responses when the authenticated session requires encryption",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                ServerName = "LAB-SERVER",
+                                MaximumDialect = SmbDialect.Smb302,
+                                PreferEncryption = true
+                            });
+                            OpenCifsClientCredential credential = CreateCredential();
+                            session.CreateNegotiateRequest();
+                            session.ApplyNegotiateResponse(new Smb2NegotiateResponse
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Dialect = SmbDialect.Smb302,
+                                ServerGuid = new Guid("10213243-5465-7687-98a9-bacbdcedfe0f"),
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                MaxTransactSize = 65536,
+                                MaxReadSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(SmbDialect.Smb302),
+                                MaxWriteSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(SmbDialect.Smb302)
+                            });
+
+                            Smb2SessionSetupRequest initialRequest = session.CreateSessionSetupRequest(credential);
+                            _ = initialRequest;
+                            byte[] serverChallenge = Hex("0123456789ABCDEF");
+                            Smb2SessionSetupResponse challengeResponse = CreateChallengeResponse("LAB-SERVER", "WORKGROUP", serverChallenge);
+                            Smb2SessionSetupRequest authenticateRequest = session.CreateSessionAuthenticateRequest(
+                                credential,
+                                sessionId: 9,
+                                status: NtStatus.MoreProcessingRequired,
+                                challengeResponse: challengeResponse);
+                            SpnegoNegTokenResp authenticateToken = SpnegoTokenCodec.DecodeNegTokenResp(authenticateRequest.SecurityBuffer);
+                            NtlmAuthenticateMessage authenticateMessage = NtlmAuthenticateMessage.ReadFrom(authenticateToken.ResponseToken!);
+                            TestAssertions.True(
+                                NtlmV2Authentication.TryVerifyChallengeResponseSet(
+                                    password: credential.Password,
+                                    userName: credential.UserName,
+                                    userDomain: credential.UserDomain,
+                                    serverChallenge: serverChallenge,
+                                    ntChallengeResponse: authenticateMessage.NtChallengeResponse,
+                                    lmChallengeResponse: authenticateMessage.LmChallengeResponse,
+                                    verifiedResponseSet: out NtlmV2ChallengeResponseSet? verifiedResponseSet),
+                                "Expected the client NTLM authenticate request to remain verifiable for the SMB3 encryption test.");
+                            TestAssertions.True(verifiedResponseSet != null, "Expected the verified NTLM response set for the SMB3 encryption test.");
+
+                            session.ApplySessionSetupResult(
+                                sessionId: 9,
+                                status: NtStatus.Success,
+                                response: CreateSessionSetupSuccessResponse(Smb2SessionFlags.EncryptData));
+
+                            TestAssertions.True(session.IsAuthenticated, "Expected the SMB3 test session to authenticate successfully.");
+                            TestAssertions.True(session.IsSessionEncryptionRequired, "Expected the SMB3 test session to require encryption after session setup.");
+
+                            Smb2Header requestHeader = session.CreateRequestHeader(Smb2Command.Echo, sessionId: session.SessionId!.Value);
+                            TestAssertions.True((requestHeader.Flags & Smb2HeaderFlags.Signed) == 0, "Expected encrypted SMB3 requests to omit the SMB2 Signed flag.");
+
+                            Smb2CompoundPacket requestPacket = new Smb2CompoundPacket(new[]
+                            {
+                                new Smb2CompoundPacketEntry(requestHeader, new Smb2EchoRequest().ToByteArray())
+                            });
+                            byte[] encryptedRequestBytes = session.FinalizeRequestPacket(requestPacket);
+                            TestAssertions.True(Smb2TransformHeader.LooksLikeTransformHeader(encryptedRequestBytes), "Expected the authenticated SMB3 client request to be wrapped in a transform header.");
+
+                            SmbSessionKeySet keySet = SmbSessionKeyDerivation.DeriveKeys(
+                                new SmbKeyDerivationInputs
+                                {
+                                    SessionKey = verifiedResponseSet!.SessionBaseKey,
+                                    Dialect = SmbDialect.Smb302,
+                                    CipherAlgorithmId = SmbCipherAlgorithmId.Aes128Ccm
+                                });
+
+                            Smb2Header responseHeader = CreateResponseHeader(
+                                requestHeader,
+                                grantedCredits: 3,
+                                flags: Smb2HeaderFlags.ServerToRedir);
+                            Smb2CompoundPacket responsePacket = new Smb2CompoundPacket(new[]
+                            {
+                                new Smb2CompoundPacketEntry(responseHeader, new Smb2EchoResponse().ToByteArray())
+                            });
+                            byte[] encryptedResponseBytes = Smb3MessageTransform.EncryptPacket(
+                                responsePacket.ToByteArray(),
+                                session.SessionId.Value,
+                                keySet.EncryptionKey);
+                            byte[] unwrappedResponseBytes = session.UnwrapResponsePacket(encryptedResponseBytes);
+                            Smb2CompoundPacket parsedResponsePacket = Smb2CompoundPacket.ReadFrom(unwrappedResponseBytes);
+
+                            session.ValidateResponsePacket(parsedResponsePacket, unwrappedResponseBytes);
+                            session.ApplyResponseHeader(parsedResponsePacket.Entries[0].Header);
+                            Smb2EchoResponseValidator.Validate(Smb2EchoResponse.ReadFrom(parsedResponsePacket.Entries[0].Payload));
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.SessionTree",
+                        caseId: "ClientRejectsTamperedEncryptedSmb302Responses",
+                        displayName: "Client rejects tampered SMB 3.0.2 encrypted responses when the authenticated session requires encryption",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = new OpenCifsClientSession(new OpenCifsClientOptions
+                            {
+                                ServerName = "LAB-SERVER",
+                                MaximumDialect = SmbDialect.Smb302,
+                                PreferEncryption = true
+                            });
+                            OpenCifsClientCredential credential = CreateCredential();
+                            session.CreateNegotiateRequest();
+                            session.ApplyNegotiateResponse(new Smb2NegotiateResponse
+                            {
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Dialect = SmbDialect.Smb302,
+                                ServerGuid = new Guid("10213243-5465-7687-98a9-bacbdcedfe0f"),
+                                Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                MaxTransactSize = 65536,
+                                MaxReadSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(SmbDialect.Smb302),
+                                MaxWriteSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(SmbDialect.Smb302)
+                            });
+
+                            byte[] serverChallenge = Hex("0123456789ABCDEF");
+                            session.CreateSessionSetupRequest(credential);
+                            Smb2SessionSetupRequest authenticateRequest = session.CreateSessionAuthenticateRequest(
+                                credential,
+                                sessionId: 9,
+                                status: NtStatus.MoreProcessingRequired,
+                                challengeResponse: CreateChallengeResponse("LAB-SERVER", "WORKGROUP", serverChallenge));
+                            SpnegoNegTokenResp authenticateToken = SpnegoTokenCodec.DecodeNegTokenResp(authenticateRequest.SecurityBuffer);
+                            NtlmAuthenticateMessage authenticateMessage = NtlmAuthenticateMessage.ReadFrom(authenticateToken.ResponseToken!);
+                            TestAssertions.True(
+                                NtlmV2Authentication.TryVerifyChallengeResponseSet(
+                                    password: credential.Password,
+                                    userName: credential.UserName,
+                                    userDomain: credential.UserDomain,
+                                    serverChallenge: serverChallenge,
+                                    ntChallengeResponse: authenticateMessage.NtChallengeResponse,
+                                    lmChallengeResponse: authenticateMessage.LmChallengeResponse,
+                                    verifiedResponseSet: out NtlmV2ChallengeResponseSet? verifiedResponseSet),
+                                "Expected the client NTLM authenticate request to remain verifiable for the SMB3 tamper test.");
+                            TestAssertions.True(verifiedResponseSet != null, "Expected the verified NTLM response set for the SMB3 tamper test.");
+
+                            session.ApplySessionSetupResult(
+                                sessionId: 9,
+                                status: NtStatus.Success,
+                                response: CreateSessionSetupSuccessResponse(Smb2SessionFlags.EncryptData));
+
+                            Smb2Header requestHeader = session.CreateRequestHeader(Smb2Command.Echo, sessionId: session.SessionId!.Value);
+                            Smb2Header responseHeader = CreateResponseHeader(
+                                requestHeader,
+                                grantedCredits: 3,
+                                flags: Smb2HeaderFlags.ServerToRedir);
+                            Smb2CompoundPacket responsePacket = new Smb2CompoundPacket(new[]
+                            {
+                                new Smb2CompoundPacketEntry(responseHeader, new Smb2EchoResponse().ToByteArray())
+                            });
+                            SmbSessionKeySet keySet = SmbSessionKeyDerivation.DeriveKeys(
+                                new SmbKeyDerivationInputs
+                                {
+                                    SessionKey = verifiedResponseSet!.SessionBaseKey,
+                                    Dialect = SmbDialect.Smb302,
+                                    CipherAlgorithmId = SmbCipherAlgorithmId.Aes128Ccm
+                                });
+                            byte[] encryptedResponseBytes = Smb3MessageTransform.EncryptPacket(
+                                responsePacket.ToByteArray(),
+                                session.SessionId.Value,
+                                keySet.EncryptionKey);
+                            encryptedResponseBytes[encryptedResponseBytes.Length - 1] ^= 0x01;
+
+                            TestAssertions.Throws<ProtocolValidationException>(
+                                () => session.UnwrapResponsePacket(encryptedResponseBytes),
+                                "Expected the client to reject tampered SMB3 encrypted response packets.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.SessionTree",
                         caseId: "ClientRejectsMisorderedOrMalformedSessionInputs",
                         displayName: "Client rejects misordered or malformed session and tree inputs",
                         executeAsync: token =>
@@ -422,6 +966,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                             TestAssertions.Equal(Smb2Command.TreeConnect, treeConnectException.Command, "Expected the tree-connect failure to report the TreeConnect command.");
                             TestAssertions.Equal(NtStatus.AccessDenied, treeConnectException.Status, "Expected the tree-connect failure to report STATUS_ACCESS_DENIED.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.AccessDenied, treeConnectException.Category, "Expected the tree-connect failure to normalize to AccessDenied.");
 
                             OpenCifsStatusException sessionSetupException;
 
@@ -437,6 +982,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                             TestAssertions.Equal(Smb2Command.SessionSetup, sessionSetupException.Command, "Expected the session-setup failure to report the SessionSetup command.");
                             TestAssertions.Equal(NtStatus.AccessDenied, sessionSetupException.Status, "Expected the session-setup failure to report STATUS_ACCESS_DENIED.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.AccessDenied, sessionSetupException.Category, "Expected the session-setup failure to normalize to AccessDenied.");
                             return Task.CompletedTask;
                         })
                 });
@@ -496,13 +1042,13 @@ namespace OpenCIFS.Client.Tests.Shared
 
                             OpenCifsClientSession missingFlagSession = CreateNegotiatedClient();
                             Smb2Header missingFlagRequest = missingFlagSession.CreateRequestHeader(Smb2Command.Negotiate);
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => missingFlagSession.ApplyResponseHeader(CreateResponseHeader(missingFlagRequest, flags: Smb2HeaderFlags.None)),
                                 "Expected the client to reject response headers without the ServerToRedir flag.");
 
                             OpenCifsClientSession unknownMessageSession = CreateNegotiatedClient();
                             unknownMessageSession.CreateRequestHeader(Smb2Command.Negotiate);
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => unknownMessageSession.ApplyResponseHeader(new Smb2Header
                                 {
                                     CreditCharge = 0,
@@ -681,6 +1227,86 @@ namespace OpenCIFS.Client.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Client.Credits",
+                        caseId: "ClientSignsAuthenticatedPacketsWithAesCmacWhenNegotiatedSmb302",
+                        displayName: "Client signs authenticated SMB2 packets with AES-CMAC when SMB 3.0.2 is negotiated",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            (OpenCifsServerHost host, OpenCifsClientSession session, ulong sessionId) = CreateAuthenticatedLoopbackPair(SmbDialect.Smb302);
+                            Smb2EchoRequest echoRequest = session.CreateEchoRequest();
+                            Smb2Header echoHeader = session.CreateRequestHeader(Smb2Command.Echo, sessionId: sessionId);
+                            Smb2CompoundPacket requestPacket = new Smb2CompoundPacket(
+                                new List<Smb2CompoundPacketEntry>
+                                {
+                                    new Smb2CompoundPacketEntry(echoHeader, echoRequest.ToByteArray())
+                                });
+                            byte[] requestBytes = session.FinalizeRequestPacket(requestPacket);
+                            Smb2CompoundPacket parsedRequestPacket = Smb2CompoundPacket.ReadFrom(requestBytes);
+
+                            TestAssertions.Equal(SmbDialect.Smb302, session.NegotiatedDialect!.Value, "Expected the loopback client session to negotiate SMB 3.0.2.");
+                            TestAssertions.True((parsedRequestPacket.Entries[0].Header.Flags & Smb2HeaderFlags.Signed) != 0, "Expected authenticated SMB 3.0.2 client requests to carry the SMB2 Signed flag.");
+
+                            host.ValidateRequestPacket(parsedRequestPacket, requestBytes);
+                            host.ValidateAndAcceptRequestHeader(parsedRequestPacket.Entries[0].Header, Smb2Command.Echo, expectedSessionId: sessionId);
+                            OpenCifsServerOperationResult<Smb2EchoResponse> echoResult = host.HandleEcho(sessionId, echoRequest);
+                            Smb2Header responseHeader = host.CreateResponseHeader(parsedRequestPacket.Entries[0].Header, echoResult.Status, sessionId: sessionId);
+                            Smb2CompoundPacket responsePacket = new Smb2CompoundPacket(
+                                new List<Smb2CompoundPacketEntry>
+                                {
+                                    new Smb2CompoundPacketEntry(responseHeader, echoResult.Response.ToByteArray())
+                                });
+                            byte[] responseBytes = host.FinalizeResponsePacket(responsePacket);
+                            Smb2CompoundPacket parsedResponsePacket = Smb2CompoundPacket.ReadFrom(responseBytes);
+
+                            session.ValidateResponsePacket(parsedResponsePacket, responseBytes);
+                            session.ApplyResponseHeader(parsedResponsePacket.Entries[0].Header);
+                            session.ApplyEchoResult(parsedResponsePacket.Entries[0].Header.Status, Smb2EchoResponse.ReadFrom(parsedResponsePacket.Entries[0].Payload));
+                            TestAssertions.Equal(1, session.AvailableCredits, "Expected the AES-CMAC-signed echo response to restore the consumed client credit.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Credits",
+                        caseId: "ClientSignsAuthenticatedPacketsWithAesCmacWhenNegotiatedSmb30",
+                        displayName: "Client signs authenticated SMB2 packets with AES-CMAC when SMB 3.0 is negotiated",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            (OpenCifsServerHost host, OpenCifsClientSession session, ulong sessionId) = CreateAuthenticatedLoopbackPair(SmbDialect.Smb30);
+                            Smb2EchoRequest echoRequest = session.CreateEchoRequest();
+                            Smb2Header echoHeader = session.CreateRequestHeader(Smb2Command.Echo, sessionId: sessionId);
+                            Smb2CompoundPacket requestPacket = new Smb2CompoundPacket(
+                                new List<Smb2CompoundPacketEntry>
+                                {
+                                    new Smb2CompoundPacketEntry(echoHeader, echoRequest.ToByteArray())
+                                });
+                            byte[] requestBytes = session.FinalizeRequestPacket(requestPacket);
+                            Smb2CompoundPacket parsedRequestPacket = Smb2CompoundPacket.ReadFrom(requestBytes);
+
+                            TestAssertions.Equal(SmbDialect.Smb30, session.NegotiatedDialect!.Value, "Expected the loopback client session to negotiate SMB 3.0.");
+                            TestAssertions.True((parsedRequestPacket.Entries[0].Header.Flags & Smb2HeaderFlags.Signed) != 0, "Expected authenticated SMB 3.0 client requests to carry the SMB2 Signed flag.");
+
+                            host.ValidateRequestPacket(parsedRequestPacket, requestBytes);
+                            host.ValidateAndAcceptRequestHeader(parsedRequestPacket.Entries[0].Header, Smb2Command.Echo, expectedSessionId: sessionId);
+                            OpenCifsServerOperationResult<Smb2EchoResponse> echoResult = host.HandleEcho(sessionId, echoRequest);
+                            Smb2Header responseHeader = host.CreateResponseHeader(parsedRequestPacket.Entries[0].Header, echoResult.Status, sessionId: sessionId);
+                            Smb2CompoundPacket responsePacket = new Smb2CompoundPacket(
+                                new List<Smb2CompoundPacketEntry>
+                                {
+                                    new Smb2CompoundPacketEntry(responseHeader, echoResult.Response.ToByteArray())
+                                });
+                            byte[] responseBytes = host.FinalizeResponsePacket(responsePacket);
+                            Smb2CompoundPacket parsedResponsePacket = Smb2CompoundPacket.ReadFrom(responseBytes);
+
+                            session.ValidateResponsePacket(parsedResponsePacket, responseBytes);
+                            session.ApplyResponseHeader(parsedResponsePacket.Entries[0].Header);
+                            session.ApplyEchoResult(parsedResponsePacket.Entries[0].Header.Status, Smb2EchoResponse.ReadFrom(parsedResponsePacket.Entries[0].Payload));
+                            TestAssertions.Equal(1, session.AvailableCredits, "Expected the SMB 3.0 AES-CMAC-signed echo response to restore the consumed client credit.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Credits",
                         caseId: "ClientRejectsUnsignedOrTamperedSignedResponses",
                         displayName: "Client rejects missing or tampered SMB2 signatures on authenticated echo responses",
                         executeAsync: token =>
@@ -712,7 +1338,7 @@ namespace OpenCIFS.Client.Tests.Shared
                                 byte[] unsignedResponseBytes = unsignedResponsePacket.ToByteArray();
                                 Smb2CompoundPacket parsedUnsignedResponsePacket = Smb2CompoundPacket.ReadFrom(unsignedResponseBytes);
 
-                                TestAssertions.Throws<ProtocolValidationException>(
+                                TestAssertions.Throws<OpenCifsClientProtocolException>(
                                     () => session.ValidateResponsePacket(parsedUnsignedResponsePacket, unsignedResponseBytes),
                                     "Expected the client to reject authenticated echo responses that omit the required SMB2 Signed flag.");
                             }
@@ -743,7 +1369,7 @@ namespace OpenCIFS.Client.Tests.Shared
                                 tamperedResponseBytes[tamperedResponseBytes.Length - 1] ^= 0x01;
                                 Smb2CompoundPacket parsedTamperedResponsePacket = Smb2CompoundPacket.ReadFrom(tamperedResponseBytes);
 
-                                TestAssertions.Throws<ProtocolValidationException>(
+                                TestAssertions.Throws<OpenCifsClientProtocolException>(
                                     () => session.ValidateResponsePacket(parsedTamperedResponsePacket, tamperedResponseBytes),
                                     "Expected the client to reject authenticated echo responses whose SMB2 signature no longer verifies.");
                             }
@@ -907,7 +1533,7 @@ namespace OpenCIFS.Client.Tests.Shared
                             }).ToByteArray();
                             Smb2CompoundPacket parsedUnsignedFinalPacket = Smb2CompoundPacket.ReadFrom(unsignedFinalPacketBytes);
 
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ValidateResponsePacket(parsedUnsignedFinalPacket, unsignedFinalPacketBytes),
                                 "Expected the client to reject unsigned final async CHANGE_NOTIFY responses in a signed SMB2 session.");
                             return Task.CompletedTask;
@@ -965,7 +1591,7 @@ namespace OpenCIFS.Client.Tests.Shared
                                 new Smb2ChangeNotifyResponse());
                             TestAssertions.Equal(0, overflowEntries.Length, "Expected STATUS_NOTIFY_ENUM_DIR to surface as an empty result set.");
 
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ApplyChangeNotifyResult(
                                     nonRecursiveRequest,
                                     NtStatus.Success,
@@ -1109,7 +1735,7 @@ namespace OpenCIFS.Client.Tests.Shared
                                         Array.Empty<byte>())
                                 });
 
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ApplyCompoundResponsePacket(responsePacket),
                                 "Expected the client to reject compounded response headers that do not match a pending SMB2 message identifier.");
                             return Task.CompletedTask;
@@ -1127,7 +1753,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                             Smb2Header createHeader = session.CreateRequestHeader(Smb2Command.Create, treeId: 42, sessionId: session.SessionId!.Value);
                             Smb2Header closeHeader = session.CreateRelatedRequestHeader(Smb2Command.Close, sessionId: session.SessionId.Value);
-                            TestAssertions.Equal(Smb2HeaderFlags.RelatedOperations, closeHeader.Flags, "Expected the client to mark related compounded requests explicitly.");
+                            TestAssertions.Equal(Smb2HeaderFlags.RelatedOperations | Smb2HeaderFlags.Signed, closeHeader.Flags, "Expected authenticated related compounded requests to preserve SMB2 signing while marking the request as related.");
 
                             Smb2CompoundPacket responsePacket = new Smb2CompoundPacket(
                                 new List<Smb2CompoundPacketEntry>
@@ -1312,7 +1938,7 @@ namespace OpenCIFS.Client.Tests.Shared
                             byte[] eofBytes = session.ApplyReadResult(openState.PersistentFileId, openState.VolatileFileId, NtStatus.EndOfFile, new Smb2ReadResponse());
                             TestAssertions.Equal(0, eofBytes.Length, "Expected EOF reads to return an empty payload.");
 
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ApplyReadResult(openState.PersistentFileId, openState.VolatileFileId, NtStatus.Success, new Smb2ReadResponse
                                 {
                                     DataBuffer = Array.Empty<byte>(),
@@ -1320,6 +1946,107 @@ namespace OpenCIFS.Client.Tests.Shared
                                     Flags = 0
                                 }),
                                 "Successful read results with an empty payload should fail validation.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.FileIo",
+                        caseId: "ClientBuildsSmb302DurableHandleV2RequestsAndTracksReconnectState",
+                        displayName: "Client builds SMB 3.0.2 durable-handle v2 requests and tracks reconnect state",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = CreateAuthenticatedClient(SmbDialect.Smb302);
+                            session.ApplyTreeConnectResult("public", 42, NtStatus.Success, CreateTreeConnectSuccessResponse());
+
+                            Smb2CreateRequest createRequest = session.CreateCreateRequest(
+                                42,
+                                "shared.txt",
+                                desiredAccess: 0xC0010000U,
+                                shareAccess: 0x00000007U,
+                                createDisposition: Smb2CreateDisposition.Open,
+                                requestedOplockLevel: Smb2OplockLevel.Batch,
+                                requestDurableHandle: true);
+                            Smb2CreateContext[] initialCreateContexts = Smb2CreateContextCodec.Decode(createRequest.CreateContexts);
+                            TestAssertions.Equal(1, initialCreateContexts.Length, "Expected the bounded SMB 3.0.2 durable open to carry a single durable-handle v2 request context.");
+                            TestAssertions.True(Smb2DurableHandleRequestV2Context.IsMatch(initialCreateContexts[0]), "Expected the bounded SMB 3.0.2 durable open to use the durable-handle v2 request context.");
+                            Smb2DurableHandleRequestV2Context durableHandleRequestV2 = Smb2DurableHandleRequestV2Context.ReadFrom(initialCreateContexts[0]);
+                            TestAssertions.False(durableHandleRequestV2.CreateGuid == Guid.Empty, "Expected the bounded SMB 3.0.2 durable-handle v2 request to generate a non-empty create GUID.");
+                            TestAssertions.Equal(0U, durableHandleRequestV2.Timeout, "Expected the bounded SMB 3.0.2 durable-handle v2 request to use the managed default timeout request.");
+                            TestAssertions.Equal(Smb2DurableHandleFlags.None, durableHandleRequestV2.Flags, "Expected the bounded SMB 3.0.2 durable-handle v2 request to stay non-persistent.");
+
+                            OpenState openState = session.ApplyCreateResult(
+                                42,
+                                "shared.txt",
+                                NtStatus.Success,
+                                new Smb2CreateResponse
+                                {
+                                    OplockLevel = Smb2OplockLevel.Batch,
+                                    Flags = 0,
+                                    CreateAction = Smb2CreateAction.Opened,
+                                    FileAttributes = FileAttributes.Normal,
+                                    PersistentFileId = 900,
+                                    VolatileFileId = 901,
+                                    CreateContexts = Smb2CreateContextCodec.Encode(new Smb2CreateContext[]
+                                    {
+                                        new Smb2DurableHandleResponseV2Context
+                                        {
+                                            Timeout = 300000,
+                                            Flags = Smb2DurableHandleFlags.None
+                                        }.ToCreateContext()
+                                    })
+                                },
+                                createRequest);
+                            TestAssertions.True(openState.IsDurable, "Expected the bounded SMB 3.0.2 durable create result to be tracked as durable.");
+                            TestAssertions.True(openState.UsesDurableHandleV2, "Expected the bounded SMB 3.0.2 durable create result to be tracked as durable-handle v2.");
+                            TestAssertions.False(openState.DurableCreateGuid == Guid.Empty, "Expected the bounded SMB 3.0.2 durable create result to preserve the request create GUID.");
+                            TestAssertions.Equal(300000U, openState.DurableTimeoutMs, "Expected the bounded SMB 3.0.2 durable create result to preserve the granted durable timeout.");
+                            TestAssertions.False(openState.IsPersistent, "Expected the bounded SMB 3.0.2 durable create result to remain non-persistent.");
+
+                            Smb2CreateRequest reconnectRequest = session.CreateDurableReconnectCreateRequest(
+                                42,
+                                "shared.txt",
+                                openState.PersistentFileId,
+                                openState.VolatileFileId,
+                                desiredAccess: 0xC0010000U,
+                                shareAccess: 0x00000007U,
+                                requestedOplockLevel: Smb2OplockLevel.Batch,
+                                durableCreateGuid: openState.DurableCreateGuid,
+                                useDurableHandleV2: openState.UsesDurableHandleV2);
+                            Smb2CreateContext[] reconnectCreateContexts = Smb2CreateContextCodec.Decode(reconnectRequest.CreateContexts);
+                            TestAssertions.Equal(1, reconnectCreateContexts.Length, "Expected the bounded SMB 3.0.2 durable reconnect to carry a single durable-handle v2 reconnect context.");
+                            TestAssertions.True(Smb2DurableHandleReconnectV2Context.IsMatch(reconnectCreateContexts[0]), "Expected the bounded SMB 3.0.2 durable reconnect to use the durable-handle v2 reconnect context.");
+                            Smb2DurableHandleReconnectV2Context durableHandleReconnectV2 = Smb2DurableHandleReconnectV2Context.ReadFrom(reconnectCreateContexts[0]);
+                            TestAssertions.Equal(openState.PersistentFileId, durableHandleReconnectV2.PersistentFileId, "Expected the bounded SMB 3.0.2 durable reconnect to preserve the persistent file identifier.");
+                            TestAssertions.Equal(openState.VolatileFileId, durableHandleReconnectV2.VolatileFileId, "Expected the bounded SMB 3.0.2 durable reconnect to preserve the original volatile file identifier.");
+                            TestAssertions.Equal(openState.DurableCreateGuid, durableHandleReconnectV2.CreateGuid, "Expected the bounded SMB 3.0.2 durable reconnect to preserve the create GUID.");
+                            TestAssertions.Equal(Smb2DurableHandleFlags.None, durableHandleReconnectV2.Flags, "Expected the bounded SMB 3.0.2 durable reconnect to stay non-persistent.");
+
+                            OpenState reconnectedOpenState = session.ApplyCreateResult(
+                                42,
+                                "shared.txt",
+                                NtStatus.Success,
+                                new Smb2CreateResponse
+                                {
+                                    OplockLevel = Smb2OplockLevel.Batch,
+                                    Flags = 0,
+                                    CreateAction = Smb2CreateAction.Opened,
+                                    FileAttributes = FileAttributes.Normal,
+                                    PersistentFileId = 900,
+                                    VolatileFileId = 902,
+                                    CreateContexts = Smb2CreateContextCodec.Encode(new Smb2CreateContext[]
+                                    {
+                                        new Smb2DurableHandleResponseV2Context
+                                        {
+                                            Timeout = 300000,
+                                            Flags = Smb2DurableHandleFlags.None
+                                        }.ToCreateContext()
+                                    })
+                                },
+                                reconnectRequest);
+                            TestAssertions.True(reconnectedOpenState.UsesDurableHandleV2, "Expected the bounded SMB 3.0.2 durable reconnect result to remain durable-handle v2.");
+                            TestAssertions.Equal(openState.DurableCreateGuid, reconnectedOpenState.DurableCreateGuid, "Expected the bounded SMB 3.0.2 durable reconnect result to preserve the original create GUID.");
+                            TestAssertions.Equal(300000U, reconnectedOpenState.DurableTimeoutMs, "Expected the bounded SMB 3.0.2 durable reconnect result to preserve the granted durable timeout.");
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(
@@ -1399,7 +2126,7 @@ namespace OpenCIFS.Client.Tests.Shared
                             session.ApplyCloseResult(supersededOpen.PersistentFileId, supersededOpen.VolatileFileId, NtStatus.Success, new Smb2CloseResponse());
                             TestAssertions.Equal(0, session.OpenCount, "Expected superseded and overwritten opens to close cleanly.");
 
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.CreateCreateRequest(
                                     42,
                                     "folder/invalid-supersede.txt",
@@ -1676,6 +2403,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                             TestAssertions.Equal(Smb2Command.QueryInfo, queryInfoException.Command, "Expected query-info failure to report the QueryInfo command.");
                             TestAssertions.Equal(NtStatus.BufferTooSmall, queryInfoException.Status, "Expected query-info failure to report STATUS_BUFFER_TOO_SMALL.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.ProtocolError, queryInfoException.Category, "Expected query-info failure to normalize to ProtocolError.");
 
                             OpenCifsStatusException setInfoException;
 
@@ -1691,6 +2419,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                             TestAssertions.Equal(Smb2Command.SetInfo, setInfoException.Command, "Expected set-info failure to report the SetInfo command.");
                             TestAssertions.Equal(NtStatus.AccessDenied, setInfoException.Status, "Expected set-info failure to report STATUS_ACCESS_DENIED.");
+                            TestAssertions.Equal(OpenCifsErrorCategory.AccessDenied, setInfoException.Category, "Expected set-info failure to normalize to AccessDenied.");
                             return Task.CompletedTask;
                         })
                 });
@@ -1835,11 +2564,11 @@ namespace OpenCIFS.Client.Tests.Shared
                             {
                                 new Smb2CompoundPacketEntry(unsignedHeader, unsignedNotification.ToByteArray())
                             }).ToByteArray();
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ValidateOplockBreakNotificationPacket(Smb2CompoundPacket.ReadFrom(unsignedPacketBytes), unsignedPacketBytes),
                                 "Expected signed sessions to reject unsigned oplock-break notifications.");
 
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ApplyOplockBreakNotification(
                                     99,
                                     new Smb2OplockBreakNotification
@@ -2031,7 +2760,7 @@ namespace OpenCIFS.Client.Tests.Shared
                             {
                                 new Smb2CompoundPacketEntry(unsignedHeader, unsignedNotification.ToByteArray())
                             }).ToByteArray();
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ValidateLeaseBreakNotificationPacket(Smb2CompoundPacket.ReadFrom(unsignedPacketBytes), unsignedPacketBytes),
                                 "Expected signed sessions to reject unsigned lease-break notifications.");
 
@@ -2047,7 +2776,7 @@ namespace OpenCIFS.Client.Tests.Shared
                                     }),
                                 "Expected lease-break notifications for the wrong tree to be rejected.");
 
-                            TestAssertions.Throws<ProtocolValidationException>(
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ApplyLeaseBreakNotification(
                                     42,
                                     new Smb2LeaseBreakNotification
@@ -2176,6 +2905,31 @@ namespace OpenCIFS.Client.Tests.Shared
                             if (sessionPreview != null)
                             {
                                 throw new InvalidOperationException("Expected the low-level client session surface to remain outside preview-only markers.");
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Connection",
+                        caseId: "ClientConnectionAdvancedSurfaceExposesTryAsyncResultEnvelopeCompanions",
+                        displayName: "Client connection advanced surface exposes TryAsync result-envelope companions for lifecycle and raw SMB workflows",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            if (typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryConnectAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryConnectAndAuthenticateAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryTreeConnectAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryValidateSecureNegotiateAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryCompoundOpenReadCloseAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryOpenAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryReadAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryQueryDirectoryAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryChangeNotifyAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryCloseAsync)) == null ||
+                                typeof(OpenCifsClientConnection).GetMethod(nameof(OpenCifsClientConnection.TryDisconnectAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected the advanced/raw client connection surface to expose bounded Try...Async result-envelope companions.");
                             }
 
                             return Task.CompletedTask;
@@ -2323,6 +3077,72 @@ namespace OpenCIFS.Client.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Client.Connection",
+                        caseId: "ClientConnectionAutoValidatesSecureNegotiateDuringEncryptedSmb302TreeConnect",
+                        displayName: "Client connection auto-validates secure negotiate during encrypted SMB 3.0.2 tree connect and supports explicit revalidation",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientConnectionSecureNegotiate_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(
+                                sharePath,
+                                port,
+                                token,
+                                minimumDialect: SmbDialect.Smb302,
+                                maximumDialect: SmbDialect.Smb302,
+                                requireEncryptionForSmb3: true).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClientConnection client = new OpenCifsClientConnection(new OpenCifsClientOptions
+                                {
+                                    ServerName = "127.0.0.1",
+                                    ServerPort = port,
+                                    MinimumDialect = SmbDialect.Smb302,
+                                    MaximumDialect = SmbDialect.Smb302,
+                                    PreferEncryption = true
+                                });
+
+                                await client.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                TestAssertions.Equal(SmbDialect.Smb302, client.Session.NegotiatedDialect!.Value, "Expected the direct-TCP secure-negotiate test client to negotiate SMB 3.0.2.");
+                                TestAssertions.False(client.Session.IsSecureNegotiateValidated, "Expected secure-negotiate validation to remain pending until the first tree connection completes.");
+
+                                OpenCifsClientTreeHandle treeHandle = await client.TreeConnectAsync("public", token).ConfigureAwait(false);
+                                TestAssertions.True(client.Session.IsSecureNegotiateValidated, "Expected SMB 3.0.2 tree connect to complete bounded secure-negotiate validation automatically.");
+
+                                await client.ValidateSecureNegotiateAsync(treeHandle, token).ConfigureAwait(false);
+                                OpenCifsClientResult validationResult = await client.TryValidateSecureNegotiateAsync(treeHandle, token).ConfigureAwait(false);
+                                TestAssertions.True(validationResult.IsSuccess, "Expected the non-throwing explicit secure-negotiate validation path to succeed after the automatic tree-connect validation.");
+
+                                OpenCifsClientOpenHandle fileHandle = await client.OpenAsync(
+                                    treeHandle,
+                                    "secure.txt",
+                                    desiredAccess: 0xC0010000U,
+                                    createDisposition: Smb2CreateDisposition.OverwriteIf,
+                                    cancellationToken: token).ConfigureAwait(false);
+                                byte[] expectedBytes = System.Text.Encoding.UTF8.GetBytes("secure-negotiate-data");
+                                await client.WriteAsync(fileHandle, expectedBytes, 0, token).ConfigureAwait(false);
+                                await client.FlushAsync(fileHandle, token).ConfigureAwait(false);
+                                byte[] actualBytes = await client.ReadAsync(fileHandle, (uint)expectedBytes.Length, 0, cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.SequenceEqual(expectedBytes, actualBytes, "Expected the SMB 3.0.2 direct-TCP client to remain usable after automatic and explicit secure-negotiate validation.");
+
+                                await client.CloseAsync(fileHandle, cancellationToken: token).ConfigureAwait(false);
+                                await client.TreeDisconnectAsync(treeHandle, token).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Connection",
                         caseId: "ClientConnectionRejectsUnauthenticatedUseBadCredentialsAndStaleHandles",
                         displayName: "Client connection rejects unauthenticated use, bad credentials, and stale handles",
                         executeAsync: async token =>
@@ -2330,10 +3150,10 @@ namespace OpenCIFS.Client.Tests.Shared
                             token.ThrowIfCancellationRequested();
 
                             await using OpenCifsClientConnection disconnectedClient = new OpenCifsClientConnection(new OpenCifsClientOptions());
-                            await TestAssertions.ThrowsAsync<InvalidOperationException>(
+                            await TestAssertions.ThrowsAsync<OpenCifsClientStateException>(
                                 () => disconnectedClient.AuthenticateAsync(CreateCredential(), token),
                                 "Expected authenticate to reject use before connect.");
-                            await TestAssertions.ThrowsAsync<InvalidOperationException>(
+                            await TestAssertions.ThrowsAsync<OpenCifsClientStateException>(
                                 () => disconnectedClient.TreeConnectAsync("public", token),
                                 "Expected tree connect to reject use before authentication.");
 
@@ -2371,6 +3191,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                                 TestAssertions.Equal(Smb2Command.SessionSetup, authenticationException.Command, "Expected invalid credentials to report the SessionSetup command.");
                                 TestAssertions.Equal(NtStatus.AccessDenied, authenticationException.Status, "Expected invalid credentials to report STATUS_ACCESS_DENIED.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.AccessDenied, authenticationException.Category, "Expected invalid credentials to normalize to AccessDenied.");
                                 TestAssertions.False(wrongPasswordClient.IsConnected, "Expected failed authentication to tear down the direct-TCP transport.");
 
                                 await using OpenCifsClientConnection client = new OpenCifsClientConnection(new OpenCifsClientOptions
@@ -2411,12 +3232,12 @@ namespace OpenCIFS.Client.Tests.Shared
                                 TestAssertions.True(File.Exists(Path.Combine(sharePath, "docs", "sample.txt")), "Expected a failed low-level non-empty directory delete to preserve the child file.");
                                 TestAssertions.True(Directory.Exists(Path.Combine(sharePath, "docs")), "Expected a failed low-level non-empty directory delete to preserve the directory.");
 
-                                await TestAssertions.ThrowsAsync<InvalidOperationException>(
+                                await TestAssertions.ThrowsAsync<OpenCifsClientStateException>(
                                     () => client.ReadAsync(fileHandle, 1, 0, cancellationToken: token),
                                     "Expected closed open handles to be rejected.");
 
                                 await client.TreeDisconnectAsync(treeHandle, token).ConfigureAwait(false);
-                                await TestAssertions.ThrowsAsync<InvalidOperationException>(
+                                await TestAssertions.ThrowsAsync<OpenCifsClientStateException>(
                                     () => client.OpenAsync(treeHandle, "docs\\other.txt", cancellationToken: token),
                                     "Expected disconnected tree handles to be rejected.");
                             }
@@ -2431,6 +3252,74 @@ namespace OpenCIFS.Client.Tests.Shared
                             }
                         })
                     ,
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Connection",
+                        caseId: "ClientConnectionTryAsyncCompanionsReportPositiveAndNegativeAdvancedFlows",
+                        displayName: "Client connection TryAsync companions report positive and negative advanced lifecycle and compound flows",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientConnectionTry_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(Path.Combine(sharePath, "docs"));
+                            File.WriteAllText(Path.Combine(sharePath, "docs", "sample.txt"), "advanced-try-surface");
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClientConnection client = new OpenCifsClientConnection(new OpenCifsClientOptions
+                                {
+                                    ServerName = "127.0.0.1",
+                                    ServerPort = port
+                                });
+
+                                OpenCifsClientResult connectAndAuthenticateResult = await client.TryConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                TestAssertions.True(connectAndAuthenticateResult.IsSuccess, "Expected TryConnectAndAuthenticateAsync to succeed against the live listener.");
+
+                                OpenCifsClientResult<OpenCifsClientTreeHandle> treeResult = await client.TryTreeConnectAsync("public", token).ConfigureAwait(false);
+                                TestAssertions.True(treeResult.IsSuccess, "Expected TryTreeConnectAsync to succeed for the public share.");
+                                OpenCifsClientTreeHandle treeHandle = treeResult.GetValueOrThrow();
+
+                                OpenCifsClientResult<byte[]> compoundReadResult = await client.TryCompoundOpenReadCloseAsync(
+                                    treeHandle,
+                                    "docs\\sample.txt",
+                                    64,
+                                    cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.True(compoundReadResult.IsSuccess, "Expected TryCompoundOpenReadCloseAsync to succeed for the existing file.");
+                                TestAssertions.Equal("advanced-try-surface", System.Text.Encoding.UTF8.GetString(compoundReadResult.GetValueOrThrow()), "Expected the advanced/raw Try compound read to preserve the file payload.");
+
+                                OpenCifsClientResult<byte[]> missingReadResult = await client.TryCompoundOpenReadCloseAsync(
+                                    treeHandle,
+                                    "docs\\missing.txt",
+                                    16,
+                                    cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.False(missingReadResult.IsSuccess, "Expected TryCompoundOpenReadCloseAsync to report a failure envelope for a missing file.");
+                                TestAssertions.Equal(Smb2Command.Create, missingReadResult.Command, "Expected missing-file compound reads to surface the create leg.");
+                                TestAssertions.Equal(NtStatus.ObjectNameNotFound, missingReadResult.Status, "Expected missing-file compound reads to report STATUS_OBJECT_NAME_NOT_FOUND.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.NotFound, missingReadResult.ErrorCategory, "Expected missing-file compound reads to normalize to NotFound.");
+
+                                await TestAssertions.ThrowsAsync<ArgumentNullException>(
+                                    () => client.TryOpenAsync(treeHandle: null!, path: "docs\\sample.txt", cancellationToken: token),
+                                    "Expected advanced/raw Try wrappers to preserve local argument validation and not flatten it into a result envelope.");
+
+                                OpenCifsClientResult disconnectResult = await client.TryDisconnectAsync(token).ConfigureAwait(false);
+                                TestAssertions.True(disconnectResult.IsSuccess, "Expected TryDisconnectAsync to succeed after the live advanced/raw flow.");
+
+                                OpenCifsClientResult<OpenCifsClientTreeHandle> postDisconnectTreeResult = await client.TryTreeConnectAsync("public", token).ConfigureAwait(false);
+                                TestAssertions.False(postDisconnectTreeResult.IsSuccess, "Expected TryTreeConnectAsync to report a failure envelope after disconnect.");
+                                TestAssertions.True(postDisconnectTreeResult.Exception is OpenCifsClientStateException, "Expected post-disconnect advanced/raw failures to preserve the typed client-state exception.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
                     new TestCaseDescriptor(
                         suiteId: "Client.Connection",
                         caseId: "ClientConnectionCompletesChangeNotifyOverDirectTcp",
@@ -2915,6 +3804,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                                 TestAssertions.Equal(Smb2Command.Create, shareAccessException.Command, "Expected the direct-TCP share-access failure to report the Create command.");
                                 TestAssertions.Equal(NtStatus.SharingViolation, shareAccessException.Status, "Expected the direct-TCP share-access failure to report STATUS_SHARING_VIOLATION.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.Conflict, shareAccessException.Category, "Expected the direct-TCP share-access failure to normalize to Conflict.");
 
                                 await firstClient.CloseAsync(firstOpen, cancellationToken: token).ConfigureAwait(false);
                                 await secondClient.TreeDisconnectAsync(secondTree, token).ConfigureAwait(false);
@@ -3073,6 +3963,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                                 TestAssertions.Equal(Smb2Command.Lock, lockException.Command, "Expected the conflicting byte-range lock to report the Lock command.");
                                 TestAssertions.Equal(NtStatus.LockNotGranted, lockException.Status, "Expected the conflicting byte-range lock to report STATUS_LOCK_NOT_GRANTED.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.Conflict, lockException.Category, "Expected the conflicting byte-range lock to normalize to Conflict.");
 
                                 Smb2LockElement unlockElement = new Smb2LockElement
                                 {
@@ -3139,6 +4030,7 @@ namespace OpenCIFS.Client.Tests.Shared
 
                                 TestAssertions.Equal(Smb2Command.SetInfo, deleteException.Command, "Expected non-empty directory delete rejection to report the SetInfo command.");
                                 TestAssertions.Equal(NtStatus.DirectoryNotEmpty, deleteException.Status, "Expected non-empty directory delete rejection to report STATUS_DIRECTORY_NOT_EMPTY.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.Conflict, deleteException.Category, "Expected non-empty directory delete rejection to normalize to Conflict.");
                                 await client.CloseAsync(directoryHandle, cancellationToken: token).ConfigureAwait(false);
                                 await client.TreeDisconnectAsync(treeHandle, token).ConfigureAwait(false);
                             }
@@ -3186,6 +4078,9 @@ namespace OpenCIFS.Client.Tests.Shared
                                 TestAssertions.True(durableOpen.IsDurable, "Expected the initial direct-TCP open to be granted durable reconnect state.");
                                 TestAssertions.True(durableOpen.CanReconnectDurably, "Expected the initial direct-TCP durable open to expose a reconnect token.");
                                 TestAssertions.Equal(Smb2OplockLevel.Batch, durableOpen.OplockLevel, "Expected the initial durable direct-TCP open to receive a batch oplock.");
+                                TestAssertions.True(durableOpen.UsesDurableHandleV2, "Expected the default SMB 3.0.2 direct-TCP durable open to use durable-handle v2.");
+                                TestAssertions.Equal(300000U, durableOpen.DurableTimeoutMs, "Expected the default SMB 3.0.2 direct-TCP durable open to preserve the bounded durable timeout.");
+                                TestAssertions.False(durableOpen.IsPersistent, "Expected the default SMB 3.0.2 direct-TCP durable open to remain non-persistent.");
 
                                 await client.SimulateTransportDisconnectAsync().ConfigureAwait(false);
                                 TestAssertions.False(client.IsConnected, "Expected transport simulation to tear down the active direct-TCP connection.");
@@ -3203,6 +4098,8 @@ namespace OpenCIFS.Client.Tests.Shared
                                     "Expected durable reconnect to allocate a new volatile file identifier.");
                                 TestAssertions.True(reconnectedOpen.IsDurable, "Expected the reconnected direct-TCP open to remain durable.");
                                 TestAssertions.Equal(Smb2OplockLevel.Batch, reconnectedOpen.OplockLevel, "Expected durable reconnect to preserve the batch oplock.");
+                                TestAssertions.True(reconnectedOpen.UsesDurableHandleV2, "Expected the default SMB 3.0.2 direct-TCP durable reconnect to remain on durable-handle v2.");
+                                TestAssertions.Equal(300000U, reconnectedOpen.DurableTimeoutMs, "Expected the default SMB 3.0.2 direct-TCP durable reconnect to preserve the bounded durable timeout.");
                                 TestAssertions.False(durableOpen.CanReconnectDurably, "Expected the consumed reconnect token to be retired after successful durable reconnect.");
 
                                 byte[] actualBytes = await client.ReadAsync(reconnectedOpen, 19, 0, cancellationToken: token).ConfigureAwait(false);
@@ -3210,6 +4107,171 @@ namespace OpenCIFS.Client.Tests.Shared
 
                                 await client.CloseAsync(reconnectedOpen, cancellationToken: token).ConfigureAwait(false);
                                 await client.TreeDisconnectAsync(secondTree, token).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Connection",
+                        caseId: "ClientConnectionReconnectsDurableLeaseOpenAfterTransportDisconnect",
+                        displayName: "Client connection reconnects a durable lease-backed open after an ungraceful transport disconnect",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientConnection_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            File.WriteAllText(Path.Combine(sharePath, "shared.txt"), "durable-lease-client-data");
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                byte[] leaseKey = Hex("0102030405060708090A0B0C0D0E0F10");
+                                Smb2LeaseState leaseState = Smb2LeaseState.ReadCaching | Smb2LeaseState.HandleCaching | Smb2LeaseState.WriteCaching;
+                                await using OpenCifsClientConnection client = new OpenCifsClientConnection(new OpenCifsClientOptions
+                                {
+                                    ServerName = "127.0.0.1",
+                                    ServerPort = port,
+                                    MinimumDialect = SmbDialect.Smb21,
+                                    MaximumDialect = SmbDialect.Smb21
+                                });
+                                await client.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientTreeHandle firstTree = await client.TreeConnectAsync("public", token).ConfigureAwait(false);
+                                OpenCifsClientOpenHandle durableOpen = await client.OpenAsync(
+                                    firstTree,
+                                    "shared.txt",
+                                    desiredAccess: 0xC0010000U,
+                                    shareAccess: 0x00000007U,
+                                    createDisposition: Smb2CreateDisposition.Open,
+                                    cancellationToken: token,
+                                    requestedOplockLevel: Smb2OplockLevel.Lease,
+                                    requestDurableHandle: true,
+                                    requestedLeaseState: leaseState,
+                                    leaseKey: leaseKey).ConfigureAwait(false);
+                                TestAssertions.True(durableOpen.IsDurable, "Expected the initial direct-TCP lease-backed open to be granted durable reconnect state.");
+                                TestAssertions.True(durableOpen.CanReconnectDurably, "Expected the initial direct-TCP durable lease open to expose a reconnect token.");
+                                TestAssertions.Equal(Smb2OplockLevel.Lease, durableOpen.OplockLevel, "Expected the initial direct-TCP durable lease open to receive an SMB 2.1 lease.");
+                                TestAssertions.SequenceEqual(leaseKey, durableOpen.LeaseKey, "Expected the direct-TCP durable lease open to preserve the requested lease key.");
+                                TestAssertions.Equal(leaseState, durableOpen.LeaseState, "Expected the direct-TCP durable lease open to preserve the granted lease state.");
+
+                                await client.SimulateTransportDisconnectAsync().ConfigureAwait(false);
+                                TestAssertions.False(client.IsConnected, "Expected transport simulation to tear down the active direct-TCP connection.");
+                                TestAssertions.True(durableOpen.IsClosed, "Expected the original durable lease open handle to be retired from active use after transport loss.");
+                                TestAssertions.True(durableOpen.CanReconnectDurably, "Expected the durable lease open handle to remain usable as a reconnect token after transport loss.");
+
+                                await Task.Delay(200, token).ConfigureAwait(false);
+                                await client.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientTreeHandle secondTree = await client.TreeConnectAsync("public", token).ConfigureAwait(false);
+                                OpenCifsClientOpenHandle reconnectedOpen = await client.ReconnectDurableOpenAsync(secondTree, durableOpen, token).ConfigureAwait(false);
+
+                                TestAssertions.Equal(durableOpen.PersistentFileId, reconnectedOpen.PersistentFileId, "Expected durable lease reconnect to preserve the persistent file identifier.");
+                                TestAssertions.False(
+                                    durableOpen.VolatileFileId == reconnectedOpen.VolatileFileId,
+                                    "Expected durable lease reconnect to allocate a new volatile file identifier.");
+                                TestAssertions.True(reconnectedOpen.IsDurable, "Expected the reconnected direct-TCP lease-backed open to remain durable.");
+                                TestAssertions.Equal(Smb2OplockLevel.Lease, reconnectedOpen.OplockLevel, "Expected durable lease reconnect to preserve the lease-backed oplock level.");
+                                TestAssertions.SequenceEqual(leaseKey, reconnectedOpen.LeaseKey, "Expected durable lease reconnect to preserve the original lease key.");
+                                TestAssertions.Equal(leaseState, reconnectedOpen.LeaseState, "Expected durable lease reconnect to preserve the granted lease state.");
+                                TestAssertions.False(durableOpen.CanReconnectDurably, "Expected the consumed durable lease reconnect token to be retired after success.");
+
+                                byte[] actualBytes = await client.ReadAsync(reconnectedOpen, 32, 0, cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.Equal("durable-lease-client-data", System.Text.Encoding.UTF8.GetString(actualBytes), "Expected durable lease reconnect to preserve file access over the new session.");
+
+                                await client.CloseAsync(reconnectedOpen, cancellationToken: token).ConfigureAwait(false);
+                                await client.TreeDisconnectAsync(secondTree, token).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Connection",
+                        caseId: "ClientConnectionReconnectsDurableLeaseOpenWithDowngradedLeaseStateWhenACompetingOpenExists",
+                        displayName: "Client connection reconnects a durable lease-backed open with a downgraded lease state when a competing open exists",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientConnection_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            File.WriteAllText(Path.Combine(sharePath, "shared.txt"), "durable-lease-client-data");
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                byte[] leaseKey = Hex("1112131415161718191A1B1C1D1E1F20");
+                                Smb2LeaseState leaseState = Smb2LeaseState.ReadCaching | Smb2LeaseState.HandleCaching | Smb2LeaseState.WriteCaching;
+                                await using OpenCifsClientConnection durableClient = new OpenCifsClientConnection(new OpenCifsClientOptions
+                                {
+                                    ServerName = "127.0.0.1",
+                                    ServerPort = port,
+                                    MinimumDialect = SmbDialect.Smb21,
+                                    MaximumDialect = SmbDialect.Smb21
+                                });
+                                await using OpenCifsClientConnection competingClient = new OpenCifsClientConnection(new OpenCifsClientOptions
+                                {
+                                    ServerName = "127.0.0.1",
+                                    ServerPort = port,
+                                    MinimumDialect = SmbDialect.Smb21,
+                                    MaximumDialect = SmbDialect.Smb21
+                                });
+
+                                await durableClient.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientTreeHandle durableTree = await durableClient.TreeConnectAsync("public", token).ConfigureAwait(false);
+                                OpenCifsClientOpenHandle durableOpen = await durableClient.OpenAsync(
+                                    durableTree,
+                                    "shared.txt",
+                                    desiredAccess: 0xC0010000U,
+                                    shareAccess: 0x00000007U,
+                                    createDisposition: Smb2CreateDisposition.Open,
+                                    cancellationToken: token,
+                                    requestedOplockLevel: Smb2OplockLevel.Lease,
+                                    requestDurableHandle: true,
+                                    requestedLeaseState: leaseState,
+                                    leaseKey: leaseKey).ConfigureAwait(false);
+
+                                await durableClient.SimulateTransportDisconnectAsync().ConfigureAwait(false);
+
+                                await competingClient.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientTreeHandle competingTree = await competingClient.TreeConnectAsync("public", token).ConfigureAwait(false);
+                                OpenCifsClientOpenHandle competingOpen = await competingClient.OpenAsync(
+                                    competingTree,
+                                    "shared.txt",
+                                    desiredAccess: 0x80000000U,
+                                    shareAccess: 0x00000007U,
+                                    createDisposition: Smb2CreateDisposition.Open,
+                                    cancellationToken: token).ConfigureAwait(false);
+
+                                await durableClient.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientTreeHandle reconnectedTree = await durableClient.TreeConnectAsync("public", token).ConfigureAwait(false);
+                                OpenCifsClientOpenHandle reconnectedOpen = await durableClient.ReconnectDurableOpenAsync(reconnectedTree, durableOpen, token).ConfigureAwait(false);
+
+                                TestAssertions.True(reconnectedOpen.IsDurable, "Expected the reconnected direct-TCP lease-backed open to remain durable.");
+                                TestAssertions.SequenceEqual(leaseKey, reconnectedOpen.LeaseKey, "Expected the reconnected direct-TCP lease-backed open to preserve its lease key.");
+                                TestAssertions.Equal(Smb2LeaseState.None, reconnectedOpen.LeaseState, "Expected the competing open to downgrade the reconnected durable lease state to none.");
+
+                                byte[] actualBytes = await durableClient.ReadAsync(reconnectedOpen, 32, 0, cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.Equal("durable-lease-client-data", System.Text.Encoding.UTF8.GetString(actualBytes), "Expected the downgraded durable lease reconnect path to preserve file access.");
+
+                                await competingClient.CloseAsync(competingOpen, cancellationToken: token).ConfigureAwait(false);
+                                await competingClient.TreeDisconnectAsync(competingTree, token).ConfigureAwait(false);
+                                await durableClient.CloseAsync(reconnectedOpen, cancellationToken: token).ConfigureAwait(false);
+                                await durableClient.TreeDisconnectAsync(reconnectedTree, token).ConfigureAwait(false);
                             }
                             finally
                             {
@@ -3258,6 +4320,8 @@ namespace OpenCIFS.Client.Tests.Shared
                                     createDisposition: Smb2CreateDisposition.Open,
                                     cancellationToken: token,
                                     requestDurableHandle: true).ConfigureAwait(false);
+                                TestAssertions.True(durableOpen.UsesDurableHandleV2, "Expected the default SMB 3.0.2 lock-carryover durable open to use durable-handle v2.");
+                                TestAssertions.Equal(300000U, durableOpen.DurableTimeoutMs, "Expected the default SMB 3.0.2 lock-carryover durable open to preserve the bounded durable timeout.");
                                 await durableClient.LockAsync(
                                     durableOpen,
                                     new[]
@@ -3301,6 +4365,7 @@ namespace OpenCIFS.Client.Tests.Shared
                                 await durableClient.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
                                 OpenCifsClientTreeHandle reconnectedTree = await durableClient.TreeConnectAsync("public", token).ConfigureAwait(false);
                                 OpenCifsClientOpenHandle reconnectedOpen = await durableClient.ReconnectDurableOpenAsync(reconnectedTree, durableOpen, token).ConfigureAwait(false);
+                                TestAssertions.True(reconnectedOpen.UsesDurableHandleV2, "Expected the default SMB 3.0.2 lock-carryover durable reconnect to remain on durable-handle v2.");
 
                                 OpenCifsStatusException reconnectedLockException;
 
@@ -3553,6 +4618,886 @@ namespace OpenCIFS.Client.Tests.Shared
                                 await firstClient.CloseAsync(firstOpen, cancellationToken: token).ConfigureAwait(false);
                                 await secondClient.TreeDisconnectAsync(secondTree, token).ConfigureAwait(false);
                                 await firstClient.TreeDisconnectAsync(firstTree, token).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Connection",
+                        caseId: "ClientConnectionCompletesRealisticCompoundCreateQueryReadWriteAndCloseFlows",
+                        displayName: "Client connection completes realistic create-query-close, create-write-flush-close, and open-read-close compound flows over direct TCP",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientConnection_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(Path.Combine(sharePath, "docs"));
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClientConnection client = new OpenCifsClientConnection(new OpenCifsClientOptions
+                                {
+                                    ServerName = "127.0.0.1",
+                                    ServerPort = port,
+                                    MinimumDialect = SmbDialect.Smb21,
+                                    MaximumDialect = SmbDialect.Smb21
+                                });
+                                await client.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientTreeHandle treeHandle = await client.TreeConnectAsync("public", token).ConfigureAwait(false);
+
+                                byte[] expectedBytes = System.Text.Encoding.UTF8.GetBytes("compound-connection-data");
+                                uint writtenCount = await client.CompoundCreateWriteFlushCloseAsync(
+                                    treeHandle,
+                                    "docs\\compound.txt",
+                                    expectedBytes,
+                                    createDisposition: Smb2CreateDisposition.OverwriteIf,
+                                    cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.Equal((uint)expectedBytes.Length, writtenCount, "Expected the bounded compound write helper to acknowledge the full write length.");
+
+                                FileAllInformation allInformation = FileAllInformation.ReadFrom(await client.CompoundCreateQueryInfoCloseAsync(
+                                    treeHandle,
+                                    "docs\\compound.txt",
+                                    FileInformationClass.AllInformation,
+                                    cancellationToken: token).ConfigureAwait(false));
+                                TestAssertions.False(allInformation.StandardInformation.Directory, "Expected the bounded compound metadata helper to report a file.");
+                                TestAssertions.Equal((ulong)expectedBytes.Length, allInformation.StandardInformation.EndOfFile, "Unexpected FILE_ALL_INFORMATION EOF after the bounded compound write helper.");
+                                TestAssertions.Equal("docs\\compound.txt", allInformation.NameInformation.FileName, "Unexpected FILE_ALL_INFORMATION name after the bounded compound query helper.");
+
+                                byte[] actualBytes = await client.CompoundOpenReadCloseAsync(
+                                    treeHandle,
+                                    "docs\\compound.txt",
+                                    checked((uint)expectedBytes.Length),
+                                    cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.SequenceEqual(expectedBytes, actualBytes, "Expected the bounded compound read helper to round-trip the file payload.");
+                                TestAssertions.Equal(0, client.Session.OpenCount, "Expected bounded compound helpers to avoid leaking tracked opens on the client session.");
+
+                                await client.TreeDisconnectAsync(treeHandle, token).ConfigureAwait(false);
+                                TestAssertions.SequenceEqual(expectedBytes, File.ReadAllBytes(Path.Combine(sharePath, "docs", "compound.txt")), "Unexpected bytes persisted by the bounded compound helpers.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Connection",
+                        caseId: "ClientConnectionCompoundHelpersPropagateCreateFailuresWithoutLeakingTrackedOpens",
+                        displayName: "Client connection compound helpers propagate create failures and leave no tracked opens behind",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientConnection_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClientConnection client = new OpenCifsClientConnection(new OpenCifsClientOptions
+                                {
+                                    ServerName = "127.0.0.1",
+                                    ServerPort = port,
+                                    MinimumDialect = SmbDialect.Smb21,
+                                    MaximumDialect = SmbDialect.Smb21
+                                });
+                                await client.ConnectAndAuthenticateAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientTreeHandle treeHandle = await client.TreeConnectAsync("public", token).ConfigureAwait(false);
+
+                                OpenCifsStatusException missingReadException;
+
+                                try
+                                {
+                                    await client.CompoundOpenReadCloseAsync(treeHandle, "missing.txt", 8, cancellationToken: token).ConfigureAwait(false);
+                                    throw new InvalidOperationException("Expected compound open-read-close to fail for a missing path.");
+                                }
+                                catch (OpenCifsStatusException exception)
+                                {
+                                    missingReadException = exception;
+                                }
+
+                                TestAssertions.Equal(Smb2Command.Create, missingReadException.Command, "Expected missing-path compound reads to surface the create failure.");
+                                TestAssertions.Equal(NtStatus.ObjectNameNotFound, missingReadException.Status, "Expected missing-path compound reads to report STATUS_OBJECT_NAME_NOT_FOUND.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.NotFound, missingReadException.Category, "Expected missing-path compound reads to normalize to NotFound.");
+                                TestAssertions.Equal(0, client.Session.OpenCount, "Expected failed bounded compound reads not to leak tracked opens.");
+
+                                OpenCifsStatusException missingQueryException;
+
+                                try
+                                {
+                                    await client.CompoundCreateQueryInfoCloseAsync(treeHandle, "missing.txt", FileInformationClass.AllInformation, cancellationToken: token).ConfigureAwait(false);
+                                    throw new InvalidOperationException("Expected compound create-query-close to fail for a missing path.");
+                                }
+                                catch (OpenCifsStatusException exception)
+                                {
+                                    missingQueryException = exception;
+                                }
+
+                                TestAssertions.Equal(Smb2Command.Create, missingQueryException.Command, "Expected missing-path compound metadata queries to surface the create failure.");
+                                TestAssertions.Equal(NtStatus.ObjectNameNotFound, missingQueryException.Status, "Expected missing-path compound metadata queries to report STATUS_OBJECT_NAME_NOT_FOUND.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.NotFound, missingQueryException.Category, "Expected missing-path compound metadata queries to normalize to NotFound.");
+                                TestAssertions.Equal(0, client.Session.OpenCount, "Expected failed bounded compound metadata queries not to leak tracked opens.");
+
+                                await client.TreeDisconnectAsync(treeHandle, token).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        })
+                });
+        }
+
+        /// <summary>
+        /// Build the aligned primary client surface suite.
+        /// </summary>
+        /// <returns>Suite descriptor.</returns>
+        public static TestSuiteDescriptor ClientPrimarySuite()
+        {
+            return new TestSuiteDescriptor(
+                suiteId: "Client.Primary",
+                displayName: "Client primary happy-path surface",
+                cases: new List<TestCaseDescriptor>
+                {
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceBuildsImmutableSettingsAndExposesAlignedApis",
+                        displayName: "Client primary surface builds immutable settings and exposes aligned builder, client, and share-session APIs",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSettings settings = new OpenCifsClientBuilder()
+                                .WithServer("files.example.test", 1445)
+                                .WithDialectRange(SmbDialect.Smb21, SmbDialect.Smb21)
+                                .WithSigningRequired()
+                                .WithPreferredEncryption(false)
+                                .WithConnectTimeoutMs(12345)
+                                .BuildSettings();
+
+                            TestAssertions.Equal("files.example.test", settings.ServerName, "Unexpected immutable client settings server name.");
+                            TestAssertions.Equal(1445, settings.ServerPort, "Unexpected immutable client settings port.");
+                            TestAssertions.Equal(SmbDialect.Smb21, settings.MinimumDialect, "Unexpected immutable client settings minimum dialect.");
+                            TestAssertions.Equal(SmbDialect.Smb21, settings.MaximumDialect, "Unexpected immutable client settings maximum dialect.");
+                            TestAssertions.True(settings.RequireSigning, "Expected immutable client settings to preserve signing requirements.");
+                            TestAssertions.False(settings.PreferEncryption, "Expected immutable client settings to preserve encryption preference overrides.");
+                            TestAssertions.Equal(12345, settings.ConnectTimeoutMs, "Unexpected immutable client settings timeout.");
+
+                            if (typeof(OpenCifsClientSettings).GetProperty(nameof(OpenCifsClientSettings.ServerName))?.CanWrite == true)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClientSettings to remain immutable.");
+                            }
+
+                            if (typeof(OpenCifsClient).GetMethod(nameof(OpenCifsClient.ConnectAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClient to expose ConnectAsync.");
+                            }
+
+                            if (typeof(OpenCifsClient).GetMethod(nameof(OpenCifsClient.TryConnectAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClient to expose TryConnectAsync.");
+                            }
+
+                            if (typeof(OpenCifsClient).GetMethod(nameof(OpenCifsClient.OpenShareAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClient to expose OpenShareAsync.");
+                            }
+
+                            if (typeof(OpenCifsClient).GetMethod(nameof(OpenCifsClient.TryOpenShareAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClient to expose TryOpenShareAsync.");
+                            }
+
+                            if (typeof(OpenCifsClient).GetMethod(nameof(OpenCifsClient.EnumerateSharesAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClient to expose EnumerateSharesAsync.");
+                            }
+
+                            if (typeof(OpenCifsClient).GetMethod(nameof(OpenCifsClient.TryEnumerateSharesAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClient to expose TryEnumerateSharesAsync.");
+                            }
+
+                            if (typeof(OpenCifsClient).GetMethod(nameof(OpenCifsClient.GetShareInfoAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClient to expose GetShareInfoAsync.");
+                            }
+
+                            if (typeof(OpenCifsClient).GetMethod(nameof(OpenCifsClient.TryGetShareInfoAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsClient to expose TryGetShareInfoAsync.");
+                            }
+
+                            if (typeof(OpenCifsShareSession).GetProperty(nameof(OpenCifsShareSession.Files)) == null ||
+                                typeof(OpenCifsShareSession).GetProperty(nameof(OpenCifsShareSession.Directories)) == null ||
+                                typeof(OpenCifsShareSession).GetProperty(nameof(OpenCifsShareSession.Metadata)) == null ||
+                                typeof(OpenCifsShareSession).GetProperty(nameof(OpenCifsShareSession.Locks)) == null)
+                            {
+                                throw new InvalidOperationException("Expected OpenCifsShareSession to expose Files, Directories, Metadata, and Locks.");
+                            }
+
+                            if (typeof(OpenCifsShareFileOperations).GetMethod(nameof(OpenCifsShareFileOperations.TryReadAllBytesAsync)) == null ||
+                                typeof(OpenCifsShareDirectoryOperations).GetMethod(nameof(OpenCifsShareDirectoryOperations.TryCreateAsync)) == null ||
+                                typeof(OpenCifsShareMetadataOperations).GetMethod(nameof(OpenCifsShareMetadataOperations.TryGetAttributesAsync)) == null ||
+                                typeof(OpenCifsShareLockOperations).GetMethod(nameof(OpenCifsShareLockOperations.TryAcquireExclusiveAsync)) == null)
+                            {
+                                throw new InvalidOperationException("Expected grouped primary client operations to expose Try...Async result-envelope companions.");
+                            }
+
+                            if (typeof(OpenCifsClientResult).GetProperty(nameof(OpenCifsClientResult.IsSuccess)) == null ||
+                                typeof(OpenCifsClientResult).GetProperty(nameof(OpenCifsClientResult.ErrorCategory)) == null ||
+                                typeof(OpenCifsClientResult).GetProperty(nameof(OpenCifsClientResult.Status)) == null ||
+                                typeof(OpenCifsClientResult<byte[]>).GetProperty(nameof(OpenCifsClientResult<byte[]>.Value)) == null)
+                            {
+                                throw new InvalidOperationException("Expected the primary client result-envelope types to expose success, category, status, and value members.");
+                            }
+
+                            OpenCifsPreviewAttribute? clientPreview =
+                                Attribute.GetCustomAttribute(typeof(OpenCifsClient), typeof(OpenCifsPreviewAttribute)) as OpenCifsPreviewAttribute;
+                            OpenCifsPreviewAttribute? shareSessionPreview =
+                                Attribute.GetCustomAttribute(typeof(OpenCifsShareSession), typeof(OpenCifsPreviewAttribute)) as OpenCifsPreviewAttribute;
+
+                            if (clientPreview != null || shareSessionPreview != null)
+                            {
+                                throw new InvalidOperationException("Expected the aligned primary client surface to remain outside preview-only markers.");
+                            }
+
+                            await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                .WithServer("127.0.0.1", 4450)
+                                .Build();
+                            TestAssertions.Equal("127.0.0.1", client.Settings.ServerName, "Unexpected primary client server setting.");
+                            TestAssertions.Equal(4450, client.Settings.ServerPort, "Unexpected primary client port setting.");
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySampleExistsAndUsesAlignedHighLevelSurface",
+                        displayName: "Client primary sample exists and uses the aligned high-level surface without low-level primitives",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string samplePath = RepositoryPaths.FromRoot(Path.Combine("docs", "samples", "OpenCifsClientHappyPath.cs"));
+                            string resultEnvelopeSamplePath = RepositoryPaths.FromRoot(Path.Combine("docs", "samples", "OpenCifsClientResultEnvelopeHappyPath.cs"));
+                            FileAssertions.AssertExists(samplePath);
+                            FileAssertions.AssertExists(resultEnvelopeSamplePath);
+                            string sampleCode = File.ReadAllText(samplePath);
+                            string resultEnvelopeSampleCode = File.ReadAllText(resultEnvelopeSamplePath);
+
+                            if (!sampleCode.Contains("OpenCifsClientBuilder", StringComparison.Ordinal) ||
+                                !sampleCode.Contains("OpenCifsClient", StringComparison.Ordinal) ||
+                                !sampleCode.Contains("OpenCifsShareSession", StringComparison.Ordinal) ||
+                                !sampleCode.Contains(".OpenShareAsync(", StringComparison.Ordinal) ||
+                                !sampleCode.Contains(".Files.", StringComparison.Ordinal) ||
+                                !sampleCode.Contains(".Directories.", StringComparison.Ordinal) ||
+                                !sampleCode.Contains(".Metadata.", StringComparison.Ordinal) ||
+                                !sampleCode.Contains("OpenCifsStatusException", StringComparison.Ordinal))
+                            {
+                                throw new InvalidOperationException("Expected the dedicated client happy-path sample to use the aligned builder -> client -> share-session surface.");
+                            }
+
+                            if (sampleCode.Contains("OpenCifsClientConnection", StringComparison.Ordinal) ||
+                                sampleCode.Contains("OpenCifsClientSession", StringComparison.Ordinal) ||
+                                sampleCode.Contains("OpenCifsClientTreeHandle", StringComparison.Ordinal) ||
+                                sampleCode.Contains("OpenCifsClientOpenHandle", StringComparison.Ordinal))
+                            {
+                                throw new InvalidOperationException("Expected the dedicated client happy-path sample to avoid low-level connection, session, tree, and open primitives.");
+                            }
+
+                            if (!resultEnvelopeSampleCode.Contains(".TryConnectAsync(", StringComparison.Ordinal) ||
+                                !resultEnvelopeSampleCode.Contains(".TryOpenShareAsync(", StringComparison.Ordinal) ||
+                                !resultEnvelopeSampleCode.Contains("OpenCifsClientResult", StringComparison.Ordinal) ||
+                                !resultEnvelopeSampleCode.Contains("GetValueOrThrow", StringComparison.Ordinal))
+                            {
+                                throw new InvalidOperationException("Expected the dedicated non-throwing client sample to use the primary Try...Async result-envelope surface.");
+                            }
+
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceConnectsAndHandlesShareScopedPathFirstOperations",
+                        displayName: "Client primary surface connects and handles share-scoped path-first file, directory, metadata, and lock operations",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimary_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                await client.EchoAsync(token).ConfigureAwait(false);
+
+                                await using OpenCifsShareSession share = await client.OpenShareAsync("public", token).ConfigureAwait(false);
+                                await share.Directories.CreateAsync("/docs", token).ConfigureAwait(false);
+
+                                byte[] expectedBytes = System.Text.Encoding.UTF8.GetBytes("primary-surface-network-data");
+                                await share.Files.WriteAllBytesAsync("/docs/sample.txt", expectedBytes, token).ConfigureAwait(false);
+                                byte[] actualBytes = await share.Files.ReadAllBytesAsync("/docs/sample.txt", token).ConfigureAwait(false);
+                                TestAssertions.SequenceEqual(expectedBytes, actualBytes, "Expected the primary client surface to round-trip the file payload.");
+
+                                OpenCifsClientFileMetadata metadata = await share.Metadata.GetAttributesAsync("/docs/sample.txt", token).ConfigureAwait(false);
+                                TestAssertions.Equal(checked((ulong)expectedBytes.Length), metadata.EndOfFile, "Unexpected primary client metadata EOF value.");
+
+                                OpenCifsClientDirectoryEntry[] directoryEntries = await share.Directories.EnumerateAsync("/docs", "*.txt", token).ConfigureAwait(false);
+                                TestAssertions.Equal(1, directoryEntries.Length, "Expected the primary client surface to enumerate the created file.");
+                                TestAssertions.Equal("sample.txt", directoryEntries[0].FileName, "Unexpected primary client directory entry name.");
+
+                                OpenCifsShareFileLock shareLock = await share.Locks.AcquireExclusiveAsync("/docs/sample.txt", 0, 4, cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.False(shareLock.IsReleased, "Expected the grouped lock surface to keep the file lock alive until release.");
+                                await shareLock.ReleaseAsync(token).ConfigureAwait(false);
+                                TestAssertions.True(shareLock.IsReleased, "Expected the grouped lock surface to report a released file lock after release.");
+
+                                await share.Files.RenameAsync("/docs/sample.txt", "/docs/sample-renamed.txt", cancellationToken: token).ConfigureAwait(false);
+                                await share.Files.DeleteAsync("/docs/sample-renamed.txt", token).ConfigureAwait(false);
+                                await share.Directories.DeleteAsync("/docs", token).ConfigureAwait(false);
+                                await client.DisconnectAsync(token).ConfigureAwait(false);
+
+                                string persistedPath = Path.Combine(sharePath, "docs", "sample-renamed.txt");
+                                TestAssertions.False(File.Exists(persistedPath), "Expected the primary client surface to clean up the renamed file.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceTryApisReturnResultEnvelopesAcrossSuccessAndFailureFlows",
+                        displayName: "Client primary surface Try APIs return result envelopes across success and failure flows",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimaryTry_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                OpenCifsClientResult connectResult = await client.TryConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                TestAssertions.True(connectResult.IsSuccess, "Expected TryConnectAsync to succeed against the live listener.");
+
+                                OpenCifsClientResult echoResult = await client.TryEchoAsync(token).ConfigureAwait(false);
+                                TestAssertions.True(echoResult.IsSuccess, "Expected TryEchoAsync to succeed on the authenticated primary client surface.");
+
+                                OpenCifsClientResult<OpenCifsShareSession> shareResult = await client.TryOpenShareAsync("public", token).ConfigureAwait(false);
+                                TestAssertions.True(shareResult.IsSuccess, "Expected TryOpenShareAsync to succeed for the public share.");
+
+                                await using OpenCifsShareSession share = shareResult.GetValueOrThrow();
+                                OpenCifsClientResult createDirectoryResult = await share.Directories.TryCreateAsync("/docs", token).ConfigureAwait(false);
+                                TestAssertions.True(createDirectoryResult.IsSuccess, "Expected TryCreateAsync to succeed for a new directory.");
+
+                                await TestAssertions.ThrowsAsync<ArgumentException>(
+                                    () => share.Metadata.TrySetBasicInfoAsync("/docs", cancellationToken: token),
+                                    "Expected TrySetBasicInfoAsync to preserve local argument-validation failures instead of flattening them into a result envelope.").ConfigureAwait(false);
+
+                                byte[] expectedBytes = System.Text.Encoding.UTF8.GetBytes("result-envelope-network-data");
+                                OpenCifsClientResult writeResult = await share.Files.TryWriteAllBytesAsync("/docs/sample.txt", expectedBytes, token).ConfigureAwait(false);
+                                TestAssertions.True(writeResult.IsSuccess, "Expected TryWriteAllBytesAsync to succeed for the sample file.");
+
+                                OpenCifsClientResult<byte[]> readResult = await share.Files.TryReadAllBytesAsync("/docs/sample.txt", token).ConfigureAwait(false);
+                                TestAssertions.True(readResult.IsSuccess, "Expected TryReadAllBytesAsync to succeed for the sample file.");
+                                TestAssertions.SequenceEqual(expectedBytes, readResult.GetValueOrThrow(), "Expected the TryReadAllBytesAsync envelope to preserve the file payload.");
+
+                                OpenCifsClientResult<OpenCifsClientFileMetadata> metadataResult = await share.Metadata.TryGetAttributesAsync("/docs/sample.txt", token).ConfigureAwait(false);
+                                TestAssertions.True(metadataResult.IsSuccess, "Expected TryGetAttributesAsync to succeed for the sample file.");
+                                TestAssertions.Equal(checked((ulong)expectedBytes.Length), metadataResult.GetValueOrThrow().EndOfFile, "Unexpected TryGetAttributesAsync EOF value.");
+
+                                OpenCifsClientResult<OpenCifsClientDirectoryEntry[]> enumerateResult = await share.Directories.TryEnumerateAsync("/docs", "*.txt", token).ConfigureAwait(false);
+                                TestAssertions.True(enumerateResult.IsSuccess, "Expected TryEnumerateAsync to succeed for the sample directory.");
+                                TestAssertions.Equal(1, enumerateResult.GetValueOrThrow().Length, "Expected the TryEnumerateAsync envelope to return the created file.");
+
+                                OpenCifsClientResult<OpenCifsShareFileLock> lockResult = await share.Locks.TryAcquireExclusiveAsync("/docs/sample.txt", 0, 4, cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.True(lockResult.IsSuccess, "Expected TryAcquireExclusiveAsync to succeed for the sample file.");
+                                OpenCifsShareFileLock shareLock = lockResult.GetValueOrThrow();
+                                TestAssertions.False(shareLock.IsReleased, "Expected the TryAcquireExclusiveAsync envelope to return a live file lock.");
+                                await shareLock.ReleaseAsync(token).ConfigureAwait(false);
+
+                                OpenCifsClientResult missingFileResult = await share.Files.TryReadAllBytesAsync("/docs/missing.txt", token).ConfigureAwait(false);
+                                TestAssertions.False(missingFileResult.IsSuccess, "Expected TryReadAllBytesAsync to report a failure envelope for a missing file.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.NotFound, missingFileResult.ErrorCategory!.Value, "Expected missing-file read failures to preserve the normalized NotFound category.");
+                                TestAssertions.Equal(NtStatus.ObjectNameNotFound, missingFileResult.Status!.Value, "Expected missing-file read failures to preserve the server NTSTATUS.");
+                                TestAssertions.Equal(Smb2Command.Create, missingFileResult.Command!.Value, "Expected missing-file read failures to preserve the failing SMB2 command.");
+
+                                OpenCifsClientResult wrongDeleteResult = await share.Directories.TryDeleteAsync("/docs", token).ConfigureAwait(false);
+                                TestAssertions.False(wrongDeleteResult.IsSuccess, "Expected TryDeleteAsync to return a failure envelope for a non-empty directory.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.Conflict, wrongDeleteResult.ErrorCategory!.Value, "Expected non-empty directory delete failures to map to Conflict.");
+                                TestAssertions.Equal(NtStatus.DirectoryNotEmpty, wrongDeleteResult.Status!.Value, "Expected non-empty directory delete failures to preserve STATUS_DIRECTORY_NOT_EMPTY.");
+                                TestAssertions.True(wrongDeleteResult.Exception is OpenCifsStatusException, "Expected non-empty directory delete failures to retain the typed SMB status exception.");
+                                TestAssertions.True(wrongDeleteResult.ErrorData.Length == 0, "Expected bounded directory delete failures to expose empty SMB2 error-data bytes.");
+
+                                OpenCifsClientResult renameResult = await share.Files.TryRenameAsync("/docs/sample.txt", "/docs/sample-renamed.txt", cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.True(renameResult.IsSuccess, "Expected TryRenameAsync to succeed for the sample file.");
+
+                                OpenCifsClientResult deleteFileResult = await share.Files.TryDeleteAsync("/docs/sample-renamed.txt", token).ConfigureAwait(false);
+                                TestAssertions.True(deleteFileResult.IsSuccess, "Expected TryDeleteAsync to succeed for the renamed file.");
+
+                                OpenCifsClientResult deleteDirectoryResult = await share.Directories.TryDeleteAsync("/docs", token).ConfigureAwait(false);
+                                TestAssertions.True(deleteDirectoryResult.IsSuccess, "Expected TryDeleteAsync to succeed for the now-empty directory.");
+
+                                OpenCifsClientResult disconnectResult = await client.TryDisconnectAsync(token).ConfigureAwait(false);
+                                TestAssertions.True(disconnectResult.IsSuccess, "Expected TryDisconnectAsync to succeed after the primary result-envelope flow.");
+
+                                OpenCifsClientResult postDisconnectCreateResult = await share.Directories.TryCreateAsync("/after-disconnect", token).ConfigureAwait(false);
+                                TestAssertions.False(postDisconnectCreateResult.IsSuccess, "Expected TryCreateAsync to report a state failure after disconnect.");
+                                TestAssertions.True(postDisconnectCreateResult.Exception is OpenCifsClientStateException, "Expected post-disconnect share-session failures to preserve the typed client-state exception.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceEnumeratesManagedSharesThroughOpenCifsIpcAndSrvsvc",
+                        displayName: "Client primary surface enumerates managed shares through OpenCIFS IPC$ and srvsvc",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimaryBrowse_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(
+                                sharePath,
+                                port,
+                                token,
+                                enableShareBrowsing: true).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientResult<OpenCifsRemoteShareInfo[]> sharesResult = await client.TryEnumerateSharesAsync(token).ConfigureAwait(false);
+                                TestAssertions.True(sharesResult.IsSuccess, "Expected share browsing to succeed when the managed server explicitly registers the bounded IPC$/srvsvc endpoint.");
+
+                                OpenCifsRemoteShareInfo[] shares = sharesResult.Value!;
+                                TestAssertions.Equal(2, shares.Length, "Expected the bounded managed share-browse slice to expose the public data share and IPC$.");
+                                TestAssertions.True(shares.Any(share => string.Equals(share.Name, "public", StringComparison.OrdinalIgnoreCase)), "Expected the bounded managed share-browse slice to include the public data share.");
+                                TestAssertions.True(shares.Any(share => string.Equals(share.Name, "IPC$", StringComparison.OrdinalIgnoreCase)), "Expected the bounded managed share-browse slice to include IPC$ for named-pipe transport.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceShareBrowsingReportsMissingIpcSupportCleanly",
+                        displayName: "Client primary surface share browsing reports a typed failure when the remote server does not expose IPC$",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimaryBrowse_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientResult<OpenCifsRemoteShareInfo[]> sharesResult = await client.TryEnumerateSharesAsync(token).ConfigureAwait(false);
+                                TestAssertions.False(sharesResult.IsSuccess, "Expected share browsing to fail when the managed test listener omits the bounded IPC$/srvsvc endpoint registration.");
+                                TestAssertions.True(sharesResult.Exception is OpenCifsStatusException, "Expected missing IPC$ support to surface as a typed SMB status exception.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.NotFound, sharesResult.ErrorCategory!.Value, "Expected missing IPC$ support to normalize to NotFound.");
+                                TestAssertions.Equal(Smb2Command.TreeConnect, sharesResult.Command!.Value, "Expected missing IPC$ support to fail during the IPC$ tree connect.");
+                                TestAssertions.Equal(NtStatus.ObjectNameNotFound, sharesResult.Status!.Value, "Expected the missing IPC$ tree connect to preserve STATUS_OBJECT_NAME_NOT_FOUND when the managed listener does not register IPC$.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceTransceivesManagedNamedPipeThroughIpc",
+                        displayName: "Client primary surface transceives a managed named pipe through IPC$",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimaryPipe_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(
+                                sharePath,
+                                port,
+                                token,
+                                enableShareBrowsing: true,
+                                enableUtf8EchoPipe: true).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                byte[] requestBytes = System.Text.Encoding.UTF8.GetBytes("hello pipe");
+                                OpenCifsClientResult<byte[]> transceiveResult = await client.TryTransceiveNamedPipeAsync(
+                                    OpenCifsServerNamedPipeEndpoints.DefaultUtf8EchoPipeName,
+                                    requestBytes,
+                                    cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.True(transceiveResult.IsSuccess, "Expected the bounded managed named-pipe echo endpoint to transceive successfully through IPC$.");
+                                TestAssertions.SequenceEqual(requestBytes, transceiveResult.Value!, "Expected the bounded managed UTF-8 echo endpoint to return the original payload bytes.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceQueriesManagedShareInfoThroughOpenCifsIpcAndSrvsvc",
+                        displayName: "Client primary surface queries managed share info through OpenCIFS IPC$ and srvsvc",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimaryShareInfo_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(
+                                sharePath,
+                                port,
+                                token,
+                                enableShareBrowsing: true).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientResult<OpenCifsRemoteShareInfo> shareInfoResult = await client.TryGetShareInfoAsync("public", token).ConfigureAwait(false);
+                                TestAssertions.True(shareInfoResult.IsSuccess, "Expected bounded SRVSVC share-info queries to succeed when the managed server explicitly registers the bounded IPC$/srvsvc endpoint.");
+
+                                OpenCifsRemoteShareInfo shareInfo = shareInfoResult.Value!;
+                                TestAssertions.Equal("public", shareInfo.Name, "Unexpected managed SRVSVC share-info name.");
+                                TestAssertions.Equal("disk", shareInfo.Kind, "Unexpected managed SRVSVC share-info kind.");
+                                TestAssertions.True(shareInfo.HasDetailedInformation, "Expected bounded SRVSVC share-info queries to populate detailed fields.");
+                                TestAssertions.Equal((uint)0, shareInfo.Permissions!.Value, "Unexpected managed SRVSVC share-info permissions.");
+                                TestAssertions.Equal(UInt32.MaxValue, shareInfo.MaximumUses!.Value, "Unexpected managed SRVSVC share-info maximum-use value.");
+                                TestAssertions.Equal((uint)0, shareInfo.CurrentUses!.Value, "Unexpected managed SRVSVC share-info current-use value.");
+                                TestAssertions.Equal(sharePath, shareInfo.LocalPath, "Unexpected managed SRVSVC share-info local path.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceShareInfoReportsMissingShareCleanly",
+                        displayName: "Client primary surface share info reports a typed failure when the target share is missing",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimaryShareInfo_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(
+                                sharePath,
+                                port,
+                                token,
+                                enableShareBrowsing: true).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientResult<OpenCifsRemoteShareInfo> shareInfoResult = await client.TryGetShareInfoAsync("missing", token).ConfigureAwait(false);
+                                TestAssertions.False(shareInfoResult.IsSuccess, "Expected bounded SRVSVC share-info queries to fail when the target share is missing.");
+                                TestAssertions.True(shareInfoResult.Exception is OpenCifsClientRpcException, "Expected bounded SRVSVC share-info missing-share failures to surface as a typed RPC exception.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.NotFound, shareInfoResult.ErrorCategory!.Value, "Expected bounded SRVSVC share-info missing-share failures to normalize to NotFound.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceNamedPipeTransceiveReportsMissingPipeCleanly",
+                        displayName: "Client primary surface named-pipe transceive reports a typed failure when the target pipe is missing",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimaryPipe_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(
+                                sharePath,
+                                port,
+                                token,
+                                enableShareBrowsing: true).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                OpenCifsClientResult<byte[]> transceiveResult = await client.TryTransceiveNamedPipeAsync(
+                                    OpenCifsServerNamedPipeEndpoints.DefaultUtf8EchoPipeName,
+                                    System.Text.Encoding.UTF8.GetBytes("missing"),
+                                    cancellationToken: token).ConfigureAwait(false);
+                                TestAssertions.False(transceiveResult.IsSuccess, "Expected the bounded named-pipe transceive slice to fail when the requested pipe endpoint is not registered.");
+                                TestAssertions.True(transceiveResult.Exception is OpenCifsStatusException, "Expected missing named-pipe endpoints to surface as a typed SMB status exception.");
+                                TestAssertions.Equal(OpenCifsErrorCategory.NotFound, transceiveResult.ErrorCategory!.Value, "Expected missing named-pipe endpoints to normalize to NotFound.");
+                                TestAssertions.Equal(Smb2Command.Create, transceiveResult.Command!.Value, "Expected missing named-pipe endpoint failures to occur during the pipe create request.");
+                                TestAssertions.Equal(NtStatus.ObjectNameNotFound, transceiveResult.Status!.Value, "Expected the missing named-pipe endpoint failure to preserve STATUS_OBJECT_NAME_NOT_FOUND.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceSmb311PreviewIsToleratedByLiveListenerAndCompletesAuthenticatedSession",
+                        displayName: "Client primary surface SMB 3.1.1 preview is tolerated by a live listener and completes an authenticated session via SMB 3.0.2 fallback",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimarySmb311Preview_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithSmb311Preview()
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                await using OpenCifsShareSession share = await client.OpenShareAsync(TestEnvironmentDefaults.DefaultShareName, token).ConfigureAwait(false);
+                                await share.Files.WriteAllBytesAsync("smb311preview.txt", new byte[] { 0x53, 0x4D, 0x42, 0x33 }, token).ConfigureAwait(false);
+                                byte[] payload = await share.Files.ReadAllBytesAsync("smb311preview.txt", token).ConfigureAwait(false);
+                                TestAssertions.SequenceEqual(new byte[] { 0x53, 0x4D, 0x42, 0x33 }, payload, "Expected SMB 3.1.1 preview client to complete a write+read round trip against an existing tolerance server.");
+                                await client.DisconnectAsync(token).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceSmb311PreviewBothSidesOptedInNegotiatesSmb311AndCompletesAuthenticatedSession",
+                        displayName: "Client primary surface SMB 3.1.1 preview with both client and server opted in negotiates SMB 3.1.1 and completes an authenticated session under the derived SMB 3.1.1 keys",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimarySmb311BothSides_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(
+                                sharePath,
+                                port,
+                                token,
+                                enableSmb311Preview: true).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithSmb311Preview()
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                TestAssertions.True(client.Session.NegotiatedDialect.HasValue, "Expected an authenticated SMB 3.1.1 preview session to have a negotiated dialect.");
+                                TestAssertions.Equal(SmbDialect.Smb311, client.Session.NegotiatedDialect!.Value, "Expected both-sides-opted-in SMB 3.1.1 preview to actually negotiate the SMB 3.1.1 dialect end-to-end.");
+                                await using OpenCifsShareSession share = await client.OpenShareAsync(TestEnvironmentDefaults.DefaultShareName, token).ConfigureAwait(false);
+                                await share.Files.WriteAllBytesAsync("smb311preview-bothsides.txt", new byte[] { 0x42, 0x4F, 0x54, 0x48 }, token).ConfigureAwait(false);
+                                byte[] payload = await share.Files.ReadAllBytesAsync("smb311preview-bothsides.txt", token).ConfigureAwait(false);
+                                TestAssertions.SequenceEqual(new byte[] { 0x42, 0x4F, 0x54, 0x48 }, payload, "Expected SMB 3.1.1 preview client+server to complete an encrypted write+read round trip under negotiated SMB 3.1.1.");
+                                await client.DisconnectAsync(token).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceResolvesBoundedDfsReferralWithCacheReuse",
+                        displayName: "Client primary surface resolves a bounded DFS referral and reuses the resolved cache entry",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimaryDfs_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            OpenCifsServerDfsReferral referral = new OpenCifsServerDfsReferral
+                            {
+                                NamespaceShareName = TestEnvironmentDefaults.DefaultShareName,
+                                NamespacePath = "/team",
+                                TargetServerName = "files-target",
+                                TargetShareName = "data",
+                                TargetPath = "/team",
+                                TimeToLiveSeconds = 600
+                            };
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(
+                                sharePath,
+                                port,
+                                token,
+                                dfsReferral: referral).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .WithDialectRange(SmbDialect.Smb2002, SmbDialect.Smb21)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+
+                                string dfsPath = $"\\\\{TestEnvironmentDefaults.DefaultServerName}\\{TestEnvironmentDefaults.DefaultShareName}\\team\\report.txt";
+                                OpenCifsResolvedDfsPath firstResolution = await client.ResolveDfsPathAsync(dfsPath, token).ConfigureAwait(false);
+                                TestAssertions.False(firstResolution.WasResolvedFromCache, "Expected the first DFS resolution to come from a remote referral query.");
+                                TestAssertions.Equal("files-target", firstResolution.TargetServerName, "Unexpected resolved DFS target server name.");
+                                TestAssertions.Equal("data", firstResolution.TargetShareName, "Unexpected resolved DFS target share name.");
+                                TestAssertions.True(firstResolution.TargetUncPath.EndsWith("report.txt", StringComparison.OrdinalIgnoreCase), "Expected the resolved DFS UNC path to preserve the unresolved suffix.");
+
+                                OpenCifsResolvedDfsPath secondResolution = await client.ResolveDfsPathAsync(dfsPath, token).ConfigureAwait(false);
+                                TestAssertions.True(secondResolution.WasResolvedFromCache, "Expected the second DFS resolution to be served from the client referral cache.");
+                                TestAssertions.Equal(firstResolution.TargetUncPath, secondResolution.TargetUncPath, "Expected cached DFS resolutions to preserve the resolved target UNC path.");
+                            }
+                            finally
+                            {
+                                await StopDirectTcpServerAsync(serverCancellationTokenSource, serverTask).ConfigureAwait(false);
+
+                                if (Directory.Exists(sharePath))
+                                {
+                                    Directory.Delete(sharePath, recursive: true);
+                                }
+                            }
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Primary",
+                        caseId: "ClientPrimarySurfaceRejectsShareSessionUseAfterDisconnect",
+                        displayName: "Client primary surface rejects share-session use after the parent client disconnects",
+                        executeAsync: async token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string sharePath = Path.Combine(Path.GetTempPath(), "OpenCifsClientPrimary_" + Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(sharePath);
+                            int port = AllocateTcpPort();
+                            (CancellationTokenSource serverCancellationTokenSource, Task serverTask) = await StartDirectTcpServerAsync(sharePath, port, token).ConfigureAwait(false);
+
+                            try
+                            {
+                                await using OpenCifsClient client = new OpenCifsClientBuilder()
+                                    .WithServer("127.0.0.1", port)
+                                    .Build();
+                                await client.ConnectAsync(CreateCredential(), token).ConfigureAwait(false);
+                                await using OpenCifsShareSession share = await client.OpenShareAsync("public", token).ConfigureAwait(false);
+                                await client.DisconnectAsync(token).ConfigureAwait(false);
+
+                                await TestAssertions.ThrowsAsync<OpenCifsClientStateException>(
+                                    () => share.Directories.CreateAsync("/docs", token),
+                                    "Expected the primary share session to reject path-first operations after the parent client disconnects.").ConfigureAwait(false);
                             }
                             finally
                             {
@@ -4221,7 +6166,7 @@ namespace OpenCIFS.Client.Tests.Shared
                     new TestCaseDescriptor(
                         suiteId: "Client.Ioctl",
                         caseId: "ClientBuildsIoctlRequestsAndAcceptsSuccessfulResponses",
-                        displayName: "Client builds open and wildcard SMB2 IOCTL requests and accepts successful responses",
+                        displayName: "Client builds secure-negotiate, open, and wildcard SMB2 IOCTL requests and accepts successful responses",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -4288,6 +6233,40 @@ namespace OpenCIFS.Client.Tests.Shared
                                 });
                             TestAssertions.SequenceEqual(new byte[] { 0x99 }, connectionOutput, "Unexpected client wildcard IOCTL output buffer.");
 
+                            OpenCifsClientSession secureNegotiateSession = CreateAuthenticatedClient(SmbDialect.Smb302);
+                            Smb2IoctlRequest validateNegotiateRequest = secureNegotiateSession.CreateValidateNegotiateInfoRequest(maxOutputResponse: 256);
+                            ValidateNegotiateInfoRequest parsedValidateRequest = ValidateNegotiateInfoRequest.ReadFrom(validateNegotiateRequest.InputBuffer);
+                            TestAssertions.Equal((uint)FsctlCode.ValidateNegotiateInfo, validateNegotiateRequest.CtlCode, "Unexpected secure-negotiate FSCTL code.");
+                            TestAssertions.Equal(UInt64.MaxValue, validateNegotiateRequest.PersistentFileId, "Expected secure-negotiate requests to use the wildcard persistent file identifier.");
+                            TestAssertions.Equal(UInt64.MaxValue, validateNegotiateRequest.VolatileFileId, "Expected secure-negotiate requests to use the wildcard volatile file identifier.");
+                            TestAssertions.Equal(4, parsedValidateRequest.Dialects.Length, "Expected the secure-negotiate request to preserve the original offered dialect list.");
+                            TestAssertions.Equal(SmbDialect.Smb302, parsedValidateRequest.Dialects[3], "Expected the secure-negotiate request to preserve SMB 3.0.2 in the offered dialect list.");
+                            TestAssertions.Equal(secureNegotiateSession.ClientGuid, parsedValidateRequest.ClientGuid, "Expected the secure-negotiate request to preserve the original client GUID.");
+                            TestAssertions.Equal(
+                                Smb2GlobalCapabilities.Dfs | Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing,
+                                parsedValidateRequest.Capabilities,
+                                "Expected the secure-negotiate request to preserve the original client capability advertisement.");
+
+                            ValidateNegotiateInfoResponse validateNegotiateResponse = secureNegotiateSession.ApplyValidateNegotiateInfoResult(
+                                NtStatus.Success,
+                                new Smb2IoctlResponse
+                                {
+                                    CtlCode = (uint)FsctlCode.ValidateNegotiateInfo,
+                                    PersistentFileId = UInt64.MaxValue,
+                                    VolatileFileId = UInt64.MaxValue,
+                                    InputBuffer = Array.Empty<byte>(),
+                                    OutputBuffer = new ValidateNegotiateInfoResponse
+                                    {
+                                        Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                        ServerGuid = secureNegotiateSession.ServerGuid!.Value,
+                                        SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                        Dialect = SmbDialect.Smb302
+                                    }.ToByteArray(),
+                                    Flags = 0
+                                });
+                            TestAssertions.True(secureNegotiateSession.IsSecureNegotiateValidated, "Expected successful secure-negotiate validation to mark the authenticated SMB3 session as validated.");
+                            TestAssertions.Equal(SmbDialect.Smb302, validateNegotiateResponse.Dialect, "Expected secure-negotiate validation to preserve the negotiated SMB3 dialect.");
+
                             Smb2IoctlRequest enumerateSnapshotsRequest = session.CreateEnumerateSnapshotsRequest(
                                 openState.PersistentFileId,
                                 openState.VolatileFileId,
@@ -4317,7 +6296,7 @@ namespace OpenCIFS.Client.Tests.Shared
                     new TestCaseDescriptor(
                         suiteId: "Client.Ioctl",
                         caseId: "ClientRejectsIoctlRequestsForUnknownOpenAndFailedStatus",
-                        displayName: "Client rejects unknown-open IOCTL requests and throws on failed IOCTL responses",
+                        displayName: "Client rejects invalid secure-negotiate, unknown-open, and failed SMB2 IOCTL responses",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -4332,6 +6311,10 @@ namespace OpenCIFS.Client.Tests.Shared
                             TestAssertions.Throws<InvalidOperationException>(
                                 () => negotiatedSession.CreateConnectionIoctlRequest((uint)FsctlCode.QueryNetworkInterfaceInfo),
                                 "Wildcard IOCTL requests should require an authenticated session.");
+
+                            TestAssertions.Throws<InvalidOperationException>(
+                                () => negotiatedSession.CreateValidateNegotiateInfoRequest(),
+                                "Secure-negotiate IOCTL requests should require an authenticated session.");
 
                             OpenState openState = session.ApplyCreateResult(
                                 42,
@@ -4397,6 +6380,41 @@ namespace OpenCIFS.Client.Tests.Shared
                                         Flags = 0
                                     }),
                                 "Snapshot-enumeration results should reject unexpected FSCTL codes.");
+
+                            OpenCifsClientSession secureNegotiateSession = CreateAuthenticatedClient(SmbDialect.Smb302);
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
+                                () => secureNegotiateSession.ApplyValidateNegotiateInfoResult(
+                                    NtStatus.Success,
+                                    new Smb2IoctlResponse
+                                    {
+                                        CtlCode = (uint)FsctlCode.ValidateNegotiateInfo,
+                                        PersistentFileId = UInt64.MaxValue,
+                                        VolatileFileId = UInt64.MaxValue,
+                                        InputBuffer = Array.Empty<byte>(),
+                                        OutputBuffer = new ValidateNegotiateInfoResponse
+                                        {
+                                            Capabilities = Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing | Smb2GlobalCapabilities.Encryption,
+                                            ServerGuid = Guid.Parse("8FCA17D4-78F4-4967-8686-2C278149C391"),
+                                            SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                            Dialect = SmbDialect.Smb302
+                                        }.ToByteArray(),
+                                        Flags = 0
+                                    }),
+                                "Secure-negotiate results should reject a mismatched server GUID.");
+
+                            TestAssertions.Throws<OpenCifsClientProtocolException>(
+                                () => secureNegotiateSession.ApplyValidateNegotiateInfoResult(
+                                    NtStatus.Success,
+                                    new Smb2IoctlResponse
+                                    {
+                                        CtlCode = (uint)FsctlCode.QueryNetworkInterfaceInfo,
+                                        PersistentFileId = UInt64.MaxValue,
+                                        VolatileFileId = UInt64.MaxValue,
+                                        InputBuffer = Array.Empty<byte>(),
+                                        OutputBuffer = new byte[] { 0x01 },
+                                        Flags = 0
+                                    }),
+                                "Secure-negotiate results should reject unexpected FSCTL codes.");
                             return Task.CompletedTask;
                         })
                 });
@@ -4406,9 +6424,22 @@ namespace OpenCIFS.Client.Tests.Shared
         {
             OpenCifsClientSession session = new OpenCifsClientSession(new OpenCifsClientOptions
             {
-                ServerName = "LAB-SERVER"
+                ServerName = "LAB-SERVER",
+                PreferEncryption = dialect < SmbDialect.Smb30
             });
             session.CreateNegotiateRequest();
+            Smb2GlobalCapabilities capabilities = Smb2GlobalCapabilities.None;
+
+            if (dialect >= SmbDialect.Smb21)
+            {
+                capabilities |= Smb2GlobalCapabilities.LargeMtu | Smb2GlobalCapabilities.Leasing;
+            }
+
+            if (dialect >= SmbDialect.Smb30)
+            {
+                capabilities |= Smb2GlobalCapabilities.Encryption;
+            }
+
             session.ApplyNegotiateResponse(new Smb2NegotiateResponse
             {
                 SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
@@ -4416,14 +6447,15 @@ namespace OpenCIFS.Client.Tests.Shared
                 ServerGuid = new Guid("10213243-5465-7687-98a9-bacbdcedfe0f"),
                 MaxTransactSize = 65536,
                 MaxReadSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(dialect),
-                MaxWriteSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(dialect)
+                MaxWriteSize = Smb2CreditChargeHelper.GetImplementedReadWriteSize(dialect),
+                Capabilities = capabilities
             });
             return session;
         }
 
-        private static OpenCifsClientSession CreateAuthenticatedClient()
+        private static OpenCifsClientSession CreateAuthenticatedClient(SmbDialect dialect = SmbDialect.Smb2002)
         {
-            OpenCifsClientSession session = CreateNegotiatedClient();
+            OpenCifsClientSession session = CreateNegotiatedClient(dialect);
             OpenCifsClientCredential credential = CreateCredential();
             session.CreateSessionSetupRequest(credential);
             session.CreateSessionAuthenticateRequest(
@@ -4442,12 +6474,14 @@ namespace OpenCIFS.Client.Tests.Shared
             return session;
         }
 
-        private static (OpenCifsServerHost Host, OpenCifsClientSession Client, ulong SessionId) CreateAuthenticatedLoopbackPair()
+        private static (OpenCifsServerHost Host, OpenCifsClientSession Client, ulong SessionId) CreateAuthenticatedLoopbackPair(SmbDialect dialect = SmbDialect.Smb2002)
         {
-            OpenCifsServerHost host = CreateLoopbackServerHost();
+            OpenCifsServerHost host = CreateLoopbackServerHost(dialect);
             OpenCifsClientSession client = new OpenCifsClientSession(new OpenCifsClientOptions
             {
-                ServerName = "LAB-SERVER"
+                ServerName = "LAB-SERVER",
+                MaximumDialect = dialect,
+                PreferEncryption = dialect < SmbDialect.Smb30
             });
             OpenCifsClientCredential credential = CreateCredential();
             Smb2NegotiateResponse negotiateResponse = host.HandleNegotiate(client.CreateNegotiateRequest());
@@ -4464,23 +6498,25 @@ namespace OpenCIFS.Client.Tests.Shared
             return (host, client, successResult.SessionId);
         }
 
-        private static OpenCifsServerHost CreateLoopbackServerHost()
+        private static OpenCifsServerHost CreateLoopbackServerHost(SmbDialect dialect = SmbDialect.Smb2002)
         {
             OpenCifsServerHostBuilder builder = new OpenCifsServerHostBuilder(new OpenCifsServerOptions
             {
-                ServerName = "LAB-SERVER"
+                ServerName = TestEnvironmentDefaults.DefaultServerName,
+                MaximumDialect = dialect,
+                RequireEncryptionForSmb3 = dialect < SmbDialect.Smb30
             });
             builder.AddFileSystemShare(new OpenCifsServerFileSystemShare
             {
-                ShareName = "public",
+                ShareName = TestEnvironmentDefaults.DefaultShareName,
                 RootPath = "SampleShare",
                 CreateRootIfMissing = true
             });
             builder.AddAccount(new OpenCifsServerAccount
             {
-                UserName = "alice",
-                UserDomain = "WORKGROUP",
-                Password = "Password123!"
+                UserName = TestEnvironmentDefaults.DefaultUserName,
+                UserDomain = TestEnvironmentDefaults.DefaultUserDomain,
+                Password = TestEnvironmentDefaults.DefaultPassword
             });
             return builder.BuildHost();
         }
@@ -4489,16 +6525,16 @@ namespace OpenCIFS.Client.Tests.Shared
         {
             return new OpenCifsClientCredential
             {
-                UserName = "alice",
-                UserDomain = "WORKGROUP",
-                Password = "Password123!"
+                UserName = TestEnvironmentDefaults.DefaultUserName,
+                UserDomain = TestEnvironmentDefaults.DefaultUserDomain,
+                Password = TestEnvironmentDefaults.DefaultPassword
             };
         }
 
         private static Smb2SessionSetupResponse CreateChallengeResponse(string serverName, string userDomain, byte[] serverChallenge)
         {
             LittleEndianWriter timestampWriter = new LittleEndianWriter();
-            timestampWriter.WriteUInt64(unchecked((ulong)DateTime.UtcNow.ToFileTimeUtc()));
+            timestampWriter.WriteUInt64(DeterministicTestClock.GetFileTimeUtc("ClientTestSuites.CreateChallengeResponse"));
 
             return new Smb2SessionSetupResponse
             {
@@ -4545,10 +6581,11 @@ namespace OpenCIFS.Client.Tests.Shared
             };
         }
 
-        private static Smb2SessionSetupResponse CreateSessionSetupSuccessResponse()
+        private static Smb2SessionSetupResponse CreateSessionSetupSuccessResponse(Smb2SessionFlags sessionFlags = Smb2SessionFlags.None)
         {
             return new Smb2SessionSetupResponse
             {
+                SessionFlags = sessionFlags,
                 SecurityBuffer = SpnegoTokenCodec.EncodeNegTokenResp(new SpnegoNegTokenResp
                 {
                     NegotiationState = SpnegoNegState.AcceptCompleted,
@@ -4609,28 +6646,73 @@ namespace OpenCIFS.Client.Tests.Shared
             return bytes;
         }
 
-        private static async Task<(CancellationTokenSource CancellationTokenSource, Task ServerTask)> StartDirectTcpServerAsync(string sharePath, int port, CancellationToken cancellationToken, int maximumCredits = 64)
+        private static async Task<(CancellationTokenSource CancellationTokenSource, Task ServerTask)> StartDirectTcpServerAsync(
+            string sharePath,
+            int port,
+            CancellationToken cancellationToken,
+            int maximumCredits = 64,
+            SmbDialect? minimumDialect = null,
+            SmbDialect? maximumDialect = null,
+            bool? requireEncryptionForSmb3 = null,
+            bool enableShareBrowsing = false,
+            bool enableUtf8EchoPipe = false,
+            OpenCifsServerDfsReferral? dfsReferral = null,
+            bool enableSmb311Preview = false)
         {
             DirectTcpPortReservation reservation = GetDirectTcpPortReservation(port);
-            OpenCifsServerHostBuilder builder = new OpenCifsServerHostBuilder(new OpenCifsServerOptions
+            OpenCifsServerOptions options = new OpenCifsServerOptions
             {
                 ServerName = "127.0.0.1",
                 BindAddress = "127.0.0.1",
                 BindPort = port,
                 MaximumCredits = maximumCredits
-            });
+            };
+
+            if (minimumDialect.HasValue)
+            {
+                options.MinimumDialect = minimumDialect.Value;
+            }
+
+            if (maximumDialect.HasValue)
+            {
+                options.MaximumDialect = maximumDialect.Value;
+            }
+
+            if (requireEncryptionForSmb3.HasValue)
+            {
+                options.RequireEncryptionForSmb3 = requireEncryptionForSmb3.Value;
+            }
+
+            options.EnableSmb311Preview = enableSmb311Preview;
+
+            OpenCifsServerHostBuilder builder = new OpenCifsServerHostBuilder(options);
             builder.AddFileSystemShare(new OpenCifsServerFileSystemShare
             {
-                ShareName = "public",
+                ShareName = TestEnvironmentDefaults.DefaultShareName,
                 RootPath = sharePath,
                 CreateRootIfMissing = true
             });
             builder.AddAccount(new OpenCifsServerAccount
             {
-                UserName = "alice",
-                UserDomain = "WORKGROUP",
-                Password = "Password123!"
+                UserName = TestEnvironmentDefaults.DefaultUserName,
+                UserDomain = TestEnvironmentDefaults.DefaultUserDomain,
+                Password = TestEnvironmentDefaults.DefaultPassword
             });
+
+            if (enableShareBrowsing)
+            {
+                builder.AddSrvsvcShareEnumerationEndpoint();
+            }
+
+            if (enableUtf8EchoPipe)
+            {
+                builder.AddUtf8EchoNamedPipeEndpoint();
+            }
+
+            if (dfsReferral != null)
+            {
+                builder.AddDfsReferral(dfsReferral);
+            }
 
             OpenCifsDirectTcpServer server = builder.BuildDirectTcpServer();
             CancellationTokenSource serverCancellationTokenSource = new CancellationTokenSource();
@@ -4802,3 +6884,4 @@ namespace OpenCIFS.Client.Tests.Shared
         }
     }
 }
+

@@ -33,6 +33,7 @@ namespace Sample.OpenCifsServer
                 "Anonymous allowed: " + options.AllowAnonymous,
                 "SMB1 enabled: " + options.EnableSmb1,
                 "SMB 3.x encryption required: " + options.RequireEncryptionForSmb3,
+                "SMB 3.1.1 preview enabled: " + options.EnableSmb311Preview,
                 "Dialect range: " + options.MinimumDialect + " -> " + options.MaximumDialect,
                 "UNC path: \\\\" + options.ServerName + "\\" + options.ShareName,
                 "Direct-TCP endpoint: " + options.BindAddress + ":" + options.BindPort
@@ -74,7 +75,7 @@ namespace Sample.OpenCifsServer
                 "Connect as: " + configuration.AccountUserDomain + "\\" + configuration.AccountUserName,
                 "UNC path: \\\\" + options.ServerName + "\\" + options.ShareName,
                 "Direct-TCP endpoint: " + options.BindAddress + ":" + options.BindPort,
-                "Security defaults: signing required=" + options.RequireSigning + ", NTLMv2 required=" + options.RequireNtlmV2 + ", anonymous allowed=" + options.AllowAnonymous + ", SMB1 enabled=" + options.EnableSmb1 + ", SMB 3.x encryption required=" + options.RequireEncryptionForSmb3 + ".",
+                "Security defaults: signing required=" + options.RequireSigning + ", NTLMv2 required=" + options.RequireNtlmV2 + ", anonymous allowed=" + options.AllowAnonymous + ", SMB1 enabled=" + options.EnableSmb1 + ", SMB 3.x encryption required=" + options.RequireEncryptionForSmb3 + ", SMB 3.1.1 preview enabled=" + options.EnableSmb311Preview + ".",
                 "Dialect range: " + options.MinimumDialect + " -> " + options.MaximumDialect
             };
 

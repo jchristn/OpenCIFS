@@ -23,6 +23,7 @@ $commonArguments = @(
 )
 
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-integration-gates.ps1") -Arguments $commonArguments
+Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-soak-smoke.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "validate-release-artifacts.ps1") -Arguments @(
     "-Configuration", $Configuration
 )

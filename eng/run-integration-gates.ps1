@@ -23,6 +23,7 @@ $commonArguments = @(
 )
 
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "test.ps1") -Arguments $commonArguments
+Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-published-sample-smoke.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-real-client-interop.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-samba-interop.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-windows-client-interop.ps1") -Arguments $commonArguments

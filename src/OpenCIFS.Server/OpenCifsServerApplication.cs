@@ -1,6 +1,7 @@
-namespace OpenCIFS.Server
+﻿namespace OpenCIFS.Server
 {
     using System;
+    using System.Collections.Generic;
     using System.Net.Sockets;
     using System.Threading;
     using System.Threading.Tasks;
@@ -15,10 +16,12 @@ namespace OpenCIFS.Server
         /// </summary>
         /// <param name="options">Listener options.</param>
         /// <param name="server">Underlying direct-TCP server.</param>
-        public OpenCifsServerApplication(OpenCifsServerOptions options, OpenCifsDirectTcpServer server)
+        /// <param name="availableShares">Immutable snapshots for the shares exposed by this application.</param>
+        public OpenCifsServerApplication(OpenCifsServerOptions options, OpenCifsDirectTcpServer server, IReadOnlyList<OpenCifsServerShareInfo> availableShares)
         {
             Options = options ?? throw new ArgumentNullException(nameof(options), "Options cannot be null.");
             _Server = server ?? throw new ArgumentNullException(nameof(server), "Server cannot be null.");
+            _AvailableShares = CopyAvailableShares(availableShares);
         }
 
         /// <summary>
@@ -27,14 +30,34 @@ namespace OpenCIFS.Server
         public OpenCifsServerOptions Options { get; }
 
         /// <summary>
+        /// Immutable snapshots for the shares exposed by this managed application.
+        /// </summary>
+        public IReadOnlyList<OpenCifsServerShareInfo> AvailableShares
+        {
+            get
+            {
+                return _AvailableShares;
+            }
+        }
+
+        /// <summary>
         /// Whether the managed application currently owns a running listener task.
         /// </summary>
         public bool IsRunning
         {
             get
             {
-                return _RunTask != null;
+                return _RunTask != null || _ForegroundRunInProgress;
             }
+        }
+
+        /// <summary>
+        /// Get immutable snapshots for the shares exposed by this managed application.
+        /// </summary>
+        /// <returns>Available share snapshots.</returns>
+        public IReadOnlyList<OpenCifsServerShareInfo> GetAvailableShares()
+        {
+            return _AvailableShares;
         }
 
         /// <summary>
@@ -44,7 +67,24 @@ namespace OpenCIFS.Server
         /// <returns>Completion task.</returns>
         public Task RunAsync(CancellationToken cancellationToken = default)
         {
-            return _Server.RunAsync(cancellationToken);
+            ThrowIfDisposed();
+
+            if (_RunTask != null || _ForegroundRunInProgress)
+            {
+                throw new OpenCifsServerStateException("The server application is already running.");
+            }
+
+            return RunForegroundAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// Run the underlying server until cancellation is requested and preserve typed server failures in a non-throwing result envelope.
+        /// </summary>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>Non-throwing result envelope.</returns>
+        public Task<OpenCifsServerResult> TryRunAsync(CancellationToken cancellationToken = default)
+        {
+            return OpenCifsServerResultFactory.TryAsync(() => RunAsync(cancellationToken));
         }
 
         /// <summary>
@@ -54,9 +94,11 @@ namespace OpenCIFS.Server
         /// <returns>Completion task.</returns>
         public async Task StartAsync(CancellationToken cancellationToken = default)
         {
-            if (_RunTask != null)
+            ThrowIfDisposed();
+
+            if (_RunTask != null || _ForegroundRunInProgress)
             {
-                throw new InvalidOperationException("The server application is already running.");
+                throw new OpenCifsServerStateException("The server application is already running.");
             }
 
             _RunCancellationTokenSource = new CancellationTokenSource();
@@ -66,11 +108,31 @@ namespace OpenCIFS.Server
             {
                 await WaitForListenerAsync(cancellationToken).ConfigureAwait(false);
             }
+            catch (SocketException exception)
+            {
+                await CleanupFailedBackgroundStartAsync().ConfigureAwait(false);
+                throw new OpenCifsServerStateException("Failed to start the managed OpenCIFS listener.", exception);
+            }
+            catch (ObjectDisposedException exception)
+            {
+                await CleanupFailedBackgroundStartAsync().ConfigureAwait(false);
+                throw new OpenCifsServerStateException("Failed to start the managed OpenCIFS listener because the underlying socket resources were disposed.", exception);
+            }
             catch
             {
-                await StopAsync(CancellationToken.None).ConfigureAwait(false);
+                await CleanupFailedBackgroundStartAsync().ConfigureAwait(false);
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Start the listener in the background and preserve typed server failures in a non-throwing result envelope.
+        /// </summary>
+        /// <param name="cancellationToken">Cancellation token for startup waiting.</param>
+        /// <returns>Non-throwing result envelope.</returns>
+        public Task<OpenCifsServerResult> TryStartAsync(CancellationToken cancellationToken = default)
+        {
+            return OpenCifsServerResultFactory.TryAsync(() => StartAsync(cancellationToken));
         }
 
         /// <summary>
@@ -80,6 +142,13 @@ namespace OpenCIFS.Server
         /// <returns>Completion task.</returns>
         public async Task StopAsync(CancellationToken cancellationToken = default)
         {
+            ThrowIfDisposed();
+
+            if (_ForegroundRunInProgress)
+            {
+                throw new OpenCifsServerStateException("The server application is running through RunAsync and must be stopped by canceling the run token.");
+            }
+
             if (_RunTask == null)
             {
                 return;
@@ -104,10 +173,82 @@ namespace OpenCIFS.Server
             }
         }
 
+        /// <summary>
+        /// Stop the managed listener and preserve typed server failures in a non-throwing result envelope.
+        /// </summary>
+        /// <param name="cancellationToken">Cancellation token for shutdown waiting.</param>
+        /// <returns>Non-throwing result envelope.</returns>
+        public Task<OpenCifsServerResult> TryStopAsync(CancellationToken cancellationToken = default)
+        {
+            return OpenCifsServerResultFactory.TryAsync(() => StopAsync(cancellationToken));
+        }
+
         /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
-            await StopAsync().ConfigureAwait(false);
+            if (_Disposed)
+            {
+                return;
+            }
+
+            if (_RunTask != null)
+            {
+                await StopAsync().ConfigureAwait(false);
+            }
+
+            _Disposed = true;
+        }
+
+        private async Task RunForegroundAsync(CancellationToken cancellationToken)
+        {
+            _ForegroundRunInProgress = true;
+
+            try
+            {
+                await _Server.RunAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (SocketException exception)
+            {
+                throw new OpenCifsServerStateException("Failed to start the managed OpenCIFS listener.", exception);
+            }
+            catch (ObjectDisposedException exception)
+            {
+                throw new OpenCifsServerStateException("Failed to run the managed OpenCIFS listener because the underlying socket resources were disposed.", exception);
+            }
+            finally
+            {
+                _ForegroundRunInProgress = false;
+            }
+        }
+
+        private async Task CleanupFailedBackgroundStartAsync()
+        {
+            if (_RunTask == null)
+            {
+                return;
+            }
+
+            Task runTask = _RunTask;
+            CancellationTokenSource? runCancellationTokenSource = _RunCancellationTokenSource;
+            _RunTask = null;
+            _RunCancellationTokenSource = null;
+
+            if (runCancellationTokenSource != null)
+            {
+                runCancellationTokenSource.Cancel();
+            }
+
+            try
+            {
+                await runTask.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+            finally
+            {
+                runCancellationTokenSource?.Dispose();
+            }
         }
 
         private async Task WaitForListenerAsync(CancellationToken cancellationToken)
@@ -147,7 +288,7 @@ namespace OpenCIFS.Server
                 await _RunTask.ConfigureAwait(false);
             }
 
-            throw new InvalidOperationException("Timed out waiting for the managed OpenCIFS listener to accept direct-TCP probe connections.");
+            throw new OpenCifsServerStateException("Timed out waiting for the managed OpenCIFS listener to accept direct-TCP probe connections.");
         }
 
         private static string DetermineProbeHost(string bindAddress)
@@ -169,8 +310,37 @@ namespace OpenCIFS.Server
             }
         }
 
+        private static OpenCifsServerShareInfo[] CopyAvailableShares(IReadOnlyList<OpenCifsServerShareInfo> availableShares)
+        {
+            if (availableShares == null)
+            {
+                throw new ArgumentNullException(nameof(availableShares), "AvailableShares cannot be null.");
+            }
+
+            OpenCifsServerShareInfo[] copies = new OpenCifsServerShareInfo[availableShares.Count];
+
+            for (int index = 0; index < availableShares.Count; index++)
+            {
+                copies[index] = availableShares[index] ?? throw new ArgumentException("AvailableShares cannot contain null entries.", nameof(availableShares));
+            }
+
+            return copies;
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_Disposed)
+            {
+                throw new OpenCifsServerStateException("The server application has been disposed.");
+            }
+        }
+
+        private readonly OpenCifsServerShareInfo[] _AvailableShares;
+        private bool _Disposed;
+        private bool _ForegroundRunInProgress;
         private CancellationTokenSource? _RunCancellationTokenSource;
         private Task? _RunTask;
         private readonly OpenCifsDirectTcpServer _Server;
     }
 }
+

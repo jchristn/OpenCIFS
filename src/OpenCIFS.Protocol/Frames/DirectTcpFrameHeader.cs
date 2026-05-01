@@ -58,9 +58,21 @@ namespace OpenCIFS.Protocol
             }
 
             LittleEndianReader reader = new LittleEndianReader(buffer);
+            uint rawLength = reader.ReadUInt32BigEndian();
+
+            if (rawLength == 0)
+            {
+                throw new ProtocolEncodingException("The Direct TCP frame header encodes an invalid zero-length payload.");
+            }
+
+            if (rawLength > Int32.MaxValue)
+            {
+                throw new ProtocolEncodingException("The Direct TCP frame header length exceeds the bounded managed range.");
+            }
+
             DirectTcpFrameHeader header = new DirectTcpFrameHeader
             {
-                Length = checked((int)reader.ReadUInt32BigEndian())
+                Length = (int)rawLength
             };
 
             return header;

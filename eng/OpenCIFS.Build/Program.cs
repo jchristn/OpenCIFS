@@ -19,7 +19,9 @@ namespace OpenCIFS.Build
             {
                 Console.Error.WriteLine("Usage: OpenCIFS.Build validate-coverage <coverage-matrix-path>");
                 Console.Error.WriteLine("   or: OpenCIFS.Build validate-package-graph <source-root-path>");
+                Console.Error.WriteLine("   or: OpenCIFS.Build validate-package-claims <repository-root-path>");
                 Console.Error.WriteLine("   or: OpenCIFS.Build validate-interop <interop-matrix-path>");
+                Console.Error.WriteLine("   or: OpenCIFS.Build validate-source-audit <repository-root-path>");
                 return 1;
             }
 
@@ -36,16 +38,28 @@ namespace OpenCIFS.Build
                 errors = PackageGraphValidator.Validate(args[1]);
                 successMessage = "Package graph validation passed.";
             }
+            else if (StringComparer.OrdinalIgnoreCase.Equals(args[0], "validate-package-claims"))
+            {
+                errors = PackageClaimValidator.Validate(args[1]);
+                successMessage = "Package claim validation passed.";
+            }
             else if (StringComparer.OrdinalIgnoreCase.Equals(args[0], "validate-interop"))
             {
                 errors = InteropMatrixValidator.Validate(args[1]);
                 successMessage = "Interop matrix validation passed.";
             }
+            else if (StringComparer.OrdinalIgnoreCase.Equals(args[0], "validate-source-audit"))
+            {
+                errors = SourceAuditValidator.Validate(args[1]);
+                successMessage = "Source audit validation passed.";
+            }
             else
             {
                 Console.Error.WriteLine("Usage: OpenCIFS.Build validate-coverage <coverage-matrix-path>");
                 Console.Error.WriteLine("   or: OpenCIFS.Build validate-package-graph <source-root-path>");
+                Console.Error.WriteLine("   or: OpenCIFS.Build validate-package-claims <repository-root-path>");
                 Console.Error.WriteLine("   or: OpenCIFS.Build validate-interop <interop-matrix-path>");
+                Console.Error.WriteLine("   or: OpenCIFS.Build validate-source-audit <repository-root-path>");
                 return 1;
             }
 
