@@ -25,7 +25,7 @@ cat > /etc/samba/smb.conf <<EOF
     map to guest = Never
     ntlm auth = ntlmv2-only
     server min protocol = SMB2_02
-    server max protocol = SMB3
+    server max protocol = SMB3_11
     server signing = mandatory
     smb ports = 445
     load printers = no

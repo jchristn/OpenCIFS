@@ -78,8 +78,9 @@ namespace OpenCIFS.Interop.Tests.Shared
                             token.ThrowIfCancellationRequested();
 
                             string readmePath = RepositoryPaths.FromRoot("README.md");
-                            FileAssertions.AssertContains(readmePath, "The verified managed dialect surface now covers direct-TCP SMB 2.0.2, SMB 2.1, and a bounded SMB 3.0 / SMB 3.0.2 slice.");
+                            FileAssertions.AssertContains(readmePath, "The verified managed dialect surface now covers direct-TCP SMB 2.0.2, SMB 2.1, a bounded SMB 3.0 / SMB 3.0.2 slice, and a bounded SMB 3.1.1 opt-in preview slice.");
                             FileAssertions.AssertContains(readmePath, "By default the current managed client and server path prefer encryption-capable SMB 3.0.2");
+                            FileAssertions.AssertContains(readmePath, "OpenCifsClientBuilder.WithSmb311Preview()");
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(

@@ -1,7 +1,7 @@
 param(
     [string]$Configuration = "Debug",
     [string]$Framework = "net8.0",
-    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302"),
+    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302", "Smb311"),
     [int]$LargePayloadLength = 200000
 )
 
@@ -69,6 +69,8 @@ function Get-DialectMetadata {
                 Label = "SMB 2.0.2"
                 RequireEncryptionForSmb3 = $false
                 SmbClientProtectionArgument = ""
+                EnableSmb311Preview = $false
+                SmbClientMaxProtocolArgument = ""
             }
         }
         "Smb21" {
@@ -78,6 +80,8 @@ function Get-DialectMetadata {
                 Label = "SMB 2.1"
                 RequireEncryptionForSmb3 = $false
                 SmbClientProtectionArgument = ""
+                EnableSmb311Preview = $false
+                SmbClientMaxProtocolArgument = ""
             }
         }
         "Smb302" {
@@ -87,6 +91,19 @@ function Get-DialectMetadata {
                 Label = "SMB 3.0.2"
                 RequireEncryptionForSmb3 = $true
                 SmbClientProtectionArgument = "--client-protection=encrypt"
+                EnableSmb311Preview = $false
+                SmbClientMaxProtocolArgument = ""
+            }
+        }
+        "Smb311" {
+            return [pscustomobject]@{
+                Dialect = "Smb311"
+                DialectId = "smb311"
+                Label = "SMB 3.1.1"
+                RequireEncryptionForSmb3 = $true
+                SmbClientProtectionArgument = "--client-protection=encrypt"
+                EnableSmb311Preview = $true
+                SmbClientMaxProtocolArgument = "--option=client max protocol=SMB3_11"
             }
         }
         default {
@@ -235,6 +252,7 @@ foreach ($dialect in $Dialects) {
         "--allow-anonymous", "false",
         "--enable-smb1", "false",
         "--require-encryption-for-smb3", $dialectMetadata.RequireEncryptionForSmb3.ToString().ToLowerInvariant(),
+        "--enable-smb311-preview", $dialectMetadata.EnableSmb311Preview.ToString().ToLowerInvariant(),
         "--account-username", "alice",
         "--account-domain", "WORKGROUP",
         "--account-password", "Password123!"
@@ -284,6 +302,7 @@ foreach ($dialect in $Dialects) {
         $renamedFile = "renamed-smoke.txt"
         $payloadText = "hello from smbclient"
         $smbClientProtectionArgument = $dialectMetadata.SmbClientProtectionArgument
+        $smbClientMaxProtocolArgument = $dialectMetadata.SmbClientMaxProtocolArgument
 $sambaClientCommand = @'
 set -euo pipefail
 printf '%s' '{0}' > /tmp/payload.txt
@@ -300,12 +319,12 @@ rename {3} {7}
 ls
 quit
 EOF
-smbclient {8} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {1} < /tmp/smbclient-commands.txt 2>&1 | tee /tmp/smbclient-output.txt
+smbclient {8} {9} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {1} < /tmp/smbclient-commands.txt 2>&1 | tee /tmp/smbclient-output.txt
 grep -F '{7}' /tmp/smbclient-output.txt >/dev/null
 grep -F '{5}' /tmp/smbclient-output.txt >/dev/null
 cmp /tmp/payload.txt /tmp/readback.txt
 cmp /tmp/large.bin /tmp/large-readback.bin
-'@ -f $payloadText, $sampleServerPort, $remoteDirectory, $remoteFile, $remoteLargeFile, $remoteNestedDirectory, $LargePayloadLength, $renamedFile, $smbClientProtectionArgument
+'@ -f $payloadText, $sampleServerPort, $remoteDirectory, $remoteFile, $remoteLargeFile, $remoteNestedDirectory, $LargePayloadLength, $renamedFile, $smbClientProtectionArgument, $smbClientMaxProtocolArgument
 
         $sambaClientOutput = & docker run --rm $imageName bash -lc $sambaClientCommand 2>&1
         $sambaClientOutput | Tee-Object -FilePath $dialectSambaClientLogPath | Out-Null
@@ -313,10 +332,10 @@ cmp /tmp/large.bin /tmp/large-readback.bin
 
 $nonEmptyDirectoryDeleteCommand = @'
 set -euo pipefail
-output=$(smbclient {2} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {0} -c "rmdir {1}" 2>&1 || true)
+output=$(smbclient {2} {3} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {0} -c "rmdir {1}" 2>&1 || true)
 printf '%s\n' "$output" | tee /tmp/smbclient-rmdir-output.txt
 printf '%s' "$output" | grep -E 'NT_STATUS_DIRECTORY_NOT_EMPTY|directory is not empty' >/dev/null
-'@ -f $sampleServerPort, $remoteDirectory, $smbClientProtectionArgument
+'@ -f $sampleServerPort, $remoteDirectory, $smbClientProtectionArgument, $smbClientMaxProtocolArgument
 
         $nonEmptyDirectoryDeleteStdoutPath = Join-Path $dialectArtifactRoot "sample-server-samba-client.rmdir.stdout.txt"
         $nonEmptyDirectoryDeleteStderrPath = Join-Path $dialectArtifactRoot "sample-server-samba-client.rmdir.stderr.txt"
@@ -359,8 +378,8 @@ cd ..
 rmdir {1}
 quit
 EOF
-smbclient {5} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {0} < /tmp/smbclient-cleanup-commands.txt 2>&1 | tee /tmp/smbclient-cleanup-output.txt
-'@ -f $sampleServerPort, $remoteDirectory, $renamedFile, $remoteNestedDirectory, $remoteLargeFile, $smbClientProtectionArgument
+smbclient {5} {6} //host.docker.internal/share -W WORKGROUP -U 'alice%Password123!' -p {0} < /tmp/smbclient-cleanup-commands.txt 2>&1 | tee /tmp/smbclient-cleanup-output.txt
+'@ -f $sampleServerPort, $remoteDirectory, $renamedFile, $remoteNestedDirectory, $remoteLargeFile, $smbClientProtectionArgument, $smbClientMaxProtocolArgument
 
         $cleanupOutput = & docker run --rm $imageName bash -lc $cleanupCommand 2>&1
         Add-Content -Path $dialectSambaClientLogPath -Value ""

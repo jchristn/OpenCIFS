@@ -83,7 +83,8 @@ namespace OpenCIFS.SambaInterop.Console
                 RequireSigning = true,
                 PreferEncryption = options.Dialect >= SmbDialect.Smb30,
                 MinimumDialect = options.Dialect,
-                MaximumDialect = options.Dialect
+                MaximumDialect = options.Dialect,
+                EnableSmb311Preview = options.Dialect == SmbDialect.Smb311
             };
             OpenCifsClientCredential credential = new OpenCifsClientCredential
             {
@@ -567,6 +568,7 @@ namespace OpenCIFS.SambaInterop.Console
                 "Smb21" => SmbDialect.Smb21,
                 "Smb30" => SmbDialect.Smb30,
                 "Smb302" => SmbDialect.Smb302,
+                "Smb311" => SmbDialect.Smb311,
                 _ => throw new ArgumentException("Unsupported dialect '" + value + "'.")
             };
         }
@@ -579,6 +581,7 @@ namespace OpenCIFS.SambaInterop.Console
                 SmbDialect.Smb21 => "SMB 2.1",
                 SmbDialect.Smb30 => "SMB 3.0",
                 SmbDialect.Smb302 => "SMB 3.0.2",
+                SmbDialect.Smb311 => "SMB 3.1.1",
                 _ => dialect.ToString()
             };
         }
