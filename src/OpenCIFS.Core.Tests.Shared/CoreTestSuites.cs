@@ -36,6 +36,7 @@ namespace OpenCIFS.Core.Tests.Shared
                     HeaderFoundationSuite(),
                     Smb2CompoundSuite(),
                     Smb2NegotiateSuite(),
+                    Smb1NegotiateResponseSuite(),
                     Smb2SessionTreeSuite(),
                     Smb2EchoSuite(),
                     Smb2CancelSuite(),
@@ -1061,6 +1062,112 @@ namespace OpenCIFS.Core.Tests.Shared
                             TestAssertions.Throws<ProtocolEncodingException>(
                                 () => Smb2NegotiateResponse.ReadFrom(invalidResponseBytes),
                                 "An SMB2 negotiate response with an invalid security-buffer offset should fail to parse.");
+                            return Task.CompletedTask;
+                        })
+                });
+        }
+
+        /// <summary>
+        /// Build the bounded SMB1 NEGOTIATE response codec suite.
+        /// </summary>
+        /// <returns>Suite descriptor.</returns>
+        public static TestSuiteDescriptor Smb1NegotiateResponseSuite()
+        {
+            return new TestSuiteDescriptor(
+                suiteId: "Core.Smb1Negotiate",
+                displayName: "Bounded SMB1 NEGOTIATE response codec",
+                cases: new List<TestCaseDescriptor>
+                {
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1NegotiateResponseRoundTripsExtendedSecurityShape",
+                        displayName: "Bounded SMB1 NEGOTIATE response round-trips the NT LM 0.12 extended-security shape",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] securityBlob = new byte[]
+                            {
+                                0x60, 0x48, 0x06, 0x06, 0x2B, 0x06, 0x01, 0x05,
+                                0x05, 0x02, 0xA0, 0x3E, 0x30, 0x3C
+                            };
+
+                            Smb1NegotiateResponse response = new Smb1NegotiateResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.Negotiate,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    ProcessIdHigh = 0,
+                                    Signature = new byte[8],
+                                    TreeId = 0,
+                                    ProcessIdLow = 0xFEED,
+                                    UserId = 0,
+                                    MultiplexId = 0x1234
+                                },
+                                DialectIndex = 5,
+                                SecurityMode = Smb1SecurityMode.UserSecurity | Smb1SecurityMode.EncryptPasswords | Smb1SecurityMode.SigningEnabled | Smb1SecurityMode.SigningRequired,
+                                MaxMpxCount = 50,
+                                MaxNumberVcs = 1,
+                                MaxBufferSize = 65535,
+                                MaxRawSize = 65536,
+                                SessionKey = 0xDEADBEEFU,
+                                Capabilities = Smb1Capabilities.Unicode | Smb1Capabilities.LargeFiles | Smb1Capabilities.NtSmbs | Smb1Capabilities.RpcRemoteApis | Smb1Capabilities.Status32 | Smb1Capabilities.NtFind | Smb1Capabilities.LargeReadX | Smb1Capabilities.LargeWriteX | Smb1Capabilities.ExtendedSecurity,
+                                SystemTime = 0x01D811223344AABBUL,
+                                ServerTimeZoneMinutes = -480,
+                                ServerGuid = Guid.Parse("0F11D8A6-3344-4F2C-8FB0-1A6E6F7B9C50"),
+                                SecurityBlob = securityBlob
+                            };
+
+                            byte[] wireBytes = response.ToByteArray();
+                            Smb1NegotiateResponse parsed = Smb1NegotiateResponse.ReadFrom(wireBytes);
+
+                            TestAssertions.Equal(response.DialectIndex, parsed.DialectIndex, "Unexpected SMB1 dialect index after round-trip.");
+                            TestAssertions.Equal(response.SecurityMode, parsed.SecurityMode, "Unexpected SMB1 security mode after round-trip.");
+                            TestAssertions.Equal(response.MaxMpxCount, parsed.MaxMpxCount, "Unexpected SMB1 MaxMpxCount after round-trip.");
+                            TestAssertions.Equal(response.MaxNumberVcs, parsed.MaxNumberVcs, "Unexpected SMB1 MaxNumberVcs after round-trip.");
+                            TestAssertions.Equal(response.MaxBufferSize, parsed.MaxBufferSize, "Unexpected SMB1 MaxBufferSize after round-trip.");
+                            TestAssertions.Equal(response.MaxRawSize, parsed.MaxRawSize, "Unexpected SMB1 MaxRawSize after round-trip.");
+                            TestAssertions.Equal(response.SessionKey, parsed.SessionKey, "Unexpected SMB1 SessionKey after round-trip.");
+                            TestAssertions.Equal(response.Capabilities, parsed.Capabilities, "Unexpected SMB1 capability flags after round-trip.");
+                            TestAssertions.Equal(response.SystemTime, parsed.SystemTime, "Unexpected SMB1 SystemTime after round-trip.");
+                            TestAssertions.Equal(response.ServerTimeZoneMinutes, parsed.ServerTimeZoneMinutes, "Unexpected SMB1 server time-zone minutes after round-trip.");
+                            TestAssertions.Equal(response.ServerGuid, parsed.ServerGuid, "Unexpected SMB1 server GUID after round-trip.");
+                            TestAssertions.SequenceEqual(securityBlob, parsed.SecurityBlob, "Unexpected SMB1 SPNEGO security blob after round-trip.");
+
+                            TestAssertions.Equal(Smb1DialectStrings.NtLm012, "NT LM 0.12", "Unexpected NT LM 0.12 dialect string constant.");
+                            TestAssertions.Equal(Smb1DialectStrings.LanMan10, "LANMAN1.0", "Unexpected LANMAN1.0 dialect string constant.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
+                        displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1NegotiateResponse.ReadFrom(new byte[10]),
+                                "A truncated SMB1 negotiate response should fail to parse.");
+
+                            Smb1NegotiateResponse missingExtendedSecurity = new Smb1NegotiateResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.Negotiate,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus
+                                },
+                                DialectIndex = 0,
+                                SecurityMode = Smb1SecurityMode.UserSecurity | Smb1SecurityMode.EncryptPasswords,
+                                Capabilities = Smb1Capabilities.Unicode | Smb1Capabilities.NtSmbs
+                            };
+                            TestAssertions.Throws<ProtocolValidationException>(
+                                () => missingExtendedSecurity.ToByteArray(),
+                                "The bounded SMB1 negotiate response codec should reject responses without the extended-security capability.");
                             return Task.CompletedTask;
                         })
                 });

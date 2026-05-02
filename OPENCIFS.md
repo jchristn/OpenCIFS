@@ -434,7 +434,8 @@ Exit criteria:
 
 Goal: implement SMB1/CIFS thoroughly while keeping it opt-in and off by default.
 
-- [ ] Implement SMB1 dialect negotiation for the required dialect set, including `LANMAN1.0` and `NT LM 0.12` if claimed.
+- [-] Implement SMB1 dialect negotiation for the required dialect set, including `LANMAN1.0` and `NT LM 0.12` if claimed.
+  Bounded progress: `Smb1DialectStrings` static class now defines the required SMB1 dialect string constants (`PC NETWORK PROGRAM 1.0`-era omitted, but `LANMAN1.0`, `LM1.2X002`, `LANMAN2.1`, and `NT LM 0.12` are present alongside the existing SMB 2.x bridge strings). New `Smb1NegotiateResponse` codec carries the 17-word NT LM 0.12 / extended-security response shape (DialectIndex, SecurityMode, MaxMpxCount/MaxNumberVcs, MaxBufferSize/MaxRawSize, SessionKey, Capabilities, SystemTime, ServerTimeZoneMinutes, ServerGuid, optional SPNEGO security blob), with `Smb1SecurityMode` and `Smb1Capabilities` flags enums per MS-CIFS section 2.2.4.5.2. Shared core suite pins extended-security round-trip plus rejection of truncated responses and rejection of responses that omit the extended-security capability. Real SMB1 negotiate selection on the client/server path remains backlog and SMB1 stays disabled by default through `OpenCifsServerOptions.EnableSmb1`.
 - [ ] Implement SMB1 session setup, tree connect, and logoff flows.
 - [ ] Implement `NTCreateAndX`, `ReadAndX`, `WriteAndX`, `Close`, `LockingAndX`, `Echo`, and related core file operation flows.
 - [ ] Implement `Transaction`, `Transaction2`, and `NT_TRANSACT` families required for directory enumeration, query/set info, and filesystem info.
