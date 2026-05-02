@@ -2052,6 +2052,82 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1StatusMappingRoundTripsCommonNtStatusValuesAndPreservesUnknownAsGenericFailure",
+                        displayName: "Bounded SMB1 status mapping round-trips common NTSTATUS values and preserves unknown as generic failure",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            (NtStatus status, Smb1DosErrorClass expectedClass, ushort expectedCode)[] cases = new[]
+                            {
+                                (NtStatus.Success, Smb1DosErrorClass.Success, (ushort)0x0000),
+                                (NtStatus.ObjectNameNotFound, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.BadFile),
+                                (NtStatus.ObjectPathNotFound, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.BadPath),
+                                (NtStatus.AccessDenied, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.NoAccess),
+                                (NtStatus.InvalidHandle, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.BadFid),
+                                (NtStatus.InvalidParameter, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.InvalidParameter),
+                                (NtStatus.SharingViolation, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.BadShare),
+                                (NtStatus.FileLockConflict, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.Lock),
+                                (NtStatus.ObjectNameCollision, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.FileExists),
+                                (NtStatus.NoMoreFiles, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.NoFiles),
+                                (NtStatus.BufferOverflow, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.MoreData),
+                                (NtStatus.RangeNotLocked, Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.NotLocked),
+                                (NtStatus.NetworkNameDeleted, Smb1DosErrorClass.ErrSrv, Smb1DosErrorCode.InvalidTid),
+                                (NtStatus.BadNetworkName, Smb1DosErrorClass.ErrSrv, Smb1DosErrorCode.InvalidNetworkName),
+                                (NtStatus.LogonFailure, Smb1DosErrorClass.ErrSrv, Smb1DosErrorCode.BadPassword),
+                                (NtStatus.NotSupported, Smb1DosErrorClass.ErrSrv, Smb1DosErrorCode.UnsupportedCommand),
+                                (NtStatus.UserSessionDeleted, Smb1DosErrorClass.ErrSrv, Smb1DosErrorCode.BadUid),
+                                (NtStatus.DiskFull, Smb1DosErrorClass.ErrHrd, Smb1DosErrorCode.DiskFull)
+                            };
+
+                            foreach ((NtStatus status, Smb1DosErrorClass expectedClass, ushort expectedCode) in cases)
+                            {
+                                Smb1StatusMapping.NtStatusToDosError(status, out Smb1DosErrorClass actualClass, out ushort actualCode);
+                                TestAssertions.Equal(expectedClass, actualClass, "Unexpected DOS class for NTSTATUS " + status + ".");
+                                TestAssertions.Equal(expectedCode, actualCode, "Unexpected DOS code for NTSTATUS " + status + ".");
+
+                                uint packed = Smb1StatusMapping.PackNtStatusToLegacyStatusField(status);
+                                TestAssertions.Equal((byte)expectedClass, (byte)(packed & 0xFF), "Unexpected packed class byte for NTSTATUS " + status + ".");
+                                TestAssertions.Equal(expectedCode, (ushort)((packed >> 16) & 0xFFFF), "Unexpected packed code bytes for NTSTATUS " + status + ".");
+                            }
+
+                            (Smb1DosErrorClass cls, ushort code, NtStatus expected)[] reverseCases = new[]
+                            {
+                                (Smb1DosErrorClass.Success, (ushort)0x0000, NtStatus.Success),
+                                (Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.BadFile, NtStatus.ObjectNameNotFound),
+                                (Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.BadPath, NtStatus.ObjectPathNotFound),
+                                (Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.NoAccess, NtStatus.AccessDenied),
+                                (Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.BadFid, NtStatus.InvalidHandle),
+                                (Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.NoFids, NtStatus.TooManyOpenedFiles),
+                                (Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.NoMemory, NtStatus.InsufficientResources),
+                                (Smb1DosErrorClass.ErrDos, Smb1DosErrorCode.FileExists, NtStatus.ObjectNameCollision),
+                                (Smb1DosErrorClass.ErrSrv, Smb1DosErrorCode.BadPassword, NtStatus.LogonFailure),
+                                (Smb1DosErrorClass.ErrSrv, Smb1DosErrorCode.BadUid, NtStatus.UserSessionDeleted),
+                                (Smb1DosErrorClass.ErrHrd, Smb1DosErrorCode.DiskFull, NtStatus.DiskFull),
+                                (Smb1DosErrorClass.ErrCmd, (ushort)0x0000, NtStatus.NotSupported)
+                            };
+
+                            foreach ((Smb1DosErrorClass cls, ushort code, NtStatus expected) in reverseCases)
+                            {
+                                NtStatus actual = Smb1StatusMapping.DosErrorToNtStatus(cls, code);
+                                TestAssertions.Equal(expected, actual, "Unexpected NTSTATUS for DOS class " + cls + " code 0x" + code.ToString("X4") + ".");
+                            }
+
+                            NtStatus unknownNtStatus = (NtStatus)0xC0DEFEEDU;
+                            Smb1StatusMapping.NtStatusToDosError(unknownNtStatus, out Smb1DosErrorClass unknownClass, out ushort unknownCode);
+                            TestAssertions.Equal(Smb1DosErrorClass.ErrSrv, unknownClass, "Unknown NTSTATUS should map to ERRSRV class.");
+                            TestAssertions.Equal(Smb1DosErrorCode.Error, unknownCode, "Unknown NTSTATUS should map to generic ERRSRV/ERRerror.");
+
+                            NtStatus unknownDosCombo = Smb1StatusMapping.DosErrorToNtStatus(Smb1DosErrorClass.ErrDos, 0xFFFE);
+                            TestAssertions.Equal(NtStatus.Unsuccessful, unknownDosCombo, "Unknown DOS combo should map to STATUS_UNSUCCESSFUL.");
+
+                            uint roundTripPacked = Smb1StatusMapping.PackNtStatusToLegacyStatusField(NtStatus.AccessDenied);
+                            NtStatus roundTripped = Smb1StatusMapping.UnpackLegacyStatusFieldToNtStatus(roundTripPacked);
+                            TestAssertions.Equal(NtStatus.AccessDenied, roundTripped, "Pack-then-unpack should preserve a representable NTSTATUS.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>

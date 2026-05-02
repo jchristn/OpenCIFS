@@ -168,6 +168,51 @@ namespace OpenCIFS.Protocol
         /// <summary>
         /// The target cannot be deleted in its current state.
         /// </summary>
-        CannotDelete = 0xC0000121
+        CannotDelete = 0xC0000121,
+
+        /// <summary>
+        /// Generic unsuccessful operation. <c>STATUS_UNSUCCESSFUL</c>.
+        /// </summary>
+        Unsuccessful = 0xC0000001,
+
+        /// <summary>
+        /// The requested device or operation is not supported. <c>STATUS_INVALID_DEVICE_REQUEST</c>.
+        /// </summary>
+        InvalidDeviceRequest = 0xC0000010,
+
+        /// <summary>
+        /// Logon failure (bad credentials). <c>STATUS_LOGON_FAILURE</c>.
+        /// </summary>
+        LogonFailure = 0xC000006D,
+
+        /// <summary>
+        /// Disk full. <c>STATUS_DISK_FULL</c>.
+        /// </summary>
+        DiskFull = 0xC000007F,
+
+        /// <summary>
+        /// Insufficient server resources. <c>STATUS_INSUFFICIENT_RESOURCES</c>.
+        /// </summary>
+        InsufficientResources = 0xC000009A,
+
+        /// <summary>
+        /// Network name (tree) has been deleted. <c>STATUS_NETWORK_NAME_DELETED</c>.
+        /// </summary>
+        NetworkNameDeleted = 0xC00000C9,
+
+        /// <summary>
+        /// Bad network name (share not found). <c>STATUS_BAD_NETWORK_NAME</c>.
+        /// </summary>
+        BadNetworkName = 0xC00000CC,
+
+        /// <summary>
+        /// Too many open files. <c>STATUS_TOO_MANY_OPENED_FILES</c>.
+        /// </summary>
+        TooManyOpenedFiles = 0xC000011F,
+
+        /// <summary>
+        /// User session has been deleted. <c>STATUS_USER_SESSION_DELETED</c>.
+        /// </summary>
+        UserSessionDeleted = 0xC0000203
     }
 }
