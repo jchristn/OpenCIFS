@@ -1781,6 +1781,78 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "NetBiosSessionRequestRoundTripsCalledAndCallingNamesAndRejectsMalformedShapes",
+                        displayName: "Bounded NetBIOS SESSION_REQUEST round-trips called/calling names and rejects malformed shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            NetBiosEncodedName called = NetBiosEncodedName.FromServiceName("FILESERVER", NetBiosEncodedName.FileServerServiceSuffix);
+                            NetBiosEncodedName calling = NetBiosEncodedName.FromServiceName("WORKSTATION", NetBiosEncodedName.WorkstationServiceSuffix);
+
+                            NetBiosSessionRequest request = new NetBiosSessionRequest
+                            {
+                                CalledName = called,
+                                CallingName = calling
+                            };
+
+                            byte[] wireBytes = request.ToByteArray();
+                            TestAssertions.Equal(NetBiosSessionServiceHeader.Size + NetBiosSessionRequest.PayloadLength, wireBytes.Length, "Unexpected NetBIOS SESSION_REQUEST wire length.");
+
+                            NetBiosSessionRequest parsed = NetBiosSessionRequest.ReadFrom(wireBytes);
+                            TestAssertions.SequenceEqual(called.RawName, parsed.CalledName.RawName, "Unexpected NetBIOS SESSION_REQUEST called name after round-trip.");
+                            TestAssertions.SequenceEqual(calling.RawName, parsed.CallingName.RawName, "Unexpected NetBIOS SESSION_REQUEST calling name after round-trip.");
+
+                            byte[] tampered = (byte[])wireBytes.Clone();
+                            tampered[NetBiosSessionServiceHeader.Size] = 0x21;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => NetBiosSessionRequest.ReadFrom(tampered),
+                                "NetBIOS SESSION_REQUEST should reject an encoded-name length marker other than 0x20.");
+
+                            byte[] truncated = new byte[NetBiosSessionServiceHeader.Size + NetBiosSessionRequest.PayloadLength - 1];
+                            Buffer.BlockCopy(wireBytes, 0, truncated, 0, truncated.Length);
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => NetBiosSessionRequest.ReadFrom(truncated),
+                                "NetBIOS SESSION_REQUEST should reject buffers that are too short.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "NetBiosNegativeSessionResponseRoundTripsErrorCodeAndRejectsMalformedShapes",
+                        displayName: "Bounded NetBIOS NEGATIVE_SESSION_RESPONSE round-trips error code and rejects malformed shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            NetBiosNegativeSessionResponse response = new NetBiosNegativeSessionResponse
+                            {
+                                ErrorCode = NetBiosNegativeSessionResponseErrorCode.CalledNameNotPresent
+                            };
+
+                            byte[] wireBytes = response.ToByteArray();
+                            TestAssertions.Equal(NetBiosSessionServiceHeader.Size + NetBiosNegativeSessionResponse.PayloadLength, wireBytes.Length, "Unexpected NetBIOS NEGATIVE_SESSION_RESPONSE wire length.");
+
+                            NetBiosNegativeSessionResponse parsed = NetBiosNegativeSessionResponse.ReadFrom(wireBytes);
+                            TestAssertions.Equal(NetBiosNegativeSessionResponseErrorCode.CalledNameNotPresent, parsed.ErrorCode, "Unexpected NetBIOS NEGATIVE_SESSION_RESPONSE error code after round-trip.");
+
+                            byte[] tamperedHeader = (byte[])wireBytes.Clone();
+                            tamperedHeader[0] = (byte)NetBiosSessionMessageType.SessionMessage;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => NetBiosNegativeSessionResponse.ReadFrom(tamperedHeader),
+                                "NetBIOS NEGATIVE_SESSION_RESPONSE should reject PDUs with a non-NEGATIVE_SESSION_RESPONSE message type.");
+
+                            byte[] tamperedLength = (byte[])wireBytes.Clone();
+                            tamperedLength[2] = 0x00;
+                            tamperedLength[3] = 0x02;
+                            byte[] grown = new byte[wireBytes.Length + 1];
+                            Buffer.BlockCopy(tamperedLength, 0, grown, 0, tamperedLength.Length);
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => NetBiosNegativeSessionResponse.ReadFrom(grown),
+                                "NetBIOS NEGATIVE_SESSION_RESPONSE should reject PDUs whose declared length is not 1.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>
