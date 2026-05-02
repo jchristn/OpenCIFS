@@ -1143,6 +1143,100 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1SessionSetupAndXRequestRoundTripsExtendedSecurityShape",
+                        displayName: "Bounded SMB1 SESSION_SETUP_ANDX request round-trips the Unicode extended-security shape",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] securityBlob = new byte[]
+                            {
+                                0x60, 0x82, 0x01, 0x47, 0x06, 0x06, 0x2B, 0x06,
+                                0x01, 0x05, 0x05, 0x02, 0xA0, 0x82, 0x01
+                            };
+
+                            Smb1SessionSetupAndXRequest request = new Smb1SessionSetupAndXRequest
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.SessionSetupAndX,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    ProcessIdHigh = 0,
+                                    Signature = new byte[8],
+                                    TreeId = 0,
+                                    ProcessIdLow = 0xCAFE,
+                                    UserId = 0,
+                                    MultiplexId = 0x4242
+                                },
+                                MaxBufferSize = 4356,
+                                MaxMpxCount = 50,
+                                VcNumber = 0,
+                                SessionKey = 0xDEADBEEFU,
+                                Capabilities = Smb1Capabilities.Unicode | Smb1Capabilities.LargeFiles | Smb1Capabilities.NtSmbs | Smb1Capabilities.Status32 | Smb1Capabilities.ExtendedSecurity,
+                                SecurityBlob = securityBlob,
+                                NativeOS = "Windows 11",
+                                NativeLanMan = "OpenCIFS"
+                            };
+
+                            byte[] wireBytes = request.ToByteArray();
+                            Smb1SessionSetupAndXRequest parsed = Smb1SessionSetupAndXRequest.ReadFrom(wireBytes);
+                            TestAssertions.Equal(request.MaxBufferSize, parsed.MaxBufferSize, "Unexpected MaxBufferSize after round-trip.");
+                            TestAssertions.Equal(request.MaxMpxCount, parsed.MaxMpxCount, "Unexpected MaxMpxCount after round-trip.");
+                            TestAssertions.Equal(request.VcNumber, parsed.VcNumber, "Unexpected VcNumber after round-trip.");
+                            TestAssertions.Equal(request.SessionKey, parsed.SessionKey, "Unexpected SessionKey after round-trip.");
+                            TestAssertions.Equal(request.Capabilities, parsed.Capabilities, "Unexpected client capabilities after round-trip.");
+                            TestAssertions.SequenceEqual(securityBlob, parsed.SecurityBlob, "Unexpected SPNEGO blob after round-trip.");
+                            TestAssertions.Equal("Windows 11", parsed.NativeOS, "Unexpected NativeOS after round-trip.");
+                            TestAssertions.Equal("OpenCIFS", parsed.NativeLanMan, "Unexpected NativeLanMan after round-trip.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1SessionSetupAndXResponseRoundTripsExtendedSecurityShapeAndPreservesGuestActionBit",
+                        displayName: "Bounded SMB1 SESSION_SETUP_ANDX response round-trips the extended-security shape and preserves the guest action bit",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] securityBlob = new byte[]
+                            {
+                                0xA1, 0x1A, 0x30, 0x18, 0xA0, 0x03, 0x0A, 0x01,
+                                0x00, 0xA1, 0x0B
+                            };
+
+                            Smb1SessionSetupAndXResponse response = new Smb1SessionSetupAndXResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.SessionSetupAndX,
+                                    Status = NtStatus.MoreProcessingRequired,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                Action = Smb1SessionSetupAndXResponse.GuestLogonActionBit,
+                                SecurityBlob = securityBlob,
+                                NativeOS = "OpenCIFS",
+                                NativeLanMan = "OpenCIFS",
+                                PrimaryDomain = "WORKGROUP"
+                            };
+
+                            byte[] wireBytes = response.ToByteArray();
+                            Smb1SessionSetupAndXResponse parsed = Smb1SessionSetupAndXResponse.ReadFrom(wireBytes);
+                            TestAssertions.Equal(Smb1SessionSetupAndXResponse.GuestLogonActionBit, parsed.Action, "Unexpected SMB1 SESSION_SETUP_ANDX response action flags.");
+                            TestAssertions.True(parsed.IsGuestLogon, "Expected the response to indicate a guest logon.");
+                            TestAssertions.SequenceEqual(securityBlob, parsed.SecurityBlob, "Unexpected SPNEGO response blob after round-trip.");
+                            TestAssertions.Equal("OpenCIFS", parsed.NativeOS, "Unexpected NativeOS after round-trip.");
+                            TestAssertions.Equal("OpenCIFS", parsed.NativeLanMan, "Unexpected NativeLanMan after round-trip.");
+                            TestAssertions.Equal("WORKGROUP", parsed.PrimaryDomain, "Unexpected PrimaryDomain after round-trip.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>
