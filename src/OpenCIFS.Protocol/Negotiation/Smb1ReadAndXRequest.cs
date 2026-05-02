@@ -64,7 +64,7 @@ namespace OpenCIFS.Protocol
 
         /// <summary>
         /// Upper 32 bits of the maximum-count field used by SMB 1.0 large-read extensions, or
-        /// <c>0xFFFFFFFF</c> when used as a Timeout placeholder for non-pipe reads.
+        /// <c>0xFFFFFFFF</c> when interpreted as a Timeout sentinel for non-pipe reads.
         /// </summary>
         public uint TimeoutOrMaxCountHigh { get; set; }
 
