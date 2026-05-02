@@ -1237,6 +1237,101 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1TreeConnectAndXRequestAndResponseRoundTripUnicodePathAndAsciiServiceShapes",
+                        displayName: "Bounded SMB1 TREE_CONNECT_ANDX request and response round-trip Unicode path and ASCII service shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            Smb1TreeConnectAndXRequest request = new Smb1TreeConnectAndXRequest
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.TreeConnectAndX,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    UserId = 0x0BAD,
+                                    MultiplexId = 0x0123
+                                },
+                                Flags = 0,
+                                Password = new byte[] { 0x00 },
+                                Path = "\\\\fileserver.contoso.test\\share",
+                                Service = "?????"
+                            };
+                            byte[] requestBytes = request.ToByteArray();
+                            Smb1TreeConnectAndXRequest parsedRequest = Smb1TreeConnectAndXRequest.ReadFrom(requestBytes);
+                            TestAssertions.SequenceEqual(request.Password, parsedRequest.Password, "Unexpected SMB1 TREE_CONNECT_ANDX password after round-trip.");
+                            TestAssertions.Equal(request.Path, parsedRequest.Path, "Unexpected SMB1 TREE_CONNECT_ANDX share path after round-trip.");
+                            TestAssertions.Equal(request.Service, parsedRequest.Service, "Unexpected SMB1 TREE_CONNECT_ANDX service after round-trip.");
+
+                            Smb1TreeConnectAndXResponse response = new Smb1TreeConnectAndXResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.TreeConnectAndX,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xABCD,
+                                    UserId = 0x0BAD,
+                                    MultiplexId = 0x0123
+                                },
+                                OptionalSupport = 0x0001,
+                                MaximalShareAccessRights = 0x001F01FFU,
+                                GuestMaximalShareAccessRights = 0x00120089U,
+                                Service = "A:",
+                                NativeFileSystem = "NTFS"
+                            };
+                            byte[] responseBytes = response.ToByteArray();
+                            Smb1TreeConnectAndXResponse parsedResponse = Smb1TreeConnectAndXResponse.ReadFrom(responseBytes);
+                            TestAssertions.Equal(response.OptionalSupport, parsedResponse.OptionalSupport, "Unexpected SMB1 TREE_CONNECT_ANDX optional-support flags.");
+                            TestAssertions.Equal(response.MaximalShareAccessRights, parsedResponse.MaximalShareAccessRights, "Unexpected SMB1 TREE_CONNECT_ANDX maximal share access rights.");
+                            TestAssertions.Equal(response.GuestMaximalShareAccessRights, parsedResponse.GuestMaximalShareAccessRights, "Unexpected SMB1 TREE_CONNECT_ANDX guest share access rights.");
+                            TestAssertions.Equal(response.Service, parsedResponse.Service, "Unexpected SMB1 TREE_CONNECT_ANDX echoed service.");
+                            TestAssertions.Equal(response.NativeFileSystem, parsedResponse.NativeFileSystem, "Unexpected SMB1 TREE_CONNECT_ANDX NativeFileSystem.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1LogoffAndXRoundTripsAndRejectsNonZeroByteCount",
+                        displayName: "Bounded SMB1 LOGOFF_ANDX round-trips and rejects non-zero ByteCount",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            Smb1LogoffAndX message = new Smb1LogoffAndX
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.LogoffAndX,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                AndXCommand = 0xFF,
+                                AndXOffset = 0
+                            };
+
+                            byte[] wireBytes = message.ToByteArray();
+                            Smb1LogoffAndX parsed = Smb1LogoffAndX.ReadFrom(wireBytes);
+                            TestAssertions.Equal((byte)0xFF, parsed.AndXCommand, "Unexpected SMB1 LOGOFF_ANDX AndX command.");
+                            TestAssertions.Equal((ushort)0, parsed.AndXOffset, "Unexpected SMB1 LOGOFF_ANDX AndX offset.");
+
+                            byte[] tampered = (byte[])wireBytes.Clone();
+                            tampered[tampered.Length - 1] = 0x01;
+                            tampered[tampered.Length - 2] = 0x00;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1LogoffAndX.ReadFrom(tampered),
+                                "SMB1 LOGOFF_ANDX should reject non-zero ByteCount payloads.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>
