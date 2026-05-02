@@ -1948,6 +1948,110 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1TransactionRequestRoundTripsUnicodePipeNameAndSetupWordsAndRejectsMismatchedSetupCount",
+                        displayName: "Bounded SMB1 TRANSACTION request round-trips Unicode pipe name and setup words and rejects mismatched SetupCount",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] parameters = new byte[] { 0x01, 0x00, 0x02, 0x00 };
+                            byte[] data = new byte[] { 0xAA, 0xBB, 0xCC };
+
+                            Smb1TransactionRequest request = new Smb1TransactionRequest
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.Transaction,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                TotalParameterCount = (ushort)parameters.Length,
+                                TotalDataCount = (ushort)data.Length,
+                                MaxParameterCount = 0x40,
+                                MaxDataCount = 0x4000,
+                                MaxSetupCount = 0,
+                                Flags = 0,
+                                Timeout = 0,
+                                Setup = new ushort[] { 0x0026, 0x4242 },
+                                Name = "\\PIPE\\LANMAN",
+                                Parameters = parameters,
+                                Data = data
+                            };
+
+                            byte[] requestBytes = request.ToByteArray();
+                            Smb1TransactionRequest parsedRequest = Smb1TransactionRequest.ReadFrom(requestBytes);
+                            TestAssertions.Equal(request.Name, parsedRequest.Name, "Unexpected SMB1 TRANSACTION Name after round-trip.");
+                            TestAssertions.Equal(2, parsedRequest.Setup.Length, "Unexpected SMB1 TRANSACTION Setup count after round-trip.");
+                            TestAssertions.Equal(request.Setup[0], parsedRequest.Setup[0], "Unexpected SMB1 TRANSACTION Setup[0] after round-trip.");
+                            TestAssertions.Equal(request.Setup[1], parsedRequest.Setup[1], "Unexpected SMB1 TRANSACTION Setup[1] after round-trip.");
+                            TestAssertions.SequenceEqual(parameters, parsedRequest.Parameters, "Unexpected SMB1 TRANSACTION Parameters after round-trip.");
+                            TestAssertions.SequenceEqual(data, parsedRequest.Data, "Unexpected SMB1 TRANSACTION Data after round-trip.");
+
+                            byte[] tampered = (byte[])requestBytes.Clone();
+                            int setupCountIndex = ProtocolConstants.Smb1HeaderLength + 1 + (13 * sizeof(ushort));
+                            tampered[setupCountIndex] = 0x00;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1TransactionRequest.ReadFrom(tampered),
+                                "SMB1 TRANSACTION request should reject SetupCount that disagrees with the WordCount-implied setup-word count.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1NtTransactRequestRoundTripsFunctionAnd32BitParameterDataLengthsAndRejectsMismatchedSetupCount",
+                        displayName: "Bounded SMB1 NT_TRANSACT request round-trips Function and 32-bit parameter/data lengths and rejects mismatched SetupCount",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] parameters = new byte[] { 0x10, 0x20, 0x30, 0x40, 0x50, 0x60 };
+                            byte[] data = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04 };
+
+                            Smb1NtTransactRequest request = new Smb1NtTransactRequest
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.NtTransact,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                MaxSetupCount = 0,
+                                TotalParameterCount = (uint)parameters.Length,
+                                TotalDataCount = (uint)data.Length,
+                                MaxParameterCount = 0x0000_FFFFU,
+                                MaxDataCount = 0x0010_0000U,
+                                Function = 0x0004,
+                                Setup = new ushort[] { 0x4242, 0x0001, 0x0040 },
+                                Parameters = parameters,
+                                Data = data
+                            };
+
+                            byte[] requestBytes = request.ToByteArray();
+                            Smb1NtTransactRequest parsedRequest = Smb1NtTransactRequest.ReadFrom(requestBytes);
+                            TestAssertions.Equal(request.Function, parsedRequest.Function, "Unexpected SMB1 NT_TRANSACT Function after round-trip.");
+                            TestAssertions.Equal(request.MaxParameterCount, parsedRequest.MaxParameterCount, "Unexpected SMB1 NT_TRANSACT MaxParameterCount after round-trip.");
+                            TestAssertions.Equal(request.MaxDataCount, parsedRequest.MaxDataCount, "Unexpected SMB1 NT_TRANSACT MaxDataCount after round-trip.");
+                            TestAssertions.Equal(3, parsedRequest.Setup.Length, "Unexpected SMB1 NT_TRANSACT Setup count after round-trip.");
+                            TestAssertions.SequenceEqual(parameters, parsedRequest.Parameters, "Unexpected SMB1 NT_TRANSACT Parameters after round-trip.");
+                            TestAssertions.SequenceEqual(data, parsedRequest.Data, "Unexpected SMB1 NT_TRANSACT Data after round-trip.");
+
+                            byte[] tampered = (byte[])requestBytes.Clone();
+                            int setupCountIndex = ProtocolConstants.Smb1HeaderLength + 1 + 1 + 2 + (4 * sizeof(uint)) + (4 * sizeof(uint));
+                            tampered[setupCountIndex] = 0x00;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1NtTransactRequest.ReadFrom(tampered),
+                                "SMB1 NT_TRANSACT request should reject SetupCount that disagrees with the WordCount-implied setup-word count.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>
