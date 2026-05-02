@@ -3,7 +3,7 @@ param(
     [string]$Framework = "net8.0",
     [int]$Port = 0,
     [string]$DriveLetter = "Z:",
-    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302"),
+    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302", "Smb311"),
     [int]$LargePayloadLength = 200000
 )
 
@@ -97,6 +97,15 @@ function Get-DialectMetadata {
                 Label = "SMB 3.0.2"
                 RemoteHost = "localhost"
                 ShareName = "share302"
+            }
+        }
+        "Smb311" {
+            return [pscustomobject]@{
+                Dialect = "Smb311"
+                DialectId = "smb311"
+                Label = "SMB 3.1.1"
+                RemoteHost = "localhost"
+                ShareName = "share311"
             }
         }
         default {

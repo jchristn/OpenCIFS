@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--username", required=True)
     parser.add_argument("--password", required=True)
     parser.add_argument("--domain", default="")
-    parser.add_argument("--dialect", choices=("smb2002", "smb21", "smb302"), default="smb21")
+    parser.add_argument("--dialect", choices=("smb2002", "smb21", "smb302", "smb311"), default="smb21")
     parser.add_argument("--directory", default="real-client-smoke")
     parser.add_argument("--file", default="smoke.txt")
     parser.add_argument("--payload", default="hello from smbprotocol")
@@ -62,6 +62,9 @@ def get_dialect(args: argparse.Namespace) -> tuple[int, str]:
 
     if args.dialect == "smb302":
         return Dialects.SMB_3_0_2, "SMB 3.0.2"
+
+    if args.dialect == "smb311":
+        return Dialects.SMB_3_1_1, "SMB 3.1.1"
 
     raise ValueError(f"Unsupported dialect '{args.dialect}'.")
 
@@ -171,7 +174,7 @@ def main() -> int:
     expected_last_write_utc = datetime(2024, 5, 6, 7, 8, 9, tzinfo=timezone.utc)
     expected_last_write_filetime = to_filetime_utc(expected_last_write_utc)
 
-    require_encryption = args.dialect == "smb302"
+    require_encryption = args.dialect == "smb302" or args.dialect == "smb311"
     connection = Connection(uuid.uuid4(), args.server, args.port, require_signing=True)
     session = None
     tree = None

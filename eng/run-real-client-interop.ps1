@@ -2,7 +2,7 @@ param(
     [string]$Configuration = "Debug",
     [string]$Framework = "net8.0",
     [int]$Port = 0,
-    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302"),
+    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302", "Smb311"),
     [int]$LargePayloadLength = 200000
 )
 
@@ -110,6 +110,7 @@ function Get-DialectMetadata {
                 Label = "SMB 2.0.2"
                 PythonDialect = "smb2002"
                 RequireEncryptionForSmb3 = $false
+                EnableSmb311Preview = $false
             }
         }
         "Smb21" {
@@ -119,6 +120,7 @@ function Get-DialectMetadata {
                 Label = "SMB 2.1"
                 PythonDialect = "smb21"
                 RequireEncryptionForSmb3 = $false
+                EnableSmb311Preview = $false
             }
         }
         "Smb302" {
@@ -128,6 +130,17 @@ function Get-DialectMetadata {
                 Label = "SMB 3.0.2"
                 PythonDialect = "smb302"
                 RequireEncryptionForSmb3 = $true
+                EnableSmb311Preview = $false
+            }
+        }
+        "Smb311" {
+            return [pscustomobject]@{
+                Dialect = "Smb311"
+                DialectId = "smb311"
+                Label = "SMB 3.1.1"
+                PythonDialect = "smb311"
+                RequireEncryptionForSmb3 = $true
+                EnableSmb311Preview = $true
             }
         }
         default {
@@ -187,6 +200,7 @@ foreach ($dialect in $Dialects) {
         "--allow-anonymous", "false",
         "--enable-smb1", "false",
         "--require-encryption-for-smb3", $dialectMetadata.RequireEncryptionForSmb3.ToString().ToLowerInvariant(),
+        "--enable-smb311-preview", $dialectMetadata.EnableSmb311Preview.ToString().ToLowerInvariant(),
         "--account-username", "alice",
         "--account-domain", "WORKGROUP",
         "--account-password", "Password123!"

@@ -79,6 +79,11 @@ switch ($Dialect) {
         $dialectLabel = "SMB 3.0.2"
         $requirePrivacy = $true
     }
+    "Smb311" {
+        $dialectId = "smb311"
+        $dialectLabel = "SMB 3.1.1"
+        $requirePrivacy = $true
+    }
     default {
         throw "Unsupported dialect '$Dialect'."
     }
@@ -546,6 +551,7 @@ $sampleServerArguments = @(
     "--allow-anonymous", "false",
     "--enable-smb1", "false",
     "--require-encryption-for-smb3", $requirePrivacy.ToString().ToLowerInvariant(),
+    "--enable-smb311-preview", ($Dialect -eq "Smb311").ToString().ToLowerInvariant(),
     "--account-username", "alice",
     "--account-domain", "WORKGROUP",
     "--account-password", "Password123!"
