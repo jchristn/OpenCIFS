@@ -130,7 +130,8 @@ The goal is not identical protocol nouns. The goal is identical consumer flow an
 - [x] Add tests for result-envelope behavior and parity with the OpenNFS naming convention.
   OpenCIFS shared client and server suites now pin the `Try...Async` naming convention plus positive and negative primary-surface, advanced/raw connection-surface, and managed-server lifecycle result-envelope behavior. Mirrored OpenNFS coverage remains deferred.
 - [x] Add smoke tests that compile and execute the canonical README client and server snippets, or equivalent sample-based verification if snippet tests are not practical.
-- [ ] Mirror the same acceptance-test concepts in OpenNFS so both repos can prove parity rather than just claim it.
+- [-] Mirror the same acceptance-test concepts in OpenNFS so both repos can prove parity rather than just claim it.
+  OpenCIFS-side acceptance tests are complete: shared client and server suites pin `OpenCifsClientBuilder`, `OpenCifsClient`, `OpenCifsShareSession`, grouped `Files`/`Directories`/`Metadata`/`Locks` APIs, `OpenCifsServerApplication` lifecycle, exception mapping with normalized error categories, `Try...Async` result-envelope behavior across primary, advanced/raw, and managed-server lifecycle surfaces, and the canonical README client/server snippets through `eng/run-readme-smoke.ps1`. Mirroring the matching acceptance-test concepts inside the OpenNFS repository is cross-repo follow-up work that OpenCIFS cannot land directly; it remains tracked in `C:\Code\OpenNFS\COMPATIBILITY.md` per the section-order convention referenced at the top of this file.
 
 ## Acceptance criteria
 
@@ -150,8 +151,8 @@ The goal is not identical protocol nouns. The goal is identical consumer flow an
 - Automated tests enforce API-shape parity, exception mapping expectations, and the canonical usage snippets.
 - Advanced/raw APIs still exist and still expose full protocol truth.
 
-## Open questions
+## Resolved questions
 
-- How much of `OpenCifsClientFacade` should remain public after `OpenCifsClient` and `OpenCifsShareSession` become the primary surface?
-- Should the compatibility approval tests live entirely in each repo, or should both repos read a shared manifest later once the shapes stabilize?
-- Which optional CIFS server capabilities should get first-class adapter contracts in the initial aligned pass versus later follow-up work?
+- **How much of `OpenCifsClientFacade` should remain public after `OpenCifsClient` and `OpenCifsShareSession` become the primary surface?** Resolved: `OpenCifsClientFacade` stays public as a transitional/advanced surface alongside the aligned primary client. The shared client API-shape regression suite explicitly verifies that `OpenCifsClientFacade` carries no `OpenCifsPreviewAttribute` and continues to track the stable direct-TCP connection surface, while the README, package readmes, and `OPENCIFS.md` lead with the `OpenCifsClientBuilder` -> `OpenCifsClient` -> `OpenCifsShareSession` happy path. The facade can be revisited for narrowing once both repositories stabilize, but the current-pass decision is to keep it.
+- **Should the compatibility approval tests live entirely in each repo, or should both repos read a shared manifest later once the shapes stabilize?** Resolved: each repo currently owns its own acceptance tests so the suites can evolve independently while the public shapes settle. A shared manifest is deferred follow-up work and can be revisited after both sides reach steady state on the primary client surface, the advanced/raw surface, the result-envelope shape, and the typed-exception taxonomy.
+- **Which optional CIFS server capabilities should get first-class adapter contracts in the initial aligned pass versus later follow-up work?** Resolved: the initial aligned pass exposes one mandatory filesystem contract through `OpenCifsServerFileSystemShare` plus typed adapter contracts and discoverable capability flags for the bounded slices already verified end to end (request callbacks, named-pipe endpoints with the bounded built-in `srvsvc` share-enumeration / `srvsvc` share-info plus UTF-8 echo endpoints, DFS referrals). Broader optional-capability contracts (durable handles tied to clustered shares, witness, DFS namespace roots beyond the bounded slice, broader RPC services) stay backlog until they are fully implemented so the adapter contracts only land when there is a real implementation to bind them to.
