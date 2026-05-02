@@ -1697,6 +1697,90 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1LockingAndXRequestAndResponseRoundTripLargeFileLockRangesAndRejectMalformedShapes",
+                        displayName: "Bounded SMB1 LOCKING_ANDX request and response round-trip large-file lock ranges and reject malformed shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            Smb1LockingAndXRequest request = new Smb1LockingAndXRequest
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.LockingAndX,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                FileId = 0x4242,
+                                LockType = Smb1LockingAndXRequest.LockTypeLargeFiles,
+                                OplockLevel = 0,
+                                Timeout = 5000
+                            };
+                            request.Locks.Add(new Smb1LockingAndXRequest.LockRange
+                            {
+                                ProcessId = 0x0042,
+                                Offset = 0x0000_0001_0000_0010UL,
+                                Length = 0x0000_0000_0000_1000UL
+                            });
+                            request.Unlocks.Add(new Smb1LockingAndXRequest.LockRange
+                            {
+                                ProcessId = 0x0042,
+                                Offset = 0x0000_0002_0000_0000UL,
+                                Length = 0x0000_0000_0000_2000UL
+                            });
+
+                            byte[] requestBytes = request.ToByteArray();
+                            Smb1LockingAndXRequest parsedRequest = Smb1LockingAndXRequest.ReadFrom(requestBytes);
+                            TestAssertions.Equal(request.FileId, parsedRequest.FileId, "Unexpected SMB1 LOCKING_ANDX FileId after round-trip.");
+                            TestAssertions.Equal(request.LockType, parsedRequest.LockType, "Unexpected SMB1 LOCKING_ANDX LockType after round-trip.");
+                            TestAssertions.Equal(request.Timeout, parsedRequest.Timeout, "Unexpected SMB1 LOCKING_ANDX Timeout after round-trip.");
+                            TestAssertions.Equal(1, parsedRequest.Locks.Count, "Unexpected SMB1 LOCKING_ANDX Locks count.");
+                            TestAssertions.Equal(1, parsedRequest.Unlocks.Count, "Unexpected SMB1 LOCKING_ANDX Unlocks count.");
+                            TestAssertions.Equal(request.Locks[0].Offset, parsedRequest.Locks[0].Offset, "Unexpected SMB1 LOCKING_ANDX lock offset after round-trip.");
+                            TestAssertions.Equal(request.Locks[0].Length, parsedRequest.Locks[0].Length, "Unexpected SMB1 LOCKING_ANDX lock length after round-trip.");
+                            TestAssertions.Equal(request.Unlocks[0].Offset, parsedRequest.Unlocks[0].Offset, "Unexpected SMB1 LOCKING_ANDX unlock offset after round-trip.");
+
+                            byte[] tamperedRequest = (byte[])requestBytes.Clone();
+                            tamperedRequest[ProtocolConstants.Smb1HeaderLength + 1 + (Smb1LockingAndXRequest.LockTypeOplockRelease * 0)] = 0x05;
+                            int byteCountIndex = ProtocolConstants.Smb1HeaderLength + 1 + (8 * sizeof(ushort));
+                            tamperedRequest[byteCountIndex] = 0x10;
+                            tamperedRequest[byteCountIndex + 1] = 0x00;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1LockingAndXRequest.ReadFrom(tamperedRequest),
+                                "SMB1 LOCKING_ANDX request should reject ByteCount mismatched with declared lock counts.");
+
+                            Smb1LockingAndXResponse response = new Smb1LockingAndXResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.LockingAndX,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                }
+                            };
+                            byte[] responseBytes = response.ToByteArray();
+                            Smb1LockingAndXResponse parsedResponse = Smb1LockingAndXResponse.ReadFrom(responseBytes);
+                            TestAssertions.Equal((ushort)0x4242, parsedResponse.Header.MultiplexId, "Unexpected SMB1 LOCKING_ANDX response MultiplexId.");
+
+                            byte[] tamperedResponse = (byte[])responseBytes.Clone();
+                            tamperedResponse[tamperedResponse.Length - 1] = 0x01;
+                            tamperedResponse[tamperedResponse.Length - 2] = 0x00;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1LockingAndXResponse.ReadFrom(tamperedResponse),
+                                "SMB1 LOCKING_ANDX response should reject non-zero ByteCount payloads.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>
