@@ -181,7 +181,9 @@ $realClientRelativePaths = @(
     "real-client-smoke.json",
     "sample-server.config.txt",
     "smb2002",
-    "smb21"
+    "smb21",
+    "smb302",
+    "smb311"
 )
 $sambaRelativePaths = @(
     "open-cifs-client-to-samba.json",
@@ -189,14 +191,18 @@ $sambaRelativePaths = @(
     "sample-server.config.txt",
     "samba-versions.txt",
     "smb2002",
-    "smb21"
+    "smb21",
+    "smb302",
+    "smb311"
 )
 $windowsRelativePaths = @(
     "windows-client-smoke.json",
     "windows-client-environment.json",
     "sample-server.config.txt",
     "smb2002",
-    "smb21"
+    "smb21",
+    "smb302",
+    "smb311"
 )
 
 $realClientRuns = New-Object System.Collections.Generic.List[object]
@@ -323,11 +329,12 @@ if ([int]$soakDocument.TotalDurableReconnects -lt $SoakDurableIterations) {
     real_client_runs = $realClientRuns
     samba_runs = $sambaRuns
     windows_runs = $windowsRuns
-    encryption_status = "bounded-smb302"
+    encryption_status = "bounded-smb302-plus-smb311-preview"
     notes = @(
-        "Nightly-style current-dialect automation now reruns the Python real-client, Samba, and native Windows three-dialect interop stacks across SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2 with a larger bounded payload.",
+        "Nightly-style current-dialect automation now reruns the Python real-client, Samba, and native Windows four-dialect interop stacks across SMB 2.0.2, SMB 2.1, encryption-required SMB 3.0.2, and the bounded SMB 3.1.1 opt-in preview with a larger bounded payload.",
         "The composed nightly artifact also includes a stronger SMB 2.1 soak that exercises durable reconnect, exclusive oplock breaks, lease breaks, and large-I/O churn on the managed path.",
-        "Secure negotiate, durable-handle v2, SMB 3.1.1 negotiation, and broader SMB 3.x nightly coverage remain backlog."
+        "The SMB 3.1.1 lane runs Sample.OpenCifsServer with --enable-smb311-preview true and the OpenCIFS client/Python smbprotocol/Windows built-in SMB clients with SMB 3.1.1 enabled; AES-128-GCM encryption and AES-GMAC signing are negotiated end-to-end on this lane.",
+        "Secure negotiate, durable-handle v2, AES-256 ciphers (gated on Kerberos), and SMB 3.1.1 durable reconnect remain backlog."
     )
 } | ConvertTo-Json -Depth 12 | Set-Content -Path $resultPath -Encoding UTF8
 
