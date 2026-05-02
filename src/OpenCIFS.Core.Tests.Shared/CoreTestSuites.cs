@@ -1568,6 +1568,135 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1ReadAndXRequestAndResponseRoundTrip64BitOffsetAndDataPayload",
+                        displayName: "Bounded SMB1 READ_ANDX request and response round-trip 64-bit offset and data payload",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            Smb1ReadAndXRequest request = new Smb1ReadAndXRequest
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.ReadAndX,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                FileId = 0x4242,
+                                FileOffset = 0x0000_0001_0000_0010UL,
+                                MaxCountOfBytesToReturn = 4096,
+                                MinCountOfBytesToReturn = 1,
+                                TimeoutOrMaxCountHigh = 0xFFFFFFFFU,
+                                Remaining = 0
+                            };
+                            byte[] requestBytes = request.ToByteArray();
+                            Smb1ReadAndXRequest parsedRequest = Smb1ReadAndXRequest.ReadFrom(requestBytes);
+                            TestAssertions.Equal(request.FileId, parsedRequest.FileId, "Unexpected SMB1 READ_ANDX FileId after round-trip.");
+                            TestAssertions.Equal(request.FileOffset, parsedRequest.FileOffset, "Unexpected SMB1 READ_ANDX 64-bit offset after round-trip.");
+                            TestAssertions.Equal(request.MaxCountOfBytesToReturn, parsedRequest.MaxCountOfBytesToReturn, "Unexpected SMB1 READ_ANDX MaxCount after round-trip.");
+
+                            byte[] tamperedRequest = (byte[])requestBytes.Clone();
+                            tamperedRequest[tamperedRequest.Length - 1] = 0x05;
+                            tamperedRequest[tamperedRequest.Length - 2] = 0x00;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1ReadAndXRequest.ReadFrom(tamperedRequest),
+                                "SMB1 READ_ANDX request should reject non-zero ByteCount payloads.");
+
+                            byte[] payload = new byte[] { 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0 };
+
+                            Smb1ReadAndXResponse response = new Smb1ReadAndXResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.ReadAndX,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                Available = 0xFFFF,
+                                Data = payload
+                            };
+                            byte[] responseBytes = response.ToByteArray();
+                            Smb1ReadAndXResponse parsedResponse = Smb1ReadAndXResponse.ReadFrom(responseBytes);
+                            TestAssertions.Equal(response.Available, parsedResponse.Available, "Unexpected SMB1 READ_ANDX response Available.");
+                            TestAssertions.SequenceEqual(payload, parsedResponse.Data, "Unexpected SMB1 READ_ANDX response payload.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1WriteAndXRequestAndResponseRoundTripDataPayloadAndRejectMalformedShapes",
+                        displayName: "Bounded SMB1 WRITE_ANDX request and response round-trip data payload and reject malformed shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] payload = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04 };
+
+                            Smb1WriteAndXRequest request = new Smb1WriteAndXRequest
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.WriteAndX,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                FileId = 0x4242,
+                                FileOffset = 0x0000_0002_0000_0030UL,
+                                WriteMode = 0x0008,
+                                Remaining = 0,
+                                Data = payload
+                            };
+                            byte[] requestBytes = request.ToByteArray();
+                            Smb1WriteAndXRequest parsedRequest = Smb1WriteAndXRequest.ReadFrom(requestBytes);
+                            TestAssertions.Equal(request.FileId, parsedRequest.FileId, "Unexpected SMB1 WRITE_ANDX FileId after round-trip.");
+                            TestAssertions.Equal(request.FileOffset, parsedRequest.FileOffset, "Unexpected SMB1 WRITE_ANDX 64-bit offset after round-trip.");
+                            TestAssertions.Equal(request.WriteMode, parsedRequest.WriteMode, "Unexpected SMB1 WRITE_ANDX WriteMode after round-trip.");
+                            TestAssertions.SequenceEqual(payload, parsedRequest.Data, "Unexpected SMB1 WRITE_ANDX request payload after round-trip.");
+
+                            Smb1WriteAndXResponse response = new Smb1WriteAndXResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.WriteAndX,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                Count = (ushort)payload.Length,
+                                Available = 0xFFFF,
+                                CountHigh = 0
+                            };
+                            byte[] responseBytes = response.ToByteArray();
+                            Smb1WriteAndXResponse parsedResponse = Smb1WriteAndXResponse.ReadFrom(responseBytes);
+                            TestAssertions.Equal(response.Count, parsedResponse.Count, "Unexpected SMB1 WRITE_ANDX response Count.");
+                            TestAssertions.Equal(response.Available, parsedResponse.Available, "Unexpected SMB1 WRITE_ANDX response Available.");
+
+                            byte[] tamperedResponse = (byte[])responseBytes.Clone();
+                            tamperedResponse[tamperedResponse.Length - 1] = 0x05;
+                            tamperedResponse[tamperedResponse.Length - 2] = 0x00;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1WriteAndXResponse.ReadFrom(tamperedResponse),
+                                "SMB1 WRITE_ANDX response should reject non-zero ByteCount payloads.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>
