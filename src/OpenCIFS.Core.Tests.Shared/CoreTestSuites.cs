@@ -1853,6 +1853,101 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1Transaction2RequestRoundTripsSubCommandWithAlignedParameterAndDataBlocks",
+                        displayName: "Bounded SMB1 TRANSACTION2 request round-trips sub-command with aligned parameter and data blocks",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] parameters = new byte[] { 0x05, 0x01, 0x00, 0x00, 0x07, 0x01 };
+                            byte[] data = new byte[] { 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0 };
+
+                            Smb1Transaction2Request request = new Smb1Transaction2Request
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.Transaction2,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                SubCommand = Smb1Transaction2SubCommand.QueryPathInformation,
+                                TotalParameterCount = (ushort)parameters.Length,
+                                TotalDataCount = (ushort)data.Length,
+                                MaxParameterCount = 0x0040,
+                                MaxDataCount = 0x4000,
+                                MaxSetupCount = 0,
+                                Flags = 0,
+                                Timeout = 0,
+                                Parameters = parameters,
+                                Data = data
+                            };
+
+                            byte[] requestBytes = request.ToByteArray();
+                            Smb1Transaction2Request parsedRequest = Smb1Transaction2Request.ReadFrom(requestBytes);
+                            TestAssertions.Equal(request.SubCommand, parsedRequest.SubCommand, "Unexpected SMB1 TRANSACTION2 SubCommand after round-trip.");
+                            TestAssertions.Equal(request.TotalParameterCount, parsedRequest.TotalParameterCount, "Unexpected SMB1 TRANSACTION2 TotalParameterCount after round-trip.");
+                            TestAssertions.Equal(request.TotalDataCount, parsedRequest.TotalDataCount, "Unexpected SMB1 TRANSACTION2 TotalDataCount after round-trip.");
+                            TestAssertions.SequenceEqual(parameters, parsedRequest.Parameters, "Unexpected SMB1 TRANSACTION2 Parameters after round-trip.");
+                            TestAssertions.SequenceEqual(data, parsedRequest.Data, "Unexpected SMB1 TRANSACTION2 Data after round-trip.");
+
+                            byte[] tampered = (byte[])requestBytes.Clone();
+                            int byteCountIndex = ProtocolConstants.Smb1HeaderLength + 1 + (15 * sizeof(ushort));
+                            tampered[byteCountIndex] = 0xFF;
+                            tampered[byteCountIndex + 1] = 0xFF;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1Transaction2Request.ReadFrom(tampered),
+                                "SMB1 TRANSACTION2 request should reject ByteCount that exceeds the buffer.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1Transaction2ResponseRoundTripsParameterAndDataBlocksAndRejectsMalformedShapes",
+                        displayName: "Bounded SMB1 TRANSACTION2 response round-trips parameter and data blocks and rejects malformed shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] parameters = new byte[] { 0x00, 0x00 };
+                            byte[] data = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02 };
+
+                            Smb1Transaction2Response response = new Smb1Transaction2Response
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.Transaction2,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                TotalParameterCount = (ushort)parameters.Length,
+                                TotalDataCount = (ushort)data.Length,
+                                Parameters = parameters,
+                                Data = data
+                            };
+
+                            byte[] responseBytes = response.ToByteArray();
+                            Smb1Transaction2Response parsedResponse = Smb1Transaction2Response.ReadFrom(responseBytes);
+                            TestAssertions.SequenceEqual(parameters, parsedResponse.Parameters, "Unexpected SMB1 TRANSACTION2 response Parameters after round-trip.");
+                            TestAssertions.SequenceEqual(data, parsedResponse.Data, "Unexpected SMB1 TRANSACTION2 response Data after round-trip.");
+
+                            byte[] tampered = (byte[])responseBytes.Clone();
+                            int setupCountIndex = ProtocolConstants.Smb1HeaderLength + 1 + (10 * sizeof(ushort));
+                            tampered[setupCountIndex] = 0x01;
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => Smb1Transaction2Response.ReadFrom(tampered),
+                                "SMB1 TRANSACTION2 response should reject non-zero SetupCount.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>
