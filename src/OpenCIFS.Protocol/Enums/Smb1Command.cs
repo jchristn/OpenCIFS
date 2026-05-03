@@ -73,7 +73,22 @@ namespace OpenCIFS.Protocol
         /// <summary>
         /// NT transact.
         /// </summary>
-        NtTransact = 0xA0
+        NtTransact = 0xA0,
+
+        /// <summary>
+        /// Transaction secondary (continuation fragment of an in-progress <see cref="Transaction" />).
+        /// </summary>
+        TransactionSecondary = 0x26,
+
+        /// <summary>
+        /// Transaction2 secondary (continuation fragment of an in-progress <see cref="Transaction2" />).
+        /// </summary>
+        Transaction2Secondary = 0x33,
+
+        /// <summary>
+        /// NT transact secondary (continuation fragment of an in-progress <see cref="NtTransact" />).
+        /// </summary>
+        NtTransactSecondary = 0xA1
     }
 }
 

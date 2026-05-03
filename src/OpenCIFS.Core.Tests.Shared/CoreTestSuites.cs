@@ -2128,6 +2128,163 @@ namespace OpenCIFS.Core.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1TransactionAndNtTransactResponseCodecsRoundTripParameterAndDataBlocks",
+                        displayName: "Bounded SMB1 TRANSACTION and NT_TRANSACT response codecs round-trip parameter and data blocks",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] transParams = new byte[] { 0x10, 0x20 };
+                            byte[] transData = new byte[] { 0xAA, 0xBB, 0xCC, 0xDD };
+
+                            Smb1TransactionResponse transResponse = new Smb1TransactionResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.Transaction,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                TotalParameterCount = (ushort)transParams.Length,
+                                TotalDataCount = (ushort)transData.Length,
+                                Setup = new ushort[] { 0x0001 },
+                                Parameters = transParams,
+                                Data = transData
+                            };
+                            byte[] transBytes = transResponse.ToByteArray();
+                            Smb1TransactionResponse parsedTransResponse = Smb1TransactionResponse.ReadFrom(transBytes);
+                            TestAssertions.SequenceEqual(transParams, parsedTransResponse.Parameters, "Unexpected SMB1 TRANSACTION response Parameters.");
+                            TestAssertions.SequenceEqual(transData, parsedTransResponse.Data, "Unexpected SMB1 TRANSACTION response Data.");
+                            TestAssertions.Equal(1, parsedTransResponse.Setup.Length, "Unexpected SMB1 TRANSACTION response Setup count.");
+
+                            byte[] ntParams = new byte[] { 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00 };
+                            byte[] ntData = new byte[] { 0x10, 0x20, 0x30, 0x40, 0x50, 0x60 };
+
+                            Smb1NtTransactResponse ntResponse = new Smb1NtTransactResponse
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.NtTransact,
+                                    Status = NtStatus.Success,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                TotalParameterCount = (uint)ntParams.Length,
+                                TotalDataCount = (uint)ntData.Length,
+                                Setup = new ushort[] { 0x4242, 0x0001 },
+                                Parameters = ntParams,
+                                Data = ntData
+                            };
+                            byte[] ntBytes = ntResponse.ToByteArray();
+                            Smb1NtTransactResponse parsedNtResponse = Smb1NtTransactResponse.ReadFrom(ntBytes);
+                            TestAssertions.SequenceEqual(ntParams, parsedNtResponse.Parameters, "Unexpected SMB1 NT_TRANSACT response Parameters.");
+                            TestAssertions.SequenceEqual(ntData, parsedNtResponse.Data, "Unexpected SMB1 NT_TRANSACT response Data.");
+                            TestAssertions.Equal(2, parsedNtResponse.Setup.Length, "Unexpected SMB1 NT_TRANSACT response Setup count.");
+                            TestAssertions.Equal(ntResponse.Setup[0], parsedNtResponse.Setup[0], "Unexpected SMB1 NT_TRANSACT response Setup[0].");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
+                        caseId: "Smb1TransactionFamilySecondaryFragmentsRoundTripDisplacementAndPayloadAcrossAllThreeShapes",
+                        displayName: "Bounded SMB1 transaction-family secondary fragments round-trip displacement and payload across all three shapes",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] params1 = new byte[] { 0x05, 0x06, 0x07, 0x08 };
+                            byte[] data1 = new byte[] { 0xA1, 0xA2, 0xA3 };
+
+                            Smb1TransactionSecondary transSec = new Smb1TransactionSecondary
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.TransactionSecondary,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                TotalParameterCount = 16,
+                                TotalDataCount = 32,
+                                ParameterDisplacement = 8,
+                                DataDisplacement = 16,
+                                Parameters = params1,
+                                Data = data1
+                            };
+                            byte[] transSecBytes = transSec.ToByteArray();
+                            Smb1TransactionSecondary parsedTransSec = Smb1TransactionSecondary.ReadFrom(transSecBytes);
+                            TestAssertions.Equal((ushort)8, parsedTransSec.ParameterDisplacement, "Unexpected TRANSACTION_SECONDARY ParameterDisplacement.");
+                            TestAssertions.Equal((ushort)16, parsedTransSec.DataDisplacement, "Unexpected TRANSACTION_SECONDARY DataDisplacement.");
+                            TestAssertions.SequenceEqual(params1, parsedTransSec.Parameters, "Unexpected TRANSACTION_SECONDARY Parameters.");
+                            TestAssertions.SequenceEqual(data1, parsedTransSec.Data, "Unexpected TRANSACTION_SECONDARY Data.");
+
+                            Smb1Transaction2Secondary trans2Sec = new Smb1Transaction2Secondary
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.Transaction2Secondary,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                TotalParameterCount = 16,
+                                TotalDataCount = 32,
+                                ParameterDisplacement = 4,
+                                DataDisplacement = 8,
+                                FileId = 0x4242,
+                                Parameters = params1,
+                                Data = data1
+                            };
+                            byte[] trans2SecBytes = trans2Sec.ToByteArray();
+                            Smb1Transaction2Secondary parsedTrans2Sec = Smb1Transaction2Secondary.ReadFrom(trans2SecBytes);
+                            TestAssertions.Equal((ushort)0x4242, parsedTrans2Sec.FileId, "Unexpected TRANSACTION2_SECONDARY FileId.");
+                            TestAssertions.SequenceEqual(params1, parsedTrans2Sec.Parameters, "Unexpected TRANSACTION2_SECONDARY Parameters.");
+                            TestAssertions.SequenceEqual(data1, parsedTrans2Sec.Data, "Unexpected TRANSACTION2_SECONDARY Data.");
+
+                            Smb1NtTransactSecondary ntSec = new Smb1NtTransactSecondary
+                            {
+                                Header = new Smb1Header
+                                {
+                                    Command = Smb1Command.NtTransactSecondary,
+                                    Flags = Smb1HeaderFlags.CaseInsensitive,
+                                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                                    Signature = new byte[8],
+                                    TreeId = 0xCAFE,
+                                    UserId = 0x1234,
+                                    MultiplexId = 0x4242
+                                },
+                                TotalParameterCount = 0x0001_0000U,
+                                TotalDataCount = 0x0002_0000U,
+                                ParameterDisplacement = 0x0000_0100U,
+                                DataDisplacement = 0x0000_0200U,
+                                Parameters = params1,
+                                Data = data1
+                            };
+                            byte[] ntSecBytes = ntSec.ToByteArray();
+                            Smb1NtTransactSecondary parsedNtSec = Smb1NtTransactSecondary.ReadFrom(ntSecBytes);
+                            TestAssertions.Equal(0x0000_0100U, parsedNtSec.ParameterDisplacement, "Unexpected NT_TRANSACT_SECONDARY ParameterDisplacement.");
+                            TestAssertions.Equal(0x0000_0200U, parsedNtSec.DataDisplacement, "Unexpected NT_TRANSACT_SECONDARY DataDisplacement.");
+                            TestAssertions.Equal(0x0001_0000U, parsedNtSec.TotalParameterCount, "Unexpected NT_TRANSACT_SECONDARY TotalParameterCount.");
+                            TestAssertions.SequenceEqual(params1, parsedNtSec.Parameters, "Unexpected NT_TRANSACT_SECONDARY Parameters.");
+                            TestAssertions.SequenceEqual(data1, parsedNtSec.Data, "Unexpected NT_TRANSACT_SECONDARY Data.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Smb1Negotiate",
                         caseId: "Smb1NegotiateResponseRejectsMalformedAndNonExtendedSecurityShapes",
                         displayName: "Bounded SMB1 NEGOTIATE response rejects malformed shapes and non-extended-security responses",
                         executeAsync: token =>
