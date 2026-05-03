@@ -5913,8 +5913,8 @@ namespace OpenCIFS.Core.Tests.Shared
                                 totalRejected += summary.RejectedCount;
                             }
 
-                            TestAssertions.True(totalMutations >= 300, "Expected the deterministic parser-mutation corpus to execute at least 300 mutated payloads.");
-                            TestAssertions.True(totalRejected >= 100, "Expected the deterministic parser-mutation corpus to reject a meaningful number of malformed payloads.");
+                            TestAssertions.True(totalMutations >= 1500, "Expected the deterministic parser-mutation corpus to execute at least 1500 mutated payloads across the broader SMB1, SMB2/3, DFS, and NetBIOS coverage.");
+                            TestAssertions.True(totalRejected >= 600, "Expected the deterministic parser-mutation corpus to reject a meaningful number of malformed payloads.");
                             TestAssertions.True(totalAccepted > 0, "Expected at least one deterministic mutation to remain structurally parseable.");
                             return Task.CompletedTask;
                         }),
@@ -7030,8 +7030,294 @@ namespace OpenCIFS.Core.Tests.Shared
                     bytes =>
                     {
                         Smb2NegotiateContextList.Decode(bytes, 2);
+                    }),
+                (
+                    "DfsReferralEntryV3Response",
+                    BuildDfsReferralResponseV3Baseline(),
+                    bytes =>
+                    {
+                        DfsReferralResponse.ReadFrom(bytes);
+                    }),
+                (
+                    "DfsReferralRequestEx",
+                    new DfsReferralRequestEx
+                    {
+                        MaxReferralLevel = 4,
+                        IncludeSiteName = true,
+                        PathConsumed = 0,
+                        RequestFileName = "\\\\dfs.contoso.test\\namespace\\path",
+                        SiteName = "Default-First-Site-Name"
+                    }.ToByteArray(),
+                    bytes =>
+                    {
+                        DfsReferralRequestEx.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1NegotiateResponse",
+                    BuildSmb1NegotiateResponseBaseline(),
+                    bytes =>
+                    {
+                        Smb1NegotiateResponse.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1SessionSetupAndXRequest",
+                    BuildSmb1SessionSetupAndXRequestBaseline(),
+                    bytes =>
+                    {
+                        Smb1SessionSetupAndXRequest.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1TreeConnectAndXRequest",
+                    BuildSmb1TreeConnectAndXRequestBaseline(),
+                    bytes =>
+                    {
+                        Smb1TreeConnectAndXRequest.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1NtCreateAndXRequest",
+                    BuildSmb1NtCreateAndXRequestBaseline(),
+                    bytes =>
+                    {
+                        Smb1NtCreateAndXRequest.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1ReadAndXRequest",
+                    BuildSmb1ReadAndXRequestBaseline(),
+                    bytes =>
+                    {
+                        Smb1ReadAndXRequest.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1WriteAndXRequest",
+                    BuildSmb1WriteAndXRequestBaseline(),
+                    bytes =>
+                    {
+                        Smb1WriteAndXRequest.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1LockingAndXRequest",
+                    BuildSmb1LockingAndXRequestBaseline(),
+                    bytes =>
+                    {
+                        Smb1LockingAndXRequest.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1Transaction2Request",
+                    BuildSmb1Transaction2RequestBaseline(),
+                    bytes =>
+                    {
+                        Smb1Transaction2Request.ReadFrom(bytes);
+                    }),
+                (
+                    "Smb1NtTransactRequest",
+                    BuildSmb1NtTransactRequestBaseline(),
+                    bytes =>
+                    {
+                        Smb1NtTransactRequest.ReadFrom(bytes);
+                    }),
+                (
+                    "NetBiosSessionRequest",
+                    new NetBiosSessionRequest
+                    {
+                        CalledName = NetBiosEncodedName.FromServiceName("FILESERVER", NetBiosEncodedName.FileServerServiceSuffix),
+                        CallingName = NetBiosEncodedName.FromServiceName("WORKSTATION", NetBiosEncodedName.WorkstationServiceSuffix)
+                    }.ToByteArray(),
+                    bytes =>
+                    {
+                        NetBiosSessionRequest.ReadFrom(bytes);
                     })
             };
+        }
+
+        private static byte[] BuildDfsReferralResponseV3Baseline()
+        {
+            DfsReferralResponse response = new DfsReferralResponse
+            {
+                PathConsumed = 24,
+                HeaderFlags = DfsReferralHeaderFlags.StorageServers
+            };
+            response.EntriesV3.Add(new DfsReferralEntryV3
+            {
+                VersionNumber = 4,
+                IsRootTarget = true,
+                ReferralEntryFlags = DfsReferralEntryFlags.TargetSetBoundary,
+                TimeToLive = 600,
+                DfsPath = "\\\\dfs.contoso.test\\share",
+                DfsAlternatePath = "\\\\dfs.contoso.test\\share",
+                NetworkAddress = "\\\\fileserver.contoso.test\\share",
+                ServiceSiteGuid = new byte[16]
+            });
+            return response.ToByteArray();
+        }
+
+        private static Smb1Header BuildSmb1MutationHeader(Smb1Command command)
+        {
+            return new Smb1Header
+            {
+                Command = command,
+                Flags = Smb1HeaderFlags.CaseInsensitive,
+                Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                Signature = new byte[8],
+                TreeId = 0xCAFE,
+                UserId = 0x1234,
+                MultiplexId = 0x4242
+            };
+        }
+
+        private static byte[] BuildSmb1NegotiateResponseBaseline()
+        {
+            return new Smb1NegotiateResponse
+            {
+                Header = new Smb1Header
+                {
+                    Command = Smb1Command.Negotiate,
+                    Status = NtStatus.Success,
+                    Flags = Smb1HeaderFlags.CaseInsensitive | Smb1HeaderFlags.Reply,
+                    Flags2 = Smb1HeaderFlags2.Unicode | Smb1HeaderFlags2.NtStatus | Smb1HeaderFlags2.ExtendedSecurity,
+                    Signature = new byte[8]
+                },
+                DialectIndex = 0,
+                SecurityMode = Smb1SecurityMode.UserSecurity | Smb1SecurityMode.EncryptPasswords | Smb1SecurityMode.SigningEnabled,
+                MaxMpxCount = 50,
+                MaxNumberVcs = 1,
+                MaxBufferSize = 0x00010000U,
+                MaxRawSize = 0x00010000U,
+                SessionKey = 0,
+                Capabilities = Smb1Capabilities.NtSmbs | Smb1Capabilities.Status32 | Smb1Capabilities.ExtendedSecurity,
+                SystemTime = 0x01D89AB000000000L,
+                ServerTimeZoneMinutes = 0,
+                ServerGuid = Guid.Empty,
+                SecurityBlob = new byte[] { 0x60, 0x16, 0x06, 0x06, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x02 }
+            }.ToByteArray();
+        }
+
+        private static byte[] BuildSmb1SessionSetupAndXRequestBaseline()
+        {
+            return new Smb1SessionSetupAndXRequest
+            {
+                Header = BuildSmb1MutationHeader(Smb1Command.SessionSetupAndX),
+                MaxBufferSize = (ushort)0xFFFF,
+                MaxMpxCount = 50,
+                VcNumber = 1,
+                SessionKey = 0,
+                Capabilities = Smb1Capabilities.NtSmbs | Smb1Capabilities.Status32 | Smb1Capabilities.ExtendedSecurity,
+                SecurityBlob = new byte[] { 0x60, 0x10, 0x06, 0x06, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x02 },
+                NativeOS = "Windows",
+                NativeLanMan = "Windows"
+            }.ToByteArray();
+        }
+
+        private static byte[] BuildSmb1TreeConnectAndXRequestBaseline()
+        {
+            return new Smb1TreeConnectAndXRequest
+            {
+                Header = BuildSmb1MutationHeader(Smb1Command.TreeConnectAndX),
+                Flags = 0,
+                Password = new byte[] { 0x00 },
+                Path = "\\\\fileserver.contoso.test\\share",
+                Service = "?????"
+            }.ToByteArray();
+        }
+
+        private static byte[] BuildSmb1NtCreateAndXRequestBaseline()
+        {
+            return new Smb1NtCreateAndXRequest
+            {
+                Header = BuildSmb1MutationHeader(Smb1Command.NtCreateAndX),
+                DesiredAccess = 0x00120089U,
+                ShareAccess = 0x00000007U,
+                CreateDisposition = 0x00000001U,
+                CreateOptions = 0x00000040U,
+                ImpersonationLevel = 0x00000002U,
+                FileName = "docs\\readme.txt"
+            }.ToByteArray();
+        }
+
+        private static byte[] BuildSmb1ReadAndXRequestBaseline()
+        {
+            return new Smb1ReadAndXRequest
+            {
+                Header = BuildSmb1MutationHeader(Smb1Command.ReadAndX),
+                FileId = 0x4242,
+                FileOffset = 0x0000_0001_0000_0010UL,
+                MaxCountOfBytesToReturn = 4096,
+                MinCountOfBytesToReturn = 1,
+                TimeoutOrMaxCountHigh = 0xFFFFFFFFU,
+                Remaining = 0
+            }.ToByteArray();
+        }
+
+        private static byte[] BuildSmb1WriteAndXRequestBaseline()
+        {
+            return new Smb1WriteAndXRequest
+            {
+                Header = BuildSmb1MutationHeader(Smb1Command.WriteAndX),
+                FileId = 0x4242,
+                FileOffset = 0x0000_0002_0000_0030UL,
+                WriteMode = 0x0008,
+                Remaining = 0,
+                Data = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04 }
+            }.ToByteArray();
+        }
+
+        private static byte[] BuildSmb1LockingAndXRequestBaseline()
+        {
+            Smb1LockingAndXRequest request = new Smb1LockingAndXRequest
+            {
+                Header = BuildSmb1MutationHeader(Smb1Command.LockingAndX),
+                FileId = 0x4242,
+                LockType = Smb1LockingAndXRequest.LockTypeLargeFiles,
+                OplockLevel = 0,
+                Timeout = 5000
+            };
+            request.Locks.Add(new Smb1LockingAndXRequest.LockRange
+            {
+                ProcessId = 0x0042,
+                Offset = 0x0000_0001_0000_0010UL,
+                Length = 0x0000_0000_0000_1000UL
+            });
+            request.Unlocks.Add(new Smb1LockingAndXRequest.LockRange
+            {
+                ProcessId = 0x0042,
+                Offset = 0x0000_0002_0000_0000UL,
+                Length = 0x0000_0000_0000_2000UL
+            });
+            return request.ToByteArray();
+        }
+
+        private static byte[] BuildSmb1Transaction2RequestBaseline()
+        {
+            return new Smb1Transaction2Request
+            {
+                Header = BuildSmb1MutationHeader(Smb1Command.Transaction2),
+                SubCommand = Smb1Transaction2SubCommand.QueryPathInformation,
+                TotalParameterCount = 6,
+                TotalDataCount = 10,
+                MaxParameterCount = 0x0040,
+                MaxDataCount = 0x4000,
+                MaxSetupCount = 0,
+                Flags = 0,
+                Timeout = 0,
+                Parameters = new byte[] { 0x05, 0x01, 0x00, 0x00, 0x07, 0x01 },
+                Data = new byte[] { 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0 }
+            }.ToByteArray();
+        }
+
+        private static byte[] BuildSmb1NtTransactRequestBaseline()
+        {
+            return new Smb1NtTransactRequest
+            {
+                Header = BuildSmb1MutationHeader(Smb1Command.NtTransact),
+                MaxSetupCount = 0,
+                TotalParameterCount = 6,
+                TotalDataCount = 8,
+                MaxParameterCount = 0x0000_FFFFU,
+                MaxDataCount = 0x0010_0000U,
+                Function = 0x0004,
+                Setup = new ushort[] { 0x4242, 0x0001, 0x0040 },
+                Parameters = new byte[] { 0x10, 0x20, 0x30, 0x40, 0x50, 0x60 },
+                Data = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04 }
+            }.ToByteArray();
         }
 
         private static byte[] Hex(string value)
