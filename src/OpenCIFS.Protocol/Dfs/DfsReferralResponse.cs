@@ -1,9 +1,11 @@
 namespace OpenCIFS.Protocol
 {
     using System;
+    using System.Collections.Generic;
 
     /// <summary>
-    /// RESP_GET_DFS_REFERRAL payload.
+    /// RESP_GET_DFS_REFERRAL payload supporting bounded V2 and V3/V4 entry shapes per
+    /// MS-DFSC section 2.2.5.
     /// </summary>
     public sealed class DfsReferralResponse
     {
@@ -20,9 +22,60 @@ namespace OpenCIFS.Protocol
         public DfsReferralHeaderFlags HeaderFlags { get; set; } = DfsReferralHeaderFlags.None;
 
         /// <summary>
-        /// Returned referral entries.
+        /// Bounded V2 referral entries.
         /// </summary>
-        public DfsReferralEntryV2[] Entries { get; set; } = Array.Empty<DfsReferralEntryV2>();
+        public IList<DfsReferralEntryV2> EntriesV2
+        {
+            get
+            {
+                return _EntriesV2;
+            }
+        }
+
+        /// <summary>
+        /// Bounded V3/V4 referral entries.
+        /// </summary>
+        public IList<DfsReferralEntryV3> EntriesV3
+        {
+            get
+            {
+                return _EntriesV3;
+            }
+        }
+
+        /// <summary>
+        /// Legacy V2 entries view used by callers that only handle the V2 shape. Reading the
+        /// property returns the current <see cref="EntriesV2" /> contents as an array; assigning
+        /// replaces the V2 list while leaving <see cref="EntriesV3" /> untouched.
+        /// </summary>
+        public DfsReferralEntryV2[] Entries
+        {
+            get
+            {
+                DfsReferralEntryV2[] copy = new DfsReferralEntryV2[_EntriesV2.Count];
+
+                for (int index = 0; index < _EntriesV2.Count; index++)
+                {
+                    copy[index] = _EntriesV2[index];
+                }
+
+                return copy;
+            }
+            set
+            {
+                _EntriesV2.Clear();
+
+                if (value == null)
+                {
+                    return;
+                }
+
+                for (int index = 0; index < value.Length; index++)
+                {
+                    _EntriesV2.Add(value[index]);
+                }
+            }
+        }
 
         /// <summary>
         /// Serialize the response payload.
@@ -30,15 +83,20 @@ namespace OpenCIFS.Protocol
         /// <returns>Serialized bytes.</returns>
         public byte[] ToByteArray()
         {
-            DfsReferralEntryV2[] entries = Entries ?? Array.Empty<DfsReferralEntryV2>();
+            int totalEntries = _EntriesV2.Count + _EntriesV3.Count;
             LittleEndianWriter writer = new LittleEndianWriter();
             writer.WriteUInt16(PathConsumed);
-            writer.WriteUInt16(checked((ushort)entries.Length));
+            writer.WriteUInt16(checked((ushort)totalEntries));
             writer.WriteUInt32((uint)HeaderFlags);
 
-            for (int index = 0; index < entries.Length; index++)
+            for (int index = 0; index < _EntriesV2.Count; index++)
             {
-                writer.WriteBytes(entries[index].ToByteArray());
+                writer.WriteBytes(_EntriesV2[index].ToByteArray());
+            }
+
+            for (int index = 0; index < _EntriesV3.Count; index++)
+            {
+                writer.WriteBytes(_EntriesV3[index].ToByteArray());
             }
 
             return writer.ToArray();
@@ -60,20 +118,41 @@ namespace OpenCIFS.Protocol
             ushort pathConsumed = reader.ReadUInt16();
             ushort numberOfReferrals = reader.ReadUInt16();
             DfsReferralHeaderFlags headerFlags = (DfsReferralHeaderFlags)reader.ReadUInt32();
-            DfsReferralEntryV2[] entries = new DfsReferralEntryV2[numberOfReferrals];
+            DfsReferralResponse response = new DfsReferralResponse
+            {
+                PathConsumed = pathConsumed,
+                HeaderFlags = headerFlags
+            };
+
             int offset = HeaderLength;
 
             for (int index = 0; index < numberOfReferrals; index++)
             {
-                entries[index] = DfsReferralEntryV2.ReadFrom(buffer, offset, out offset);
+                if (offset + 2 > buffer.Length)
+                {
+                    throw new ProtocolEncodingException("The DFS referral entry header is truncated.");
+                }
+
+                ushort versionNumber = (ushort)(buffer.Span[offset] | (buffer.Span[offset + 1] << 8));
+
+                if (versionNumber == 2)
+                {
+                    response._EntriesV2.Add(DfsReferralEntryV2.ReadFrom(buffer, offset, out offset));
+                }
+                else if (versionNumber == 3 || versionNumber == 4)
+                {
+                    response._EntriesV3.Add(DfsReferralEntryV3.ReadFrom(buffer, offset, out offset));
+                }
+                else
+                {
+                    throw new ProtocolEncodingException("The DFS referral entry version is not supported by the bounded codec.");
+                }
             }
 
-            return new DfsReferralResponse
-            {
-                PathConsumed = pathConsumed,
-                HeaderFlags = headerFlags,
-                Entries = entries
-            };
+            return response;
         }
+
+        private readonly List<DfsReferralEntryV2> _EntriesV2 = new List<DfsReferralEntryV2>();
+        private readonly List<DfsReferralEntryV3> _EntriesV3 = new List<DfsReferralEntryV3>();
     }
 }

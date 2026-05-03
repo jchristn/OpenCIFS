@@ -5110,6 +5110,94 @@ namespace OpenCIFS.Core.Tests.Shared
                                 () => DfsReferralResponse.ReadFrom(new byte[] { 0x00, 0x00, 0x00 }),
                                 "The DFS referral response reader should reject truncated headers.");
                             return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Dfs",
+                        caseId: "DfsReferralEntryV3RoundTripsPathConsumerLayoutAndPreservesV4VersionAndTargetSetBoundaryFlag",
+                        displayName: "Bounded DFS referral V3 entry round-trips path-consumer layout and preserves V4 version and TargetSetBoundary flag",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] siteGuid = new byte[]
+                            {
+                                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                                0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10
+                            };
+
+                            DfsReferralResponse response = new DfsReferralResponse
+                            {
+                                PathConsumed = (ushort)("\\\\dfs.contoso.test\\share".Length * 2),
+                                HeaderFlags = DfsReferralHeaderFlags.StorageServers
+                            };
+
+                            DfsReferralEntryV3 entry = new DfsReferralEntryV3
+                            {
+                                VersionNumber = 4,
+                                IsRootTarget = true,
+                                ReferralEntryFlags = DfsReferralEntryFlags.TargetSetBoundary,
+                                TimeToLive = 600,
+                                DfsPath = "\\\\dfs.contoso.test\\share",
+                                DfsAlternatePath = "\\\\dfs.contoso.test\\share",
+                                NetworkAddress = "\\\\fileserver.contoso.test\\share",
+                                ServiceSiteGuid = siteGuid
+                            };
+                            response.EntriesV3.Add(entry);
+
+                            byte[] responseBytes = response.ToByteArray();
+                            DfsReferralResponse parsed = DfsReferralResponse.ReadFrom(responseBytes);
+                            TestAssertions.Equal(0, parsed.EntriesV2.Count, "Unexpected DFS V2 entries on a V3/V4 response.");
+                            TestAssertions.Equal(1, parsed.EntriesV3.Count, "Expected exactly one DFS V3/V4 entry.");
+                            DfsReferralEntryV3 parsedEntry = parsed.EntriesV3[0];
+                            TestAssertions.Equal((ushort)4, parsedEntry.VersionNumber, "Unexpected DFS entry VersionNumber.");
+                            TestAssertions.Equal(entry.DfsPath, parsedEntry.DfsPath, "Unexpected DFS entry DfsPath.");
+                            TestAssertions.Equal(entry.NetworkAddress, parsedEntry.NetworkAddress, "Unexpected DFS entry NetworkAddress.");
+                            TestAssertions.Equal(entry.TimeToLive, parsedEntry.TimeToLive, "Unexpected DFS entry TimeToLive.");
+                            TestAssertions.True(parsedEntry.IsRootTarget, "Unexpected DFS entry IsRootTarget.");
+                            TestAssertions.Equal(DfsReferralEntryFlags.TargetSetBoundary, parsedEntry.ReferralEntryFlags, "Unexpected DFS entry ReferralEntryFlags.");
+                            TestAssertions.SequenceEqual(siteGuid, parsedEntry.ServiceSiteGuid, "Unexpected DFS entry ServiceSiteGuid.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Core.Dfs",
+                        caseId: "DfsReferralRequestExRoundTripsRequestFileNameAndOptionalSiteNameAndRejectsTruncatedBuffers",
+                        displayName: "Bounded DFS_GET_REFERRALS_EX request round-trips RequestFileName and optional SiteName and rejects truncated buffers",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            DfsReferralRequestEx withSite = new DfsReferralRequestEx
+                            {
+                                MaxReferralLevel = 4,
+                                IncludeSiteName = true,
+                                PathConsumed = 0,
+                                RequestFileName = "\\\\dfs.contoso.test\\namespace\\path",
+                                SiteName = "Default-First-Site-Name"
+                            };
+                            byte[] withSiteBytes = withSite.ToByteArray();
+                            DfsReferralRequestEx parsedWithSite = DfsReferralRequestEx.ReadFrom(withSiteBytes);
+                            TestAssertions.Equal(withSite.MaxReferralLevel, parsedWithSite.MaxReferralLevel, "Unexpected DFS_EX MaxReferralLevel.");
+                            TestAssertions.True(parsedWithSite.IncludeSiteName, "DFS_EX should preserve IncludeSiteName flag.");
+                            TestAssertions.Equal(withSite.RequestFileName, parsedWithSite.RequestFileName, "Unexpected DFS_EX RequestFileName.");
+                            TestAssertions.Equal(withSite.SiteName, parsedWithSite.SiteName, "Unexpected DFS_EX SiteName.");
+
+                            DfsReferralRequestEx withoutSite = new DfsReferralRequestEx
+                            {
+                                MaxReferralLevel = 3,
+                                IncludeSiteName = false,
+                                PathConsumed = 8,
+                                RequestFileName = "\\\\dfs.contoso.test\\share"
+                            };
+                            byte[] withoutSiteBytes = withoutSite.ToByteArray();
+                            DfsReferralRequestEx parsedWithoutSite = DfsReferralRequestEx.ReadFrom(withoutSiteBytes);
+                            TestAssertions.Equal(false, parsedWithoutSite.IncludeSiteName, "DFS_EX should preserve IncludeSiteName=false.");
+                            TestAssertions.Equal(withoutSite.PathConsumed, parsedWithoutSite.PathConsumed, "Unexpected DFS_EX PathConsumed.");
+                            TestAssertions.Equal(string.Empty, parsedWithoutSite.SiteName, "DFS_EX SiteName should be empty when not included.");
+
+                            TestAssertions.Throws<ProtocolEncodingException>(
+                                () => DfsReferralRequestEx.ReadFrom(new byte[] { 0x04, 0x00, 0x01, 0x00 }),
+                                "DFS_EX should reject truncated buffers.");
+                            return Task.CompletedTask;
                         })
                 });
         }
