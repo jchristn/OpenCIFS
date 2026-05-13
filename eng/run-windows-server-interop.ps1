@@ -1,16 +1,65 @@
 param(
     [string]$Configuration = "Debug",
     [string]$Framework = "net8.0",
-    [Parameter(Mandatory = $true)][string]$ServerName,
-    [Parameter(Mandatory = $true)][string]$ShareName,
-    [Parameter(Mandatory = $true)][string]$UserName,
-    [Parameter(Mandatory = $true)][string]$Password,
+    [string]$ServerName = "",
+    [string]$ShareName = "",
+    [string]$UserName = "",
+    [string]$Password = "",
     [string]$Domain = "",
-    [int]$Port = 445,
+    [int]$Port = 0,
     [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302")
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-ConfiguredValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$ParameterValue,
+        [Parameter(Mandatory = $true)][string]$EnvironmentVariableName
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ParameterValue)) {
+        return $ParameterValue
+    }
+
+    return [Environment]::GetEnvironmentVariable($EnvironmentVariableName)
+}
+
+function Get-RequiredConfiguredValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$ParameterValue,
+        [Parameter(Mandatory = $true)][string]$ParameterName,
+        [Parameter(Mandatory = $true)][string]$EnvironmentVariableName
+    )
+
+    $resolvedValue = Get-ConfiguredValue -ParameterValue $ParameterValue -EnvironmentVariableName $EnvironmentVariableName
+    if ([string]::IsNullOrWhiteSpace($resolvedValue)) {
+        throw "$ParameterName is required. Supply -$ParameterName or set $EnvironmentVariableName."
+    }
+
+    return $resolvedValue
+}
+
+$ServerName = Get-RequiredConfiguredValue -ParameterValue $ServerName -ParameterName "ServerName" -EnvironmentVariableName "OPENCIFS_WINDOWS_SERVER_NAME"
+$ShareName = Get-RequiredConfiguredValue -ParameterValue $ShareName -ParameterName "ShareName" -EnvironmentVariableName "OPENCIFS_WINDOWS_SERVER_SHARE_NAME"
+$UserName = Get-RequiredConfiguredValue -ParameterValue $UserName -ParameterName "UserName" -EnvironmentVariableName "OPENCIFS_WINDOWS_SERVER_USER_NAME"
+$Password = Get-RequiredConfiguredValue -ParameterValue $Password -ParameterName "Password" -EnvironmentVariableName "OPENCIFS_WINDOWS_SERVER_PASSWORD"
+$Domain = Get-ConfiguredValue -ParameterValue $Domain -EnvironmentVariableName "OPENCIFS_WINDOWS_SERVER_DOMAIN"
+
+if ($Port -le 0) {
+    $environmentPort = [Environment]::GetEnvironmentVariable("OPENCIFS_WINDOWS_SERVER_PORT")
+    if ([string]::IsNullOrWhiteSpace($environmentPort)) {
+        $Port = 445
+    }
+    else {
+        $parsedPort = 0
+        if (-not [int]::TryParse($environmentPort, [ref]$parsedPort) -or $parsedPort -le 0) {
+            throw "OPENCIFS_WINDOWS_SERVER_PORT must be a positive integer when supplied."
+        }
+
+        $Port = $parsedPort
+    }
+}
 
 $repositoryRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $artifactRoot = Join-Path $repositoryRoot "artifacts\windows-server-interop"

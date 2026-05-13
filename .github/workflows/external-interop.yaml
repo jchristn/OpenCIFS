@@ -26,6 +26,13 @@ jobs:
       - Windows
       - external-interop
     timeout-minutes: 180
+    env:
+      OPENCIFS_WINDOWS_SERVER_NAME: ${{ vars.OPENCIFS_WINDOWS_SERVER_NAME }}
+      OPENCIFS_WINDOWS_SERVER_SHARE_NAME: ${{ vars.OPENCIFS_WINDOWS_SERVER_SHARE_NAME }}
+      OPENCIFS_WINDOWS_SERVER_USER_NAME: ${{ vars.OPENCIFS_WINDOWS_SERVER_USER_NAME }}
+      OPENCIFS_WINDOWS_SERVER_DOMAIN: ${{ vars.OPENCIFS_WINDOWS_SERVER_DOMAIN }}
+      OPENCIFS_WINDOWS_SERVER_PORT: ${{ vars.OPENCIFS_WINDOWS_SERVER_PORT }}
+      OPENCIFS_WINDOWS_SERVER_PASSWORD: ${{ secrets.OPENCIFS_WINDOWS_SERVER_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -70,4 +77,5 @@ jobs:
             artifacts/real-client-interop/**
             artifacts/samba-interop/**
             artifacts/windows-client-interop/**
+            artifacts/windows-server-interop/**
           if-no-files-found: warn
