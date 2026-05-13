@@ -409,6 +409,14 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-managed-interop.ps1
 
 That script runs `OpenCIFS.TestClient` against `OpenCIFS.TestServer` as separate processes across SMB 2.0.2, SMB 2.1, and SMB 3.0.2, then records dialect-specific logs and `artifacts/managed-interop/managed-interop.json`.
 
+To exercise `OpenCIFS.Client` against a real Windows SMB server, provision a writable Windows share and credentials first, then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\eng\run-windows-server-interop.ps1 -ServerName fileserver -ShareName share -UserName user -Password password -Domain DOMAIN
+```
+
+That script writes `artifacts/windows-server-interop/windows-server-interop.json`. It is not part of the default release gate until a stable Windows server environment is available.
+
 ## Sample Utility
 
 Write the default sample configuration:

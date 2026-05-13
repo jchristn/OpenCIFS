@@ -191,7 +191,8 @@ Rules:
 - [x] Add a bounded real-client smoke workflow for `Sample.OpenCifsServer` using a non-loopback SMB client and record the evidence in `docs/interop-matrix.md`.
 - [x] Stand up a Samba test environment that can run in CI or a reproducible lab script.
 - [x] Stand up a Windows client test environment for mounting and exercising `Sample.OpenCifsServer`.
-- [ ] Stand up a Windows server test environment for validating `OpenCIFS.Client`.
+- [-] Stand up a Windows server test environment for validating `OpenCIFS.Client`.
+  Bounded progress: `eng/run-windows-server-interop.ps1` now provides a harness that targets a pre-provisioned Windows SMB share with `OpenCIFS.TestClient`, pins SMB 2.0.2, SMB 2.1, and SMB 3.0.2 lanes, and records `artifacts/windows-server-interop/windows-server-interop.json`. This still needs a provisioned Windows SMB server target and checked-in pass evidence before the matrix can claim Windows-server interoperability.
 - [x] Capture exact OS and Samba versions in `docs/interop-matrix.md`.
 - [x] Automate smoke interop runs for every merged dialect milestone.
 - [-] Automate deeper nightly interop runs for durable reconnect, encryption, and long I/O scenarios.
@@ -359,7 +360,7 @@ Exit criteria:
 - [x] `Sample.OpenCifsServer` can be mounted and exercised from Windows and Samba using the documented defaults.
   `docs/interop-matrix.md` records 2026-04-30 pass evidence in both directions: native Windows mapped-drive smoke through `eng/run-windows-client-interop.ps1` for SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2, plus Samba client smoke through `eng/run-samba-interop.ps1` against the same documented defaults (port `4450`, signing required, NTLMv2 only, anonymous and SMB1 disabled, SMB 3.x encryption required).
 - [-] `OpenCIFS.Client` can exercise equivalent flows against Samba and Windows servers.
-  Bounded progress: `OpenCIFS.Client` to Samba server has 2026-04-30 pass evidence in `docs/interop-matrix.md` across SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2. `OpenCIFS.Client` to Windows server still depends on Workstream C standing up a Windows server test environment.
+  Bounded progress: `OpenCIFS.Client` to Samba server has 2026-04-30 pass evidence in `docs/interop-matrix.md` across SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2. `eng/run-windows-server-interop.ps1` now provides the Windows-server harness, but `OpenCIFS.Client` to Windows server still needs a provisioned Windows SMB server target and checked-in pass evidence.
 
 ## Milestone 4: SMB 2.1 Lockstep Enhancements
 

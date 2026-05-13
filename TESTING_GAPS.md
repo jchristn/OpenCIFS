@@ -10,12 +10,13 @@ Current state: partially covered.
 
 What exists:
 - `eng/run-samba-interop.ps1` runs `OpenCIFS.Client` against a Dockerized Samba server.
+- `eng/run-windows-server-interop.ps1` can run `OpenCIFS.TestClient` against a pre-provisioned live Windows SMB share and write `artifacts/windows-server-interop/windows-server-interop.json`.
 - `docs/interop-matrix.md` records passing evidence for `OpenCIFS.Client -> Samba server` on SMB 2.0.2, SMB 2.1, and SMB 3.0.2.
 - The current Docker peer is Samba `smbd` 4.17.12 on Debian bookworm.
 
 Gaps:
 - Only one live Docker server implementation is covered: Samba.
-- No Windows server coverage exists for `OpenCIFS.Client`; `docs/interop-matrix.md` marks `OpenCIFS.Client | Windows server | Unassigned`.
+- No checked-in passing Windows server evidence exists yet for `OpenCIFS.Client`; `docs/interop-matrix.md` marks the Windows server row as harness-ready but not run.
 - No additional server products or versions are covered.
 - Coverage is bounded smoke/deeper-smoke, not a broad command-by-command interoperability matrix.
 - External durable-handle v2 coverage is still backlog.
@@ -107,11 +108,12 @@ Impact:
 
 ### Windows server interoperability is still missing
 
-- `docs/interop-matrix.md` explicitly marks `OpenCIFS.Client | Windows server | Unassigned`.
+- `eng/run-windows-server-interop.ps1` now provides the harness for `OpenCIFS.Client -> Windows server`.
+- `docs/interop-matrix.md` marks the row as harness-ready but not run.
 - `docs/coverage-matrix.md` also calls out `OpenCIFS.Client` to Windows server coverage as backlog.
 
 Impact:
-- There is no evidence that the managed client interoperates with a live Windows SMB server.
+- There is still no checked-in passing evidence that the managed client interoperates with a live Windows SMB server.
 
 ### Peer diversity is limited
 
@@ -160,7 +162,7 @@ Keep this section as the execution register for the gaps above. When an item lan
 
 | ID | priority | status | action | done when | primary files or commands to update |
 | --- | --- | --- | --- | --- | --- |
-| TG-001 | P0 | open | Add `OpenCIFS.Client -> Windows server` interop coverage. Build a harness that provisions or targets a live Windows SMB share, runs the managed client against it for SMB 2.0.2, SMB 2.1, and SMB 3.0.2, and writes a JSON artifact with environment details, dialect IDs, pass/fail state, and exercised operations. | `docs/interop-matrix.md` no longer has `OpenCIFS.Client | Windows server | Unassigned`; `docs/coverage-matrix.md` records Windows-server verification dates for the managed client path; the harness can be run from `eng/run-integration-gates.ps1` or `eng/run-release-gates.ps1`. | Add a script under `eng/`, update `docs/interop-matrix.md`, update `docs/coverage-matrix.md`, consider adding the artifact to `eng/validate-release-artifacts.ps1`. |
+| TG-001 | P0 | in_progress | Add `OpenCIFS.Client -> Windows server` interop coverage. `eng/run-windows-server-interop.ps1` now targets a pre-provisioned live Windows SMB share, runs the managed test client for SMB 2.0.2, SMB 2.1, and SMB 3.0.2, and writes JSON artifacts with environment details, dialect IDs, pass/fail state, and exercised operations. | Complete when the harness has been run against a live Windows SMB server, `docs/interop-matrix.md` records pass evidence and a verification date, `docs/coverage-matrix.md` records Windows-server verification for the managed client path, and release validation includes the artifact if this becomes release-gated. | Added `eng/run-windows-server-interop.ps1` and updated `docs/interop-matrix.md`; still needs a provisioned Windows SMB target and passing evidence refresh. |
 | TG-002 | P0 | completed | Decide the SMB 3.1.1 preview interop policy and align scripts, docs, and gates. SMB 3.1.1 is preview-only and non-release-gated; release interop scripts default to SMB 2.0.2, SMB 2.1, and SMB 3.0.2, while nightly explicitly opts into `-IncludeSmb311Preview`. | `eng/run-real-client-interop.ps1`, `eng/run-samba-interop.ps1`, `eng/run-windows-client-interop.ps1`, `eng/run-nightly-interop.ps1`, and `eng/validate-release-artifacts.ps1` agree that `smb311` is preview evidence only. | Completed in `eng/run-real-client-interop.ps1`, `eng/run-samba-interop.ps1`, `eng/run-windows-client-interop.ps1`, `eng/run-nightly-interop.ps1`, and this register. |
 | TG-003 | P0 | in_progress | Put external interop into recurring CI. `.github/workflows/external-interop.yaml` now provides scheduled and manual execution on a self-hosted Windows runner labeled `external-interop`, runs `eng/run-integration-gates.ps1`, optionally runs SMB 3.1.1 preview lanes, and uploads interop artifacts. | Complete when the repository has a provisioned runner with Docker, Python, Windows SMB client support, and scheduled runs producing current artifacts that can refresh the matrix dates. | Added `.github/workflows/external-interop.yaml`; still needs runner provisioning and first successful scheduled evidence refresh. |
 | TG-004 | P1 | open | Add Linux kernel CIFS client coverage against `Sample.OpenCifsServer`. Use a Docker or privileged Linux runner lane with `cifs-utils`/`mount.cifs`, mount the sample share, and exercise create, read, write, metadata, rename, delete, lock conflict, and dialect pinning where supported. | `docs/interop-matrix.md` has a `Sample.OpenCifsServer | Linux kernel CIFS client` row with pass evidence and a current date; the artifact records kernel, cifs-utils, mount options, dialect, and operation results. | Add Docker or workflow support under `eng/docker/` and `eng/`; update `docs/interop-matrix.md` and `docs/coverage-matrix.md`; consider `eng/validate-release-artifacts.ps1` once stable. |

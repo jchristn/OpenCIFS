@@ -358,6 +358,53 @@ if (Test-Path $managedInteropPath) {
     }
 }
 
+$windowsServerInteropPath = Join-Path $repositoryRoot "artifacts\windows-server-interop\windows-server-interop.json"
+if (Test-Path $windowsServerInteropPath) {
+    try {
+        $windowsServerInteropRuns = Get-ArtifactRuns -Path $windowsServerInteropPath
+    }
+    catch {
+        $errors.Add("The windows-server-interop artifact could not be parsed as dialect-matrix JSON: $windowsServerInteropPath.")
+        $windowsServerInteropRuns = @()
+    }
+
+    $windowsServerDialectIds = New-Object System.Collections.Generic.List[string]
+
+    foreach ($run in $windowsServerInteropRuns) {
+        try {
+            $windowsServerDialectId = Get-ArtifactRunDialectId -Run $run
+            $windowsServerDialectIds.Add($windowsServerDialectId)
+        }
+        catch {
+            $errors.Add("The windows-server-interop artifact contains a run without a valid dialect identifier.")
+            continue
+        }
+
+        $windowsServerFailure = Get-ArtifactRunFailure -Run $run
+        if ($null -ne $windowsServerFailure) {
+            $errors.Add("The windows-server-interop artifact recorded a failed run for dialect '$windowsServerDialectId': $windowsServerFailure")
+        }
+
+        foreach ($pathField in @("client_output_path", "client_error_path", "download_path")) {
+            $value = [string]$run.$pathField
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                $errors.Add("The windows-server-interop artifact run '$windowsServerDialectId' is missing '$pathField'.")
+                continue
+            }
+
+            if (-not (Test-Path $value)) {
+                $errors.Add("The windows-server-interop artifact run '$windowsServerDialectId' references a missing path: $value.")
+            }
+        }
+    }
+
+    foreach ($requiredDialect in @("smb2002", "smb21", "smb302")) {
+        if ($windowsServerDialectIds -notcontains $requiredDialect) {
+            $errors.Add("The windows-server-interop artifact is missing the required dialect run '$requiredDialect'.")
+        }
+    }
+}
+
 $soakSmokePath = Join-Path $repositoryRoot "artifacts\soak-smoke\soak-smoke.json"
 if (Test-Path $soakSmokePath) {
     try {
