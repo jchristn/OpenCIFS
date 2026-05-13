@@ -405,6 +405,53 @@ if (Test-Path $windowsServerInteropPath) {
     }
 }
 
+$linuxCifsInteropPath = Join-Path $repositoryRoot "artifacts\linux-cifs-interop\linux-cifs-interop.json"
+if (Test-Path $linuxCifsInteropPath) {
+    try {
+        $linuxCifsInteropRuns = Get-ArtifactRuns -Path $linuxCifsInteropPath
+    }
+    catch {
+        $errors.Add("The linux-cifs-interop artifact could not be parsed as dialect-matrix JSON: $linuxCifsInteropPath.")
+        $linuxCifsInteropRuns = @()
+    }
+
+    $linuxCifsDialectIds = New-Object System.Collections.Generic.List[string]
+
+    foreach ($run in $linuxCifsInteropRuns) {
+        try {
+            $linuxCifsDialectId = Get-ArtifactRunDialectId -Run $run
+            $linuxCifsDialectIds.Add($linuxCifsDialectId)
+        }
+        catch {
+            $errors.Add("The linux-cifs-interop artifact contains a run without a valid dialect identifier.")
+            continue
+        }
+
+        $linuxCifsFailure = Get-ArtifactRunFailure -Run $run
+        if ($null -ne $linuxCifsFailure) {
+            $errors.Add("The linux-cifs-interop artifact recorded a failed run for dialect '$linuxCifsDialectId': $linuxCifsFailure")
+        }
+
+        foreach ($pathField in @("client_log_path", "server_config_path", "server_log_path", "server_error_path")) {
+            $value = [string]$run.$pathField
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                $errors.Add("The linux-cifs-interop artifact run '$linuxCifsDialectId' is missing '$pathField'.")
+                continue
+            }
+
+            if (-not (Test-Path $value)) {
+                $errors.Add("The linux-cifs-interop artifact run '$linuxCifsDialectId' references a missing path: $value.")
+            }
+        }
+    }
+
+    foreach ($requiredDialect in @("smb2002", "smb21", "smb302")) {
+        if ($linuxCifsDialectIds -notcontains $requiredDialect) {
+            $errors.Add("The linux-cifs-interop artifact is missing the required dialect run '$requiredDialect'.")
+        }
+    }
+}
+
 $soakSmokePath = Join-Path $repositoryRoot "artifacts\soak-smoke\soak-smoke.json"
 if (Test-Path $soakSmokePath) {
     try {

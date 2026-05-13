@@ -495,6 +495,14 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-samba-peer-matrix.ps1
 
 That wrapper currently runs the Bookworm and Trixie Debian-based Samba image definitions and preserves each peer's evidence under `artifacts/samba-peer-matrix`.
 
+To exercise `Sample.OpenCifsServer` through the Linux kernel CIFS client, run the opt-in privileged Docker harness on a host that supports CIFS mounts:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\eng\run-linux-cifs-interop.ps1
+```
+
+That script builds a small Debian `cifs-utils` image, starts `Sample.OpenCifsServer`, mounts the share with `mount.cifs` from a privileged container for SMB 2.0.2, SMB 2.1, and SMB 3.0.2, and writes evidence to `artifacts/linux-cifs-interop`.
+
 Run the bounded native Windows mapped-drive smoke against the sample host:
 
 ```powershell

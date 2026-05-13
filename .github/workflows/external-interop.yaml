@@ -65,6 +65,7 @@ jobs:
           name: external-interop-artifacts
           path: |
             artifacts/managed-interop/**
+            artifacts/linux-cifs-interop/**
             artifacts/published-sample-smoke/**
             artifacts/real-client-interop/**
             artifacts/samba-interop/**
