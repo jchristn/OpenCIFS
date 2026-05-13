@@ -1,0 +1,72 @@
+name: External Interop
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_smb311_preview:
+        description: Include SMB 3.1.1 preview lanes in the external interop scripts.
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  schedule:
+    - cron: "23 9 * * *"
+
+concurrency:
+  group: external-interop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  external-interop:
+    name: External Interop Gates
+    runs-on:
+      - self-hosted
+      - Windows
+      - external-interop
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore src/OpenCIFS.sln
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build src/OpenCIFS.sln --configuration Release --no-restore
+
+      - name: Run Integration Gates
+        shell: pwsh
+        run: ./eng/run-integration-gates.ps1 -Configuration Release -Framework net8.0
+
+      - name: Run SMB 3.1.1 Preview External Interop
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_smb311_preview == 'true' }}
+        shell: pwsh
+        run: |
+          ./eng/run-real-client-interop.ps1 -Configuration Release -Framework net8.0 -IncludeSmb311Preview
+          ./eng/run-samba-interop.ps1 -Configuration Release -Framework net8.0 -IncludeSmb311Preview
+          ./eng/run-windows-client-interop.ps1 -Configuration Release -Framework net8.0 -IncludeSmb311Preview
+
+      - name: Upload Interop Artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-interop-artifacts
+          path: |
+            artifacts/managed-interop/**
+            artifacts/published-sample-smoke/**
+            artifacts/real-client-interop/**
+            artifacts/samba-interop/**
+            artifacts/windows-client-interop/**
+          if-no-files-found: warn

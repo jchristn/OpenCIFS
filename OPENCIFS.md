@@ -200,7 +200,7 @@ Rules:
 ### Workstream D: Documentation And Release Discipline
 
 - [x] Keep `README.md` aligned with actual implemented capabilities only.
-  The current README correctly describes the verified managed dialect surface (SMB 2.0.2 through bounded SMB 3.0.2) and explicitly calls out SMB 3.1.1 and SMB1/CIFS as backlog. Bounded DFS is not yet README-claimed because external DFS interop has not been verified.
+  The current README correctly describes the verified managed dialect surface (SMB 2.0.2 through bounded SMB 3.0.2), the SMB 3.1.1 opt-in preview, and the SMB1/CIFS policy that codec/bootstrap work exists while real SMB1 peer interoperability is outside the current release-gated claim scope. Bounded DFS is not yet README-claimed because external DFS interop has not been verified.
 - [x] Update `CHANGELOG.md` per milestone.
   `CHANGELOG.md` `Unreleased` now records the bounded DFS slice plus the bounded exception-taxonomy and SMB 3.0 / 3.0.2 opt-in slices. The duplicate `# Unreleased` header was removed.
 - [x] Keep `docs/coverage-matrix.md` current in the same PR as the code change.
@@ -593,6 +593,7 @@ These items must remain explicitly non-claimed until they are fully implemented 
 - SMB 3.1.1 compression
 - SMB over QUIC transport
 - RDMA transform capabilities
+- real SMB1/CIFS peer interoperability beyond codec/bootstrap coverage
 - Kerberos FAST unless fully implemented
 
 If any of these later move into scope, add rows to the coverage matrix first, then add implementation tasks, then advertise them only after tests are green.
