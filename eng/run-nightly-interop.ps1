@@ -213,6 +213,7 @@ for ($iteration = 1; $iteration -le $RealClientIterations; $iteration++) {
     Invoke-ChildPowerShellScript -ScriptPath $realClientScriptPath -Arguments @(
         "-Configuration", $Configuration,
         "-Framework", $Framework,
+        "-IncludeSmb311Preview",
         "-LargePayloadLength", $LargePayloadLength.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     )
 
@@ -236,6 +237,7 @@ for ($iteration = 1; $iteration -le $SambaIterations; $iteration++) {
     Invoke-ChildPowerShellScript -ScriptPath $sambaScriptPath -Arguments @(
         "-Configuration", $Configuration,
         "-Framework", $Framework,
+        "-IncludeSmb311Preview",
         "-LargePayloadLength", $LargePayloadLength.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     )
 
@@ -266,6 +268,7 @@ for ($iteration = 1; $iteration -le $WindowsIterations; $iteration++) {
     Invoke-ChildPowerShellScript -ScriptPath $windowsScriptPath -Arguments @(
         "-Configuration", $Configuration,
         "-Framework", $Framework,
+        "-IncludeSmb311Preview",
         "-LargePayloadLength", $LargePayloadLength.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     )
 

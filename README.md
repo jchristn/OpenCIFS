@@ -401,6 +401,14 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-test-console-smoke.ps1
 
 That script starts `OpenCIFS.TestServer`, drives `OpenCIFS.TestClient` through a real share-browse or share-info or named-pipe transceive or connect or open-share or create-directory or write or enumerate or metadata or rename or download or delete flow, and records the resulting console logs and round-trip artifact in `artifacts/test-console-smoke`.
 
+For the release-style same-build managed interop matrix, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\eng\run-managed-interop.ps1
+```
+
+That script runs `OpenCIFS.TestClient` against `OpenCIFS.TestServer` as separate processes across SMB 2.0.2, SMB 2.1, and SMB 3.0.2, then records dialect-specific logs and `artifacts/managed-interop/managed-interop.json`.
+
 ## Sample Utility
 
 Write the default sample configuration:

@@ -3,11 +3,16 @@ param(
     [string]$Framework = "net8.0",
     [int]$Port = 0,
     [string]$DriveLetter = "Z:",
-    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302", "Smb311"),
+    [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302"),
+    [switch]$IncludeSmb311Preview,
     [int]$LargePayloadLength = 200000
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($IncludeSmb311Preview -and $Dialects -notcontains "Smb311") {
+    $Dialects += "Smb311"
+}
 
 if ($LargePayloadLength -lt 65536) {
     throw "LargePayloadLength must be at least 65536 bytes so the deeper Windows interop path exercises bounded large-I/O behavior."

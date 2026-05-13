@@ -188,6 +188,7 @@ $requiredArtifactPaths = @(
     "artifacts\package-smoke\package-smoke.json",
     "artifacts\readme-smoke\readme-smoke.json",
     "artifacts\test-console-smoke\test-console-smoke.json",
+    "artifacts\managed-interop\managed-interop.json",
     "artifacts\published-sample-smoke\published-sample-smoke.json",
     "artifacts\soak-smoke\soak-smoke.json",
     "artifacts\real-client-interop\real-client-smoke.json",
@@ -306,6 +307,53 @@ if (Test-Path $testConsoleSmokePath) {
 
         if ([string]$testConsoleSmoke.DownloadedText -ne [string]$testConsoleSmoke.ExpectedText) {
             $errors.Add("The test-console-smoke artifact reports a round-trip payload mismatch.")
+        }
+    }
+}
+
+$managedInteropPath = Join-Path $repositoryRoot "artifacts\managed-interop\managed-interop.json"
+if (Test-Path $managedInteropPath) {
+    try {
+        $managedInteropRuns = Get-ArtifactRuns -Path $managedInteropPath
+    }
+    catch {
+        $errors.Add("The managed-interop artifact could not be parsed as dialect-matrix JSON: $managedInteropPath.")
+        $managedInteropRuns = @()
+    }
+
+    $managedDialectIds = New-Object System.Collections.Generic.List[string]
+
+    foreach ($run in $managedInteropRuns) {
+        try {
+            $managedDialectId = Get-ArtifactRunDialectId -Run $run
+            $managedDialectIds.Add($managedDialectId)
+        }
+        catch {
+            $errors.Add("The managed-interop artifact contains a run without a valid dialect identifier.")
+            continue
+        }
+
+        $managedFailure = Get-ArtifactRunFailure -Run $run
+        if ($null -ne $managedFailure) {
+            $errors.Add("The managed-interop artifact recorded a failed run for dialect '$managedDialectId': $managedFailure")
+        }
+
+        foreach ($pathField in @("server_output_path", "server_error_path", "client_output_path", "client_error_path", "download_path")) {
+            $value = [string]$run.$pathField
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                $errors.Add("The managed-interop artifact run '$managedDialectId' is missing '$pathField'.")
+                continue
+            }
+
+            if (-not (Test-Path $value)) {
+                $errors.Add("The managed-interop artifact run '$managedDialectId' references a missing path: $value.")
+            }
+        }
+    }
+
+    foreach ($requiredDialect in @("smb2002", "smb21", "smb302")) {
+        if ($managedDialectIds -notcontains $requiredDialect) {
+            $errors.Add("The managed-interop artifact is missing the required dialect run '$requiredDialect'.")
         }
     }
 }
