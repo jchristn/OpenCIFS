@@ -3,7 +3,11 @@ param(
     [string]$Framework = "net8.0",
     [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302"),
     [switch]$IncludeSmb311Preview,
-    [int]$LargePayloadLength = 200000
+    [int]$LargePayloadLength = 200000,
+    [string]$SambaImageName = "opencifs-samba-interop:bookworm",
+    [string]$DockerContext = "",
+    [string]$Dockerfile = "",
+    [string]$PeerLabel = "debian-bookworm"
 )
 
 $ErrorActionPreference = "Stop"
@@ -121,8 +125,15 @@ $repositoryRoot = Join-Path $PSScriptRoot ".."
 $artifactRoot = Join-Path $repositoryRoot "artifacts\samba-interop"
 $sambaShareRoot = Join-Path $artifactRoot "samba-server-share"
 $sampleShareRoot = Join-Path $artifactRoot "sample-server-share"
-$dockerContext = Join-Path $PSScriptRoot "docker\samba-interop"
-$imageName = "opencifs-samba-interop:bookworm"
+if ([string]::IsNullOrWhiteSpace($DockerContext)) {
+    $DockerContext = Join-Path $PSScriptRoot "docker\samba-interop"
+}
+
+if ([string]::IsNullOrWhiteSpace($Dockerfile)) {
+    $Dockerfile = Join-Path $DockerContext "Dockerfile"
+}
+
+$imageName = $SambaImageName
 $sambaServerPort = Get-FreeTcpPort
 $sampleServerPort = Get-FreeTcpPort
 
@@ -157,14 +168,19 @@ Set-Content -Path $sampleServerLogPath -Value ""
 Set-Content -Path $sampleServerErrorPath -Value ""
 Set-Content -Path $sambaClientLogPath -Value ""
 
-& docker build -t $imageName $dockerContext
+& docker build -f $Dockerfile -t $imageName $DockerContext
 Assert-LastExitCode "Failed to build the Samba interop image."
 
 $smbclientVersion = (& docker run --rm $imageName smbclient --version).Trim()
 Assert-LastExitCode "Failed to read the Samba client version from the interop image."
 $smbdVersion = (& docker run --rm $imageName smbd -V).Trim()
 Assert-LastExitCode "Failed to read the Samba server version from the interop image."
-Set-Content -Path $sambaVersionsPath -Value ("smbclient=" + $smbclientVersion + [Environment]::NewLine + "smbd=" + $smbdVersion)
+Set-Content -Path $sambaVersionsPath -Value (
+    "peer_label=" + $PeerLabel + [Environment]::NewLine +
+    "image=" + $imageName + [Environment]::NewLine +
+    "dockerfile=" + (Resolve-Path $Dockerfile).Path + [Environment]::NewLine +
+    "smbclient=" + $smbclientVersion + [Environment]::NewLine +
+    "smbd=" + $smbdVersion)
 
 $resolvedSambaShareRoot = (Resolve-Path $sambaShareRoot).Path
 $openCifsClientResults = New-Object System.Collections.Generic.List[object]

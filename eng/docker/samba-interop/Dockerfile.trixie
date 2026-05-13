@@ -1,0 +1,9 @@
+FROM debian:trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends samba smbclient \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY start-samba-server.sh /usr/local/bin/start-samba-server.sh
+
+RUN chmod +x /usr/local/bin/start-samba-server.sh

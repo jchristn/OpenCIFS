@@ -487,6 +487,14 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-samba-interop.ps1
 
 That script writes evidence to `artifacts/samba-interop`, including combined per-dialect `OpenCIFS.Client` to Samba and Samba client to `Sample.OpenCifsServer` result JSON, the combined Samba client log, the printed effective sample-server configuration, and the exact `smbclient` and `smbd` versions used for the run. The harness now requires signing on both the OpenCIFS sample-host path and the Samba server path and reruns both directions under SMB 2.0.2 and SMB 2.1. The `OpenCIFS.Client` to Samba path verifies nested-directory create, a `200000`-byte large-file write or read round trip, write or flush or read, `FILE_STANDARD_INFORMATION` query, bounded last-write mutation, bounded EOF truncation, directory enumeration before and after directory rename, non-empty directory delete rejection, deleted-path reopen rejection, file and directory delete, and bounded lock-conflict rejection. The Samba client to `Sample.OpenCifsServer` path verifies NTLMv2 session setup, `FSCTL_VALIDATE_NEGOTIATE_INFO`, nested-directory create, `put` or `get` of a `200000`-byte large file, rename, directory listing, non-empty directory delete rejection, and cleanup.
 
+To run the same Samba interop flow against multiple checked-in Samba peer image definitions, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\eng\run-samba-peer-matrix.ps1
+```
+
+That wrapper currently runs the Bookworm and Trixie Debian-based Samba image definitions and preserves each peer's evidence under `artifacts/samba-peer-matrix`.
+
 Run the bounded native Windows mapped-drive smoke against the sample host:
 
 ```powershell
