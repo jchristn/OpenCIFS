@@ -91,6 +91,42 @@ function Invoke-OptionalCrossVersionManagedInterop {
     Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-cross-version-managed-interop.ps1") -Arguments $crossVersionArguments
 }
 
+function Invoke-OptionalDfsInterop {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $requiredEnvironmentVariables = @(
+        "OPENCIFS_DFS_SERVER_NAME",
+        "OPENCIFS_DFS_SHARE_NAME",
+        "OPENCIFS_DFS_NAMESPACE_PATH",
+        "OPENCIFS_DFS_USER_NAME",
+        "OPENCIFS_DFS_PASSWORD"
+    )
+
+    $configuredVariables = @(
+        $requiredEnvironmentVariables |
+            Where-Object { -not [string]::IsNullOrWhiteSpace((Get-EnvironmentVariableValue -Name $_)) }
+    )
+
+    if ($configuredVariables.Count -eq 0) {
+        Write-Host "Skipping optional DFS interop because OPENCIFS_DFS_* is not configured."
+        return
+    }
+
+    $missingVariables = @(
+        $requiredEnvironmentVariables |
+            Where-Object { [string]::IsNullOrWhiteSpace((Get-EnvironmentVariableValue -Name $_)) }
+    )
+
+    if ($missingVariables.Count -ne 0) {
+        throw "Optional DFS interop is partially configured. Set or clear all of: $($requiredEnvironmentVariables -join ', '). Missing: $($missingVariables -join ', ')."
+    }
+
+    Write-Host "Running optional DFS interop against the configured external DFS namespace."
+    Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-dfs-interop.ps1") -Arguments $Arguments
+}
+
 function Invoke-OptionalLinuxCifsInterop {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments
@@ -162,6 +198,7 @@ Invoke-OptionalCrossVersionManagedInterop -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-published-sample-smoke.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-real-client-interop.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-samba-interop.ps1") -Arguments $commonArguments
+Invoke-OptionalDfsInterop -Arguments $commonArguments
 Invoke-OptionalLinuxCifsInterop -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-windows-client-interop.ps1") -Arguments $commonArguments
 Invoke-OptionalWindowsServerInterop -Arguments $commonArguments

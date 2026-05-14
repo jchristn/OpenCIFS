@@ -32,6 +32,14 @@ jobs:
       OPENCIFS_PREVIOUS_CLIENT_PACKAGE_VERSION: ${{ vars.OPENCIFS_PREVIOUS_CLIENT_PACKAGE_VERSION }}
       OPENCIFS_PREVIOUS_SERVER_PACKAGE_VERSION: ${{ vars.OPENCIFS_PREVIOUS_SERVER_PACKAGE_VERSION }}
       OPENCIFS_CROSS_VERSION_PACKAGE_SOURCE: ${{ vars.OPENCIFS_CROSS_VERSION_PACKAGE_SOURCE }}
+      OPENCIFS_DFS_SERVER_NAME: ${{ vars.OPENCIFS_DFS_SERVER_NAME }}
+      OPENCIFS_DFS_SHARE_NAME: ${{ vars.OPENCIFS_DFS_SHARE_NAME }}
+      OPENCIFS_DFS_NAMESPACE_PATH: ${{ vars.OPENCIFS_DFS_NAMESPACE_PATH }}
+      OPENCIFS_DFS_USER_NAME: ${{ vars.OPENCIFS_DFS_USER_NAME }}
+      OPENCIFS_DFS_DOMAIN: ${{ vars.OPENCIFS_DFS_DOMAIN }}
+      OPENCIFS_DFS_PORT: ${{ vars.OPENCIFS_DFS_PORT }}
+      OPENCIFS_DFS_PEER_LABEL: ${{ vars.OPENCIFS_DFS_PEER_LABEL }}
+      OPENCIFS_DFS_PASSWORD: ${{ secrets.OPENCIFS_DFS_PASSWORD }}
       OPENCIFS_ENABLE_LINUX_CIFS_INTEROP: ${{ vars.OPENCIFS_ENABLE_LINUX_CIFS_INTEROP }}
       OPENCIFS_LINUX_CIFS_IMAGE_NAME: ${{ vars.OPENCIFS_LINUX_CIFS_IMAGE_NAME }}
       OPENCIFS_WINDOWS_SERVER_NAME: ${{ vars.OPENCIFS_WINDOWS_SERVER_NAME }}
@@ -79,6 +87,7 @@ jobs:
           name: external-interop-artifacts
           path: |
             artifacts/cross-version-managed-interop/**
+            artifacts/dfs-interop/**
             artifacts/managed-interop/**
             artifacts/linux-cifs-interop/**
             artifacts/published-sample-smoke/**
