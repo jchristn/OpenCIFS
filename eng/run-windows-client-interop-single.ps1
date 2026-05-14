@@ -744,6 +744,41 @@ catch {
 }
 finally {
     $shareDirectoryPath = Join-Path $shareRoot "native-dir"
+    $advancedSmb3 = [pscustomobject]@{
+        dialect_is_smb3 = $requirePrivacy
+        encryption_required = $requirePrivacy
+        secure_negotiate_validation_expected = $requirePrivacy
+        durable_handle_v2 = [pscustomobject]@{
+            attempted = $false
+            outcome = "skipped"
+            skip_reason = if ($requirePrivacy) {
+                "The native Windows mapped-drive harness does not preserve a durable reconnect token through the redirector."
+            }
+            else {
+                "Durable-handle v2 verification only applies to SMB 3.x dialect lanes."
+            }
+        }
+        oplock = [pscustomobject]@{
+            attempted = $false
+            outcome = "skipped"
+            skip_reason = if ($requirePrivacy) {
+                "The mapped-drive harness does not surface SMB oplock-break notifications through filesystem APIs."
+            }
+            else {
+                "Advanced SMB 3.x oplock reporting only applies to SMB 3.x dialect lanes."
+            }
+        }
+        lease = [pscustomobject]@{
+            attempted = $false
+            outcome = "skipped"
+            skip_reason = if ($requirePrivacy) {
+                "The mapped-drive harness does not surface SMB lease-break notifications through filesystem APIs."
+            }
+            else {
+                "Advanced SMB 3.x lease reporting only applies to SMB 3.x dialect lanes."
+            }
+        }
+    }
     try {
         [pscustomobject]@{
             dialect = $dialectLabel
@@ -754,6 +789,7 @@ finally {
             drive_letter = $normalizedDriveLetter
             large_payload_length = $largePayloadLength
             large_payload_hash = $largePayloadHash
+            advanced_smb3 = $advancedSmb3
             mapping = $mappingSnapshot
             environment = $environment
                         steps = $stepResults

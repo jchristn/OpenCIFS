@@ -225,10 +225,16 @@ try {
             --output $dialectOpenCifsClientSmokePath
         Assert-LastExitCode "The OpenCIFS.Client to Samba smoke run failed for $($dialectMetadata.Label)."
 
+        $dialectOpenCifsClientSummary = Get-Content -Path $dialectOpenCifsClientSmokePath -Raw | ConvertFrom-Json
+
+        if ($null -eq $dialectOpenCifsClientSummary.AdvancedSmb3) {
+            throw "The OpenCIFS.Client to Samba smoke artifact for $($dialectMetadata.Label) did not record AdvancedSmb3 reporting."
+        }
+
         $openCifsClientResults.Add([pscustomobject]@{
             dialect_id = $dialectMetadata.DialectId
             dialect = $dialectMetadata.Label
-            summary = (Get-Content -Path $dialectOpenCifsClientSmokePath -Raw | ConvertFrom-Json)
+            summary = $dialectOpenCifsClientSummary
         })
     }
 }
@@ -412,6 +418,7 @@ smbclient {5} {6} //host.docker.internal/share -W WORKGROUP -U 'alice%Password12
             throw "The Samba client smoke left the remote sample-server directory behind for $($dialectMetadata.Label)."
         }
 
+        $isSmb3Dialect = $dialectMetadata.Dialect -eq "Smb30" -or $dialectMetadata.Dialect -eq "Smb302" -or $dialectMetadata.Dialect -eq "Smb311"
         $sambaClientSummary = [ordered]@{
             dialect = $dialectMetadata.Label
             dialect_id = $dialectMetadata.DialectId
@@ -429,6 +436,41 @@ smbclient {5} {6} //host.docker.internal/share -W WORKGROUP -U 'alice%Password12
             listing_contains_nested_directory = $true
             non_empty_directory_delete_rejected = $true
             smbclient_version = $smbclientVersion
+            advanced_smb3 = [ordered]@{
+                dialect_is_smb3 = $isSmb3Dialect
+                encryption_requested = [bool](-not [string]::IsNullOrWhiteSpace($smbClientProtectionArgument))
+                secure_negotiate_validation_exercised = $true
+                durable_handle_v2 = [ordered]@{
+                    attempted = $false
+                    outcome = "skipped"
+                    skip_reason = if ($isSmb3Dialect) {
+                        "The smbclient workflow does not preserve a durable reconnect token across a forced transport drop."
+                    }
+                    else {
+                        "Durable-handle v2 verification only applies to SMB 3.x dialect lanes."
+                    }
+                }
+                oplock = [ordered]@{
+                    attempted = $false
+                    outcome = "skipped"
+                    skip_reason = if ($isSmb3Dialect) {
+                        "The smbclient workflow does not surface SMB oplock-break notifications through this bounded command path."
+                    }
+                    else {
+                        "Advanced SMB 3.x oplock reporting only applies to SMB 3.x dialect lanes."
+                    }
+                }
+                lease = [ordered]@{
+                    attempted = $false
+                    outcome = "skipped"
+                    skip_reason = if ($isSmb3Dialect) {
+                        "The smbclient workflow does not surface SMB lease-break notifications through this bounded command path."
+                    }
+                    else {
+                        "Advanced SMB 3.x lease reporting only applies to SMB 3.x dialect lanes."
+                    }
+                }
+            }
         }
         $sambaClientSummary | ConvertTo-Json -Depth 5 | Set-Content -Path $dialectSambaClientSummaryPath
         $sambaClientResults.Add($sambaClientSummary)

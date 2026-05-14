@@ -460,6 +460,39 @@ def main() -> int:
         if standard_information_after_failed_delete["delete_pending"].get_value():
             raise RuntimeError("The SMB client left the read-only file delete-pending after the expected failure.")
 
+        advanced_smb3 = {
+            "dialect_is_smb3": require_encryption,
+            "encryption_required": require_encryption,
+            "secure_negotiate_validation_expected": require_encryption,
+            "durable_handle_v2": {
+                "attempted": False,
+                "outcome": "skipped",
+                "skip_reason": (
+                    "Durable-handle v2 verification only applies to SMB 3.x dialect lanes."
+                    if not require_encryption
+                    else "The current smbprotocol smoke keeps a single high-level connection and does not preserve a reopen token across a forced transport drop."
+                ),
+            },
+            "oplock": {
+                "attempted": False,
+                "outcome": "skipped",
+                "skip_reason": (
+                    "Advanced SMB 3.x oplock reporting only applies to SMB 3.x dialect lanes."
+                    if not require_encryption
+                    else "The current smbprotocol smoke does not surface SMB break notifications through this bounded file-workflow path."
+                ),
+            },
+            "lease": {
+                "attempted": False,
+                "outcome": "skipped",
+                "skip_reason": (
+                    "Advanced SMB 3.x lease reporting only applies to SMB 3.x dialect lanes."
+                    if not require_encryption
+                    else "The current smbprotocol smoke does not surface durable lease-break state through this bounded file-workflow path."
+                ),
+            },
+        }
+
         summary = {
             "server": args.server,
             "port": args.port,
@@ -488,6 +521,7 @@ def main() -> int:
             "directory_entries_after_file_rename": decoded_renamed_names,
             "renamed_directory_opened": True,
             "renamed_nested_directory_deleted": True,
+            "advanced_smb3": advanced_smb3,
         }
         print(json.dumps(summary, indent=2))
         return 0

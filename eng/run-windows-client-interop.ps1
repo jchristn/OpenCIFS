@@ -70,6 +70,10 @@ function Test-DialectWorkflowSucceeded {
         throw "Windows interop workflow artifact '$WorkflowPath' did not record a successful mapped-drive snapshot."
     }
 
+    if ($null -eq $workflow.advanced_smb3) {
+        throw "Windows interop workflow artifact '$WorkflowPath' did not record advanced_smb3 reporting."
+    }
+
     return $workflow
 }
 

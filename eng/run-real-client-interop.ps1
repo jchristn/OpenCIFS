@@ -268,6 +268,11 @@ foreach ($dialect in $Dialects) {
         }
 
         $result = Get-Content -Path $smokeLogPath -Raw | ConvertFrom-Json
+
+        if ($null -eq $result.advanced_smb3) {
+            throw "The real SMB client smoke artifact for $($dialectMetadata.Label) did not record advanced_smb3 reporting."
+        }
+
         $results.Add([pscustomobject]@{
             dialect_id = $dialectMetadata.DialectId
             dialect = $dialectMetadata.Label
