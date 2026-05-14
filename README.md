@@ -94,7 +94,7 @@ The Touchstone core and server suites now also include deterministic parser-muta
 
 `eng/run-soak-smoke.ps1` compiles a temporary project-reference consumer, starts an in-process SMB 2.1 `OpenCIFS.Server`, and runs a timed operational soak over parallel primary-client connection churn plus large-file round trips and advanced durable or exclusive-oplock or lease churn. The harness verifies repeated share-session directory create or enumerate or rename or cleanup flows, non-empty-directory delete rejection, `200000`-byte payload hashing, detached durable read or lock conflict rejection, durable reconnect success, post-reconnect competing lock recovery, repeated exclusive oplock-break completion, repeated lease-break completion, and the configured minimum soak duration before the artifact is accepted. Evidence is written to `artifacts/soak-smoke/soak-smoke.json`.
 
-`eng/run-integration-gates.ps1` extends `eng/test.ps1` with the Python real-client, Samba, and native Windows interop smoke harnesses, and it now reruns that external stack under three merged dialect milestones: SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2. When `OPENCIFS_WINDOWS_SERVER_NAME`, `OPENCIFS_WINDOWS_SERVER_SHARE_NAME`, `OPENCIFS_WINDOWS_SERVER_USER_NAME`, and `OPENCIFS_WINDOWS_SERVER_PASSWORD` are configured, it also runs the live `OpenCIFS.Client -> Windows server` harness and records `artifacts/windows-server-interop/windows-server-interop.json`.
+`eng/run-integration-gates.ps1` extends `eng/test.ps1` with the Python real-client, Samba, and native Windows interop smoke harnesses, and it now reruns that external stack under three merged dialect milestones: SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2. When `OPENCIFS_ENABLE_LINUX_CIFS_INTEROP=true`, it also runs the privileged Linux kernel CIFS lane and records `artifacts/linux-cifs-interop/linux-cifs-interop.json`. When `OPENCIFS_WINDOWS_SERVER_NAME`, `OPENCIFS_WINDOWS_SERVER_SHARE_NAME`, `OPENCIFS_WINDOWS_SERVER_USER_NAME`, and `OPENCIFS_WINDOWS_SERVER_PASSWORD` are configured, it also runs the live `OpenCIFS.Client -> Windows server` harness and records `artifacts/windows-server-interop/windows-server-interop.json`.
 
 `eng/run-nightly-interop.ps1` extends the external-client stack into a deeper current-dialect nightly-style pass. It reruns the Python real-client, Samba, and native Windows three-dialect matrices across SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2 with a larger bounded payload, then composes those artifacts with a stronger SMB 2.1 soak that exercises durable reconnect, exclusive oplock breaks, lease breaks, and large-I/O churn on the managed path. Evidence is written to `artifacts/nightly-interop/nightly-interop.json`. Durable-handle v2, SMB 3.1.1 negotiation, and broader SMB 3.x nightly coverage remain backlog.
 
@@ -505,6 +505,8 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-linux-cifs-interop.ps1
 
 That script builds a small Debian `cifs-utils` image, starts `Sample.OpenCifsServer`, mounts the share with `mount.cifs` from a privileged container for SMB 2.0.2, SMB 2.1, and SMB 3.0.2, and writes evidence to `artifacts/linux-cifs-interop`.
 
+It also accepts the image tag through `OPENCIFS_LINUX_CIFS_IMAGE_NAME`. When `OPENCIFS_ENABLE_LINUX_CIFS_INTEROP=true`, `eng/run-integration-gates.ps1` and `.github/workflows/external-interop.yaml` automatically include this lane on hosts that are explicitly provisioned for privileged CIFS mounts.
+
 Run the bounded native Windows mapped-drive smoke against the sample host:
 
 ```powershell
@@ -521,6 +523,5 @@ That script writes evidence to `artifacts/windows-client-interop`, chooses a fre
 - One class or one enum per file.
 - Warnings are treated as errors.
 - `docs/coverage-matrix.md` and `docs/interop-matrix.md` are release artifacts.
-
 
 

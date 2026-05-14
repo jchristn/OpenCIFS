@@ -3,13 +3,21 @@ param(
     [string]$Framework = "net8.0",
     [string[]]$Dialects = @("Smb2002", "Smb21", "Smb302"),
     [int]$LargePayloadLength = 200000,
-    [string]$ImageName = "opencifs-linux-cifs-interop:bookworm"
+    [string]$ImageName = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 if ($LargePayloadLength -lt 65536) {
     throw "LargePayloadLength must be at least 65536 bytes so the Linux CIFS path exercises bounded large-I/O behavior."
+}
+
+if ([string]::IsNullOrWhiteSpace($ImageName)) {
+    $ImageName = [Environment]::GetEnvironmentVariable("OPENCIFS_LINUX_CIFS_IMAGE_NAME")
+}
+
+if ([string]::IsNullOrWhiteSpace($ImageName)) {
+    $ImageName = "opencifs-linux-cifs-interop:bookworm"
 }
 
 function Assert-LastExitCode {
