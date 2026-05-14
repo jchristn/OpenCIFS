@@ -50,6 +50,47 @@ function Test-EnabledEnvironmentFlag {
     }
 }
 
+function Invoke-OptionalCrossVersionManagedInterop {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    if (-not (Test-EnabledEnvironmentFlag -Name "OPENCIFS_ENABLE_CROSS_VERSION_INTEROP")) {
+        Write-Host "Skipping optional cross-version managed interop because OPENCIFS_ENABLE_CROSS_VERSION_INTEROP is not enabled."
+        return
+    }
+
+    $sharedVersion = Get-EnvironmentVariableValue -Name "OPENCIFS_CROSS_VERSION_PACKAGE_VERSION"
+    $clientVersion = Get-EnvironmentVariableValue -Name "OPENCIFS_PREVIOUS_CLIENT_PACKAGE_VERSION"
+    $serverVersion = Get-EnvironmentVariableValue -Name "OPENCIFS_PREVIOUS_SERVER_PACKAGE_VERSION"
+
+    if ([string]::IsNullOrWhiteSpace($clientVersion)) {
+        $clientVersion = $sharedVersion
+    }
+
+    if ([string]::IsNullOrWhiteSpace($serverVersion)) {
+        $serverVersion = $sharedVersion
+    }
+
+    if ([string]::IsNullOrWhiteSpace($clientVersion) -or [string]::IsNullOrWhiteSpace($serverVersion)) {
+        throw "Optional cross-version managed interop is enabled, but the previous package versions are not fully configured. Set OPENCIFS_CROSS_VERSION_PACKAGE_VERSION or both OPENCIFS_PREVIOUS_CLIENT_PACKAGE_VERSION and OPENCIFS_PREVIOUS_SERVER_PACKAGE_VERSION."
+    }
+
+    $crossVersionArguments = New-Object System.Collections.Generic.List[string]
+    foreach ($argument in $Arguments) {
+        $crossVersionArguments.Add($argument)
+    }
+
+    $packageSource = Get-EnvironmentVariableValue -Name "OPENCIFS_CROSS_VERSION_PACKAGE_SOURCE"
+    if (-not [string]::IsNullOrWhiteSpace($packageSource)) {
+        $crossVersionArguments.Add("-PackageSource")
+        $crossVersionArguments.Add($packageSource)
+    }
+
+    Write-Host "Running optional cross-version managed interop against the configured previous package versions."
+    Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-cross-version-managed-interop.ps1") -Arguments $crossVersionArguments
+}
+
 function Invoke-OptionalLinuxCifsInterop {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments
@@ -117,6 +158,7 @@ $commonArguments = @(
 
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "test.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-managed-interop.ps1") -Arguments $commonArguments
+Invoke-OptionalCrossVersionManagedInterop -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-published-sample-smoke.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-real-client-interop.ps1") -Arguments $commonArguments
 Invoke-ChildPowerShellScript -ScriptPath (Join-Path $PSScriptRoot "run-samba-interop.ps1") -Arguments $commonArguments

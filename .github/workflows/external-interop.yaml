@@ -27,6 +27,11 @@ jobs:
       - external-interop
     timeout-minutes: 180
     env:
+      OPENCIFS_ENABLE_CROSS_VERSION_INTEROP: ${{ vars.OPENCIFS_ENABLE_CROSS_VERSION_INTEROP }}
+      OPENCIFS_CROSS_VERSION_PACKAGE_VERSION: ${{ vars.OPENCIFS_CROSS_VERSION_PACKAGE_VERSION }}
+      OPENCIFS_PREVIOUS_CLIENT_PACKAGE_VERSION: ${{ vars.OPENCIFS_PREVIOUS_CLIENT_PACKAGE_VERSION }}
+      OPENCIFS_PREVIOUS_SERVER_PACKAGE_VERSION: ${{ vars.OPENCIFS_PREVIOUS_SERVER_PACKAGE_VERSION }}
+      OPENCIFS_CROSS_VERSION_PACKAGE_SOURCE: ${{ vars.OPENCIFS_CROSS_VERSION_PACKAGE_SOURCE }}
       OPENCIFS_ENABLE_LINUX_CIFS_INTEROP: ${{ vars.OPENCIFS_ENABLE_LINUX_CIFS_INTEROP }}
       OPENCIFS_LINUX_CIFS_IMAGE_NAME: ${{ vars.OPENCIFS_LINUX_CIFS_IMAGE_NAME }}
       OPENCIFS_WINDOWS_SERVER_NAME: ${{ vars.OPENCIFS_WINDOWS_SERVER_NAME }}
@@ -73,6 +78,7 @@ jobs:
         with:
           name: external-interop-artifacts
           path: |
+            artifacts/cross-version-managed-interop/**
             artifacts/managed-interop/**
             artifacts/linux-cifs-interop/**
             artifacts/published-sample-smoke/**
