@@ -118,6 +118,131 @@ namespace OpenCIFS.Server
             }
         }
 
+        internal Guid HostId => _HostId;
+
+        internal IEnumerable<global::OpenCIFS.Server.PendingChangeNotifySubscription> EnumeratePendingChangeNotifySubscriptions()
+        {
+            foreach (PendingChangeNotifySubscription subscription in _PendingChangeNotifySubscriptions.Values)
+            {
+                yield return new global::OpenCIFS.Server.PendingChangeNotifySubscription
+                {
+                    SequenceId = subscription.SequenceId,
+                    MessageId = subscription.MessageId,
+                    SessionId = subscription.SessionId,
+                    TreeId = subscription.TreeId,
+                    PersistentFileId = subscription.PersistentFileId,
+                    VolatileFileId = subscription.VolatileFileId,
+                    DirectoryFullPath = subscription.DirectoryFullPath,
+                    WatchTree = subscription.WatchTree,
+                    CompletionFilter = subscription.CompletionFilter,
+                    OutputBufferLength = subscription.OutputBufferLength
+                };
+            }
+        }
+
+        internal IEnumerable<global::OpenCIFS.Server.ServerOpenRecord> EnumerateOpenRecords()
+        {
+            foreach (ServerSessionRecord sessionRecord in _Sessions.Values)
+            {
+                foreach (ServerOpenRecord openRecord in sessionRecord.Opens.Values)
+                {
+                    global::OpenCIFS.Server.ServerOpenRecord mappedOpenRecord = new global::OpenCIFS.Server.ServerOpenRecord
+                    {
+                        OwnerHost = openRecord.OwnerHost,
+                        SessionId = openRecord.SessionId,
+                        TreeId = openRecord.TreeId,
+                        ShareName = openRecord.ShareName,
+                        ShareRootPath = openRecord.ShareRootPath,
+                        Backend = openRecord.Backend,
+                        FullPath = openRecord.FullPath,
+                        DesiredAccess = openRecord.DesiredAccess,
+                        ShareAccess = openRecord.ShareAccess,
+                        CanRead = openRecord.CanRead,
+                        CanWrite = openRecord.CanWrite,
+                        CanReadData = openRecord.CanReadData,
+                        CanWriteData = openRecord.CanWriteData,
+                        CanDelete = openRecord.CanDelete,
+                        IsDirectory = openRecord.IsDirectory,
+                        IsNamedPipeEndpoint = openRecord.IsNamedPipeEndpoint,
+                        NamedPipeEndpoint = openRecord.NamedPipeEndpoint,
+                        GrantedOplockLevel = openRecord.GrantedOplockLevel,
+                        PendingOplockBreakLevel = openRecord.PendingOplockBreakLevel,
+                        IsOplockBreakInProgress = openRecord.IsOplockBreakInProgress,
+                        LeaseRecord = openRecord.LeaseRecord,
+                        DirectoryEnumerationPattern = openRecord.DirectoryEnumerationPattern,
+                        DirectoryEnumerationIndex = openRecord.DirectoryEnumerationIndex,
+                        Stream = openRecord.Stream,
+                        State = openRecord.State,
+                        SuppressAccessTimeUpdates = openRecord.SuppressAccessTimeUpdates,
+                        SuppressModificationTimeUpdates = openRecord.SuppressModificationTimeUpdates,
+                        SuppressChangeTimeUpdates = openRecord.SuppressChangeTimeUpdates
+                    };
+
+                    for (int index = 0; index < openRecord.Locks.Count; index++)
+                    {
+                        mappedOpenRecord.Locks.Add(
+                            new global::OpenCIFS.Server.ServerByteRangeLock
+                            {
+                                OwnerVolatileFileId = openRecord.Locks[index].OwnerVolatileFileId,
+                                Offset = openRecord.Locks[index].Offset,
+                                Length = openRecord.Locks[index].Length,
+                                IsShared = openRecord.Locks[index].IsShared
+                            });
+                    }
+
+                    yield return mappedOpenRecord;
+                }
+            }
+        }
+
+        internal void TryQueuePublishedChangeNotifyResponse(
+            global::OpenCIFS.Server.PendingChangeNotifySubscription subscription,
+            IReadOnlyList<global::OpenCIFS.Server.ChangeNotifyEvent> events)
+        {
+            if (subscription == null)
+            {
+                throw new ArgumentNullException(nameof(subscription), "Subscription cannot be null.");
+            }
+
+            if (events == null)
+            {
+                throw new ArgumentNullException(nameof(events), "Events cannot be null.");
+            }
+
+            PendingChangeNotifySubscription mappedSubscription = new PendingChangeNotifySubscription
+            {
+                SequenceId = subscription.SequenceId,
+                MessageId = subscription.MessageId,
+                SessionId = subscription.SessionId,
+                TreeId = subscription.TreeId,
+                PersistentFileId = subscription.PersistentFileId,
+                VolatileFileId = subscription.VolatileFileId,
+                DirectoryFullPath = subscription.DirectoryFullPath,
+                WatchTree = subscription.WatchTree,
+                CompletionFilter = subscription.CompletionFilter,
+                OutputBufferLength = subscription.OutputBufferLength
+            };
+            ChangeNotifyEvent[] mappedEvents = new ChangeNotifyEvent[events.Count];
+
+            for (int index = 0; index < events.Count; index++)
+            {
+                mappedEvents[index] = new ChangeNotifyEvent
+                {
+                    FullPath = events[index].FullPath,
+                    Action = events[index].Action,
+                    Filter = events[index].Filter
+                };
+            }
+
+            TryQueueChangeNotifyResponse(
+                new PendingChangeNotifyDispatchTarget
+                {
+                    OwnerHost = this,
+                    Subscription = mappedSubscription
+                },
+                mappedEvents);
+        }
+
         /// <summary>
         /// Register an in-memory account for the current host instance.
         /// </summary>
@@ -3450,6 +3575,12 @@ namespace OpenCIFS.Server
                 return BeginLegacySessionSetup(initialToken);
             }
 
+            if (initialToken.Flavor == SessionSetupFlavor.SpnegoKerberos)
+            {
+                WriteDiagnostic("Kerberos session setup was requested, but the Kerberos server path has not been implemented yet.");
+                return CreateSessionSetupResult(NtStatus.NotSupported, 0, new Smb2SessionSetupResponse());
+            }
+
             return BeginStandardSessionSetup(initialToken);
         }
 
@@ -6174,19 +6305,12 @@ namespace OpenCIFS.Server
 
         private OpenCifsServerOperationResult<Smb2SetInfoResponse>? TryApplyRenameInformation(ServerOpenRecord openRecord, FileRenameInformationType2 information)
         {
-            if (information.RootDirectory != 0)
-            {
-                return CreateOperationResult(NtStatus.InvalidParameter, new Smb2SetInfoResponse());
-            }
-
             if (openRecord.State.IsDeletePending)
             {
                 return CreateOperationResult(NtStatus.AccessDenied, new Smb2SetInfoResponse());
             }
 
-            string normalizedPath = NormalizeRenamePath(information.FileName);
-
-            if (!TryResolveShareFilePath(openRecord.ShareRootPath, normalizedPath, out string? destinationFullPath, out NtStatus destinationPathStatus) || destinationFullPath == null)
+            if (!TryResolveRenameDestinationFullPath(openRecord, information, out string normalizedPath, out string? destinationFullPath, out NtStatus destinationPathStatus) || destinationFullPath == null)
             {
                 return CreateOperationResult(destinationPathStatus, new Smb2SetInfoResponse());
             }
@@ -6251,6 +6375,41 @@ namespace OpenCIFS.Server
             NoteTimestampMutation(openRecord, updateChange: true);
             PublishRenameNotification(sourceFullPath, destinationFullPath, openRecord.IsDirectory);
             return null;
+        }
+
+        private bool TryResolveRenameDestinationFullPath(
+            ServerOpenRecord sourceOpenRecord,
+            FileRenameInformationType2 information,
+            out string normalizedPath,
+            out string? destinationFullPath,
+            out NtStatus status)
+        {
+            normalizedPath = NormalizeRenamePath(information.FileName);
+            destinationFullPath = null;
+
+            if (information.RootDirectory == 0)
+            {
+                return TryResolveShareFilePath(sourceOpenRecord.ShareRootPath, normalizedPath, out destinationFullPath, out status);
+            }
+
+            if (!_Sessions.TryGetValue(sourceOpenRecord.SessionId, out ServerSessionRecord? sessionRecord) ||
+                sessionRecord == null ||
+                !sessionRecord.Opens.TryGetValue(information.RootDirectory, out ServerOpenRecord? rootDirectoryOpenRecord) ||
+                rootDirectoryOpenRecord == null ||
+                rootDirectoryOpenRecord.TreeId != sourceOpenRecord.TreeId ||
+                !rootDirectoryOpenRecord.IsDirectory)
+            {
+                status = NtStatus.InvalidParameter;
+                return false;
+            }
+
+            string rootRelativePath = rootDirectoryOpenRecord.State.Path == "\\"
+                ? string.Empty
+                : rootDirectoryOpenRecord.State.Path.Replace('/', '\\').Trim('\\');
+            string combinedRelativePath = string.IsNullOrEmpty(rootRelativePath)
+                ? normalizedPath
+                : rootRelativePath + "\\" + normalizedPath;
+            return TryResolveShareFilePath(sourceOpenRecord.ShareRootPath, combinedRelativePath, out destinationFullPath, out status);
         }
 
         private bool TryValidateCreateOpenSemantics(string fullPath, uint desiredAccess, uint shareAccess, out NtStatus status)
@@ -8400,6 +8559,12 @@ namespace OpenCIFS.Server
 
             if (StartsWithNtlmSignature(securityBuffer))
             {
+                if (Options.AuthenticationMechanism != OpenCifsAuthenticationMechanism.Ntlm)
+                {
+                    status = NtStatus.NotSupported;
+                    return false;
+                }
+
                 try
                 {
                     token = new InitialSessionSetupToken
@@ -8430,10 +8595,28 @@ namespace OpenCIFS.Server
 
             bool selected = SpnegoMechanismNegotiator.TrySelectMechanism(
                 request: initToken,
-                supportedMechanisms: new string[] { SpnegoMechanismOid.Ntlm },
+                supportedMechanisms: OpenCifsAuthenticationMechanismCatalog.GetSpnegoMechanismOids(Options.AuthenticationMechanism),
                 selectedMechanism: out string? selectedMechanism);
 
-            if (!selected || !string.Equals(selectedMechanism, SpnegoMechanismOid.Ntlm, StringComparison.Ordinal))
+            if (!selected || string.IsNullOrWhiteSpace(selectedMechanism))
+            {
+                status = NtStatus.NotSupported;
+                return false;
+            }
+
+            if (OpenCifsAuthenticationMechanismCatalog.IsKerberosMechanismOid(selectedMechanism))
+            {
+                token = new InitialSessionSetupToken
+                {
+                    Flavor = SessionSetupFlavor.SpnegoKerberos,
+                    SpnegoInitToken = initToken,
+                    SelectedMechanismOid = selectedMechanism
+                };
+                status = NtStatus.Success;
+                return true;
+            }
+
+            if (!string.Equals(selectedMechanism, SpnegoMechanismOid.Ntlm, StringComparison.Ordinal))
             {
                 status = NtStatus.NotSupported;
                 return false;
@@ -8452,6 +8635,7 @@ namespace OpenCIFS.Server
                     {
                         Flavor = SessionSetupFlavor.SpnegoNtlm,
                         SpnegoInitToken = initToken,
+                        SelectedMechanismOid = selectedMechanism,
                         StandardNegotiateMessageBytes = (byte[])initToken.MechanismToken.Clone(),
                         StandardNegotiateMessage = NtlmNegotiateMessage.ReadFrom(initToken.MechanismToken)
                     };
@@ -8470,6 +8654,7 @@ namespace OpenCIFS.Server
                 {
                     Flavor = SessionSetupFlavor.LegacyOpenCifs,
                     SpnegoInitToken = initToken,
+                    SelectedMechanismOid = selectedMechanism,
                     LegacyNegotiateToken = OpenCifsNtlmNegotiateToken.ReadFrom(initToken.MechanismToken)
                 };
                 status = NtStatus.Success;
@@ -8725,13 +8910,16 @@ namespace OpenCIFS.Server
             public NtlmNegotiateMessage? StandardNegotiateMessage { get; set; }
 
             public byte[]? StandardNegotiateMessageBytes { get; set; }
+
+            public string? SelectedMechanismOid { get; set; }
         }
 
         private enum SessionSetupFlavor
         {
             LegacyOpenCifs,
             RawNtlm,
-            SpnegoNtlm
+            SpnegoNtlm,
+            SpnegoKerberos
         }
 
         private sealed class ServerSessionRecord

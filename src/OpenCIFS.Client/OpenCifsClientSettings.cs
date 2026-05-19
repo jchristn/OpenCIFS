@@ -18,6 +18,8 @@ namespace OpenCIFS.Client
         /// <param name="requireSigning">Whether signing is required.</param>
         /// <param name="preferEncryption">Whether encryption should be preferred when supported.</param>
         /// <param name="connectTimeoutMs">Connection timeout in milliseconds.</param>
+        /// <param name="dfsSiteName">Optional DFS site name for bounded DFS referral requests.</param>
+        /// <param name="dfsReferralCacheCapacity">Maximum DFS referral entries retained in the bounded cache.</param>
         /// <param name="enableSmb311Preview">Whether the bounded SMB 3.1.1 preview slice is enabled.</param>
         public OpenCifsClientSettings(
             string serverName,
@@ -27,6 +29,8 @@ namespace OpenCIFS.Client
             bool requireSigning = true,
             bool preferEncryption = true,
             int connectTimeoutMs = 30000,
+            string? dfsSiteName = null,
+            int dfsReferralCacheCapacity = 128,
             bool enableSmb311Preview = false)
         {
             if (string.IsNullOrWhiteSpace(serverName))
@@ -46,6 +50,8 @@ namespace OpenCIFS.Client
             RequireSigning = requireSigning;
             PreferEncryption = preferEncryption;
             ConnectTimeoutMs = Math.Clamp(connectTimeoutMs, 1000, 300000);
+            DfsSiteName = dfsSiteName ?? string.Empty;
+            DfsReferralCacheCapacity = Math.Clamp(dfsReferralCacheCapacity, 1, 65535);
             EnableSmb311Preview = enableSmb311Preview;
         }
 
@@ -85,6 +91,16 @@ namespace OpenCIFS.Client
         public int ConnectTimeoutMs { get; }
 
         /// <summary>
+        /// Optional DFS site name for bounded DFS referral requests.
+        /// </summary>
+        public string DfsSiteName { get; }
+
+        /// <summary>
+        /// Maximum DFS referral entries retained in the bounded cache.
+        /// </summary>
+        public int DfsReferralCacheCapacity { get; }
+
+        /// <summary>
         /// Whether the bounded SMB 3.1.1 preview slice is enabled.
         /// </summary>
         public bool EnableSmb311Preview { get; }
@@ -100,6 +116,8 @@ namespace OpenCIFS.Client
                 RequireSigning = RequireSigning,
                 PreferEncryption = PreferEncryption,
                 ConnectTimeoutMs = ConnectTimeoutMs,
+                DfsSiteName = DfsSiteName,
+                DfsReferralCacheCapacity = DfsReferralCacheCapacity,
                 EnableSmb311Preview = EnableSmb311Preview
             };
         }

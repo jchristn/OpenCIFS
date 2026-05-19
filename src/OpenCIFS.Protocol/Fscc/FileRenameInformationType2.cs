@@ -85,9 +85,29 @@ namespace OpenCIFS.Protocol
                 throw new ProtocolEncodingException("FILE_RENAME_INFORMATION_TYPE_2 contains an invalid UTF-16 file-name length.");
             }
 
-            if (fileNameLength > Int32.MaxValue || FixedBodyLength + fileNameLength != buffer.Length)
+            if (fileNameLength > Int32.MaxValue)
             {
                 throw new ProtocolEncodingException("FILE_RENAME_INFORMATION_TYPE_2 length exceeds the available payload.");
+            }
+
+            int requiredLength = checked(FixedBodyLength + (int)fileNameLength);
+
+            if (requiredLength > buffer.Length)
+            {
+                throw new ProtocolEncodingException("FILE_RENAME_INFORMATION_TYPE_2 length exceeds the available payload.");
+            }
+
+            if (requiredLength < buffer.Length)
+            {
+                ReadOnlySpan<byte> trailingBytes = buffer.Span.Slice(requiredLength);
+
+                for (int index = 0; index < trailingBytes.Length; index++)
+                {
+                    if (trailingBytes[index] != 0)
+                    {
+                        throw new ProtocolEncodingException("FILE_RENAME_INFORMATION_TYPE_2 contains non-zero trailing bytes beyond FileNameLength.");
+                    }
+                }
             }
 
             return new FileRenameInformationType2

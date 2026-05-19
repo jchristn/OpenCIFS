@@ -5112,6 +5112,41 @@ namespace OpenCIFS.Core.Tests.Shared
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(
+                        suiteId: "Core.DfsReferral",
+                        caseId: "DfsReferralResponseReadsExternalV2EntriesThatStoreStringsPastTheDeclaredEntrySize",
+                        displayName: "Bounded DFS referral response tolerates external v2 entries that store strings after the fixed entry body",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] dfsPathBytes = Encoding.Unicode.GetBytes(@"\\labserver\namespace" + '\0');
+                            byte[] alternatePathBytes = Encoding.Unicode.GetBytes(@"\\labserver\namespace" + '\0');
+                            byte[] networkAddressBytes = Encoding.Unicode.GetBytes(@"\\target\share" + '\0');
+                            LittleEndianWriter writer = new LittleEndianWriter();
+                            writer.WriteUInt16((ushort)(@"\\labserver\namespace".Length * 2));
+                            writer.WriteUInt16(1);
+                            writer.WriteUInt32((uint)DfsReferralHeaderFlags.StorageServers);
+                            writer.WriteUInt16(2);
+                            writer.WriteUInt16(22);
+                            writer.WriteUInt16(0);
+                            writer.WriteUInt16(0);
+                            writer.WriteUInt32(0);
+                            writer.WriteUInt32(600);
+                            writer.WriteUInt16(22);
+                            writer.WriteUInt16((ushort)(22 + dfsPathBytes.Length));
+                            writer.WriteUInt16((ushort)(22 + dfsPathBytes.Length + alternatePathBytes.Length));
+                            writer.WriteBytes(dfsPathBytes);
+                            writer.WriteBytes(alternatePathBytes);
+                            writer.WriteBytes(networkAddressBytes);
+
+                            DfsReferralResponse parsedResponse = DfsReferralResponse.ReadFrom(writer.ToArray());
+                            TestAssertions.Equal(1, parsedResponse.Entries.Length, "Unexpected DFS referral entry count.");
+                            TestAssertions.Equal(@"\\labserver\namespace", parsedResponse.Entries[0].DfsPath, "Unexpected DFS referral entry DFS path.");
+                            TestAssertions.Equal(@"\\labserver\namespace", parsedResponse.Entries[0].DfsAlternatePath, "Unexpected DFS referral entry alternate DFS path.");
+                            TestAssertions.Equal(@"\\target\share", parsedResponse.Entries[0].NetworkAddress, "Unexpected DFS referral entry network address.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
                         suiteId: "Core.Dfs",
                         caseId: "DfsReferralEntryV3RoundTripsPathConsumerLayoutAndPreservesV4VersionAndTargetSetBoundaryFlag",
                         displayName: "Bounded DFS referral V3 entry round-trips path-consumer layout and preserves V4 version and TargetSetBoundary flag",

@@ -107,6 +107,26 @@ function Get-DialectMetadata {
     }
 }
 
+function Test-IsExpectedLegacyDialectMountBlock {
+    param(
+        [Parameter(Mandatory = $true)][string]$CombinedOutput
+    )
+
+    return $CombinedOutput.IndexOf(
+        "vers=2.0 mount not permitted when legacy dialects disabled",
+        [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
+function Test-IsWsl2LegacyDialectBlockedHost {
+    param(
+        [Parameter(Mandatory = $true)][string]$LinuxKernelRelease
+    )
+
+    return $LinuxKernelRelease.IndexOf(
+        "microsoft-standard-WSL2",
+        [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
 $repositoryRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $artifactRoot = Join-Path $repositoryRoot "artifacts\linux-cifs-interop"
 $dockerContext = Join-Path $PSScriptRoot "docker\linux-cifs-interop"
@@ -122,8 +142,10 @@ New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
 & docker build -t $ImageName $dockerContext
 Assert-LastExitCode "Failed to build the Linux CIFS interop image."
 
-$mountCifsVersion = (& docker run --rm $ImageName mount.cifs -V 2>&1) -join [Environment]::NewLine
+$mountCifsVersion = (& docker run --rm --privileged $ImageName mount.cifs -V 2>&1) -join [Environment]::NewLine
 Assert-LastExitCode "Failed to read the mount.cifs version from the interop image."
+$linuxKernelRelease = (& docker run --rm --privileged $ImageName uname -r 2>&1) -join [Environment]::NewLine
+Assert-LastExitCode "Failed to read the Linux kernel release from the interop image."
 
 [pscustomobject]@{
     generated_at_utc = [DateTime]::UtcNow.ToString("o", [System.Globalization.CultureInfo]::InvariantCulture)
@@ -132,6 +154,7 @@ Assert-LastExitCode "Failed to read the mount.cifs version from the interop imag
     image = $ImageName
     docker_context = (Resolve-Path $dockerContext).Path
     mount_cifs_version = $mountCifsVersion
+    linux_kernel_release = $linuxKernelRelease
 } | ConvertTo-Json -Depth 4 | Set-Content -Path $environmentPath -Encoding UTF8
 
 $projectPath = Join-Path $repositoryRoot "src\Sample.OpenCifsServer\Sample.OpenCifsServer.csproj"
@@ -144,12 +167,59 @@ foreach ($dialect in $Dialects) {
     $serverConfigPath = Join-Path $dialectArtifactRoot "sample-server.config.txt"
     $serverLogPath = Join-Path $dialectArtifactRoot "sample-server.log"
     $serverErrorPath = Join-Path $dialectArtifactRoot "sample-server.err.log"
+    $clientScriptPath = Join-Path $dialectArtifactRoot "linux-cifs-client.sh"
     $clientLogPath = Join-Path $dialectArtifactRoot "linux-cifs-client.log"
+    $clientErrorPath = Join-Path $dialectArtifactRoot "linux-cifs-client.err.log"
     $clientSummaryPath = Join-Path $dialectArtifactRoot "linux-cifs-client.json"
     $port = Get-FreeTcpPort
 
     New-Item -ItemType Directory -Path $dialectArtifactRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $shareRoot -Force | Out-Null
+
+    if (
+        $dialectMetadata.DialectId -eq "smb2002" -and
+        (Test-IsWsl2LegacyDialectBlockedHost -LinuxKernelRelease $linuxKernelRelease)) {
+        $skipReason = "Linux kernel CIFS mount is host-policy-blocked for vers=2.0 on this WSL2/Docker Desktop host before any OpenCIFS traffic reaches the server."
+        Set-Content -Path $serverConfigPath -Value $skipReason -Encoding UTF8
+        Set-Content -Path $serverLogPath -Value $skipReason -Encoding UTF8
+        Set-Content -Path $serverErrorPath -Value "" -Encoding UTF8
+        Set-Content -Path $clientScriptPath -Value "# skipped: $skipReason" -Encoding UTF8
+        Set-Content -Path $clientLogPath -Value "" -Encoding UTF8
+        Set-Content -Path $clientErrorPath -Value ("Kernel: " + $linuxKernelRelease) -Encoding UTF8
+
+        $summary = [ordered]@{
+            dialect = $dialectMetadata.Label
+            dialect_id = $dialectMetadata.DialectId
+            mount_version = $dialectMetadata.MountVersion
+            mount_options = "username=alice,password=Password123!,domain=WORKGROUP,port=$port,vers=$($dialectMetadata.MountVersion),$($dialectMetadata.MountSecurityOptions),noserverino"
+            server = "host.docker.internal"
+            port = $port
+            share = "share"
+            directory = $null
+            payload = $null
+            large_payload_length = $LargePayloadLength
+            listing_contains_renamed_file = $null
+            listing_contains_nested_directory = $null
+            non_empty_directory_delete_rejected = $null
+            mount_cifs_version = $mountCifsVersion
+            final_state = [pscustomobject]@{
+                failure = $null
+                skipped = $true
+                skip_reason = $skipReason
+                skip_detail = "Kernel: $linuxKernelRelease"
+            }
+            client_script_path = $clientScriptPath
+            client_log_path = $clientLogPath
+            client_error_path = $clientErrorPath
+            server_config_path = $serverConfigPath
+            server_log_path = $serverLogPath
+            server_error_path = $serverErrorPath
+        }
+
+        $summary | ConvertTo-Json -Depth 6 | Set-Content -Path $clientSummaryPath -Encoding UTF8
+        $runs.Add($summary)
+        continue
+    }
 
     $sampleServerArguments = @(
         "--server-name", "127.0.0.1",
@@ -206,7 +276,7 @@ foreach ($dialect in $Dialects) {
         $remoteDirectory = "linux-cifs-smoke-" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
         $payloadText = "hello from linux kernel cifs"
         $mountOptions = "username=alice,password=Password123!,domain=WORKGROUP,port=$port,vers=$($dialectMetadata.MountVersion),$($dialectMetadata.MountSecurityOptions),noserverino"
-$linuxClientCommand = @'
+        $linuxClientScript = @'
 set -euo pipefail
 mkdir -p /mnt/opencifs
 mount -t cifs //host.docker.internal/share /mnt/opencifs -o "{0}"
@@ -225,7 +295,11 @@ mv "/mnt/opencifs/{1}/hello.txt" "/mnt/opencifs/{1}/renamed.txt"
 ls -la "/mnt/opencifs/{1}" | tee /tmp/listing.txt
 grep -F 'renamed.txt' /tmp/listing.txt >/dev/null
 grep -F 'nested' /tmp/listing.txt >/dev/null
-if rmdir "/mnt/opencifs/{1}"; then
+set +e
+rmdir "/mnt/opencifs/{1}" 2>/tmp/nonempty-rmdir.err
+rmdir_exit=$?
+set -e
+if [ "$rmdir_exit" -eq 0 ]; then
   echo "non-empty directory delete unexpectedly succeeded" >&2
   exit 25
 fi
@@ -234,10 +308,75 @@ rm "/mnt/opencifs/{1}/large.bin"
 rmdir "/mnt/opencifs/{1}/nested"
 rmdir "/mnt/opencifs/{1}"
 '@ -f $mountOptions, $remoteDirectory, $payloadText, $LargePayloadLength
+        [System.IO.File]::WriteAllText(
+            $clientScriptPath,
+            ($linuxClientScript -replace "`r`n", "`n"),
+            [System.Text.UTF8Encoding]::new($false))
 
-        $clientOutput = & docker run --rm --privileged $ImageName bash -lc $linuxClientCommand 2>&1
-        $clientOutput | Tee-Object -FilePath $clientLogPath | Out-Null
-        Assert-LastExitCode "The Linux CIFS client smoke run failed for $($dialectMetadata.Label)."
+        $dockerClientArguments = @(
+            "run",
+            "--rm",
+            "--privileged",
+            "-v", "${dialectArtifactRoot}:/work",
+            $ImageName,
+            "bash",
+            "/work/linux-cifs-client.sh"
+        )
+
+        $clientProcess = Start-Process `
+            -FilePath "docker" `
+            -ArgumentList $dockerClientArguments `
+            -WorkingDirectory $repositoryRoot `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $clientLogPath `
+            -RedirectStandardError $clientErrorPath `
+            -PassThru `
+            -Wait
+
+        if ($clientProcess.ExitCode -ne 0) {
+            $clientLog = if (Test-Path -LiteralPath $clientLogPath) { Get-Content -Path $clientLogPath -Raw } else { "" }
+            $clientError = if (Test-Path -LiteralPath $clientErrorPath) { Get-Content -Path $clientErrorPath -Raw } else { "" }
+            $combinedOutput = ($clientLog + [Environment]::NewLine + $clientError).Trim()
+
+            if (
+                $dialectMetadata.DialectId -eq "smb2002" -and
+                (Test-IsExpectedLegacyDialectMountBlock -CombinedOutput $combinedOutput)) {
+                $summary = [ordered]@{
+                    dialect = $dialectMetadata.Label
+                    dialect_id = $dialectMetadata.DialectId
+                    mount_version = $dialectMetadata.MountVersion
+                    mount_options = $mountOptions
+                    server = "host.docker.internal"
+                    port = $port
+                    share = "share"
+                    directory = $remoteDirectory
+                    payload = $payloadText
+                    large_payload_length = $LargePayloadLength
+                    listing_contains_renamed_file = $null
+                    listing_contains_nested_directory = $null
+                    non_empty_directory_delete_rejected = $null
+                    mount_cifs_version = $mountCifsVersion
+                    final_state = [pscustomobject]@{
+                        failure = $null
+                        skipped = $true
+                        skip_reason = "Linux kernel CIFS mount is host-policy-blocked for vers=2.0 on this WSL2/Docker Desktop host before any OpenCIFS traffic reaches the server."
+                        skip_detail = $combinedOutput
+                    }
+                    client_script_path = $clientScriptPath
+                    client_log_path = $clientLogPath
+                    client_error_path = $clientErrorPath
+                    server_config_path = $serverConfigPath
+                    server_log_path = $serverLogPath
+                    server_error_path = $serverErrorPath
+                }
+
+                $summary | ConvertTo-Json -Depth 6 | Set-Content -Path $clientSummaryPath -Encoding UTF8
+                $runs.Add($summary)
+                continue
+            }
+
+            throw "The Linux CIFS client smoke run failed for $($dialectMetadata.Label). Stdout: $clientLog Stderr: $clientError"
+        }
 
         if (Test-Path (Join-Path $shareRoot $remoteDirectory)) {
             throw "The Linux CIFS client smoke left the remote sample-server directory behind for $($dialectMetadata.Label)."
@@ -261,7 +400,9 @@ rmdir "/mnt/opencifs/{1}"
             final_state = [pscustomobject]@{
                 failure = $null
             }
+            client_script_path = $clientScriptPath
             client_log_path = $clientLogPath
+            client_error_path = $clientErrorPath
             server_config_path = $serverConfigPath
             server_log_path = $serverLogPath
             server_error_path = $serverErrorPath

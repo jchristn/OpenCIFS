@@ -673,6 +673,8 @@
                             SpnegoNegTokenInit initialToken = SpnegoTokenCodec.DecodeNegTokenInit(initialRequest.SecurityBuffer);
                             NtlmNegotiateMessage initialMechanismToken = NtlmNegotiateMessage.ReadFrom(initialToken.MechanismToken!);
 
+                            TestAssertions.Equal(1, initialToken.MechanismTypes.Length, "Expected the default client credential to advertise exactly one SPNEGO mechanism.");
+                            TestAssertions.Equal(SpnegoMechanismOid.Ntlm, initialToken.MechanismTypes[0], "Expected the default client credential to advertise NTLM.");
                             TestAssertions.True((initialMechanismToken.Flags & NtlmNegotiateFlags.Unicode) != 0, "Expected the initial session-setup request to negotiate Unicode NTLM messages.");
                             TestAssertions.True((initialMechanismToken.Flags & NtlmNegotiateFlags.ExtendedSessionSecurity) != 0, "Expected the initial session-setup request to negotiate NTLM extended session security.");
                             TestAssertions.Equal("WORKGROUP", initialMechanismToken.DomainName, "Expected the initial NTLM negotiate message to carry the user domain.");
@@ -727,6 +729,44 @@
                             session.ApplyLogoffResult(NtStatus.Success, new Smb2LogoffResponse());
                             TestAssertions.False(session.IsAuthenticated, "Expected logoff to clear authentication state.");
                             TestAssertions.True(session.SessionId == null, "Expected logoff to clear the session identifier.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.SessionTree",
+                        caseId: "ClientAdvertisesKerberosAndFailsAuthenticateLegCleanlyUntilImplemented",
+                        displayName: "Client Kerberos session setup advertises Kerberos SPNEGO mechanisms and fails the authenticate leg cleanly until implementation lands",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = CreateNegotiatedClient();
+                            OpenCifsClientCredential credential = CreateCredential();
+                            credential.AuthenticationMechanism = OpenCifsAuthenticationMechanism.Kerberos;
+
+                            Smb2SessionSetupRequest initialRequest = session.CreateSessionSetupRequest(credential);
+                            SpnegoNegTokenInit initialToken = SpnegoTokenCodec.DecodeNegTokenInit(initialRequest.SecurityBuffer);
+
+                            TestAssertions.Equal(2, initialToken.MechanismTypes.Length, "Expected the Kerberos path to advertise both Kerberos SPNEGO aliases.");
+                            TestAssertions.Equal(SpnegoMechanismOid.Kerberos, initialToken.MechanismTypes[0], "Expected the Kerberos V5 OID to be advertised first.");
+                            TestAssertions.Equal(SpnegoMechanismOid.MicrosoftKerberos, initialToken.MechanismTypes[1], "Expected the Microsoft Kerberos OID to be advertised second.");
+                            TestAssertions.True(initialToken.MechanismToken == null || initialToken.MechanismToken.Length == 0, "Expected the Kerberos groundwork path to avoid emitting a fake optimistic mechanism token.");
+
+                            Smb2SessionSetupResponse challengeResponse = new Smb2SessionSetupResponse
+                            {
+                                SecurityBuffer = SpnegoTokenCodec.EncodeNegTokenResp(new SpnegoNegTokenResp
+                                {
+                                    NegotiationState = SpnegoNegState.AcceptIncomplete,
+                                    SupportedMechanism = SpnegoMechanismOid.Kerberos
+                                })
+                            };
+
+                            TestAssertions.Throws<OpenCifsClientStateException>(
+                                () => session.CreateSessionAuthenticateRequest(
+                                    credential,
+                                    sessionId: 9,
+                                    status: NtStatus.MoreProcessingRequired,
+                                    challengeResponse: challengeResponse),
+                                "Expected the bounded Kerberos groundwork path to fail explicitly until Kerberos token handling is implemented.");
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(
@@ -1705,6 +1745,32 @@
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Client.Compounding",
+                        caseId: "ClientAcceptsZeroCreditGrantsOnNonFinalCompoundedResponses",
+                        displayName: "Client accepts zero credit grants on non-final compounded response headers when the final response restores credits",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsClientSession session = CreateNegotiatedClient();
+                            GrantCredits(session, 4);
+
+                            Smb2Header firstPendingHeader = session.CreateRequestHeader(Smb2Command.SessionSetup);
+                            Smb2Header secondPendingHeader = session.CreateRequestHeader(Smb2Command.SessionSetup);
+                            Smb2CompoundPacket responsePacket = new Smb2CompoundPacket(
+                                new List<Smb2CompoundPacketEntry>
+                                {
+                                    new Smb2CompoundPacketEntry(CreateResponseHeader(firstPendingHeader, grantedCredits: 0), Array.Empty<byte>()),
+                                    new Smb2CompoundPacketEntry(CreateResponseHeader(secondPendingHeader, grantedCredits: 2), Array.Empty<byte>())
+                                });
+
+                            session.ApplyCompoundResponsePacket(responsePacket);
+
+                            TestAssertions.Equal(4, session.AvailableCredits, "Expected the final compounded response header to restore the client credit window.");
+                            TestAssertions.Equal(0, session.PendingRequestCount, "Expected zero-credit non-final compounded responses to still complete their pending requests.");
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Client.Compounding",
                         caseId: "ClientRejectsUnknownMessageInCompoundedResponsePacket",
                         displayName: "Client rejects a compounded response packet that includes an unknown SMB2 message identifier",
                         executeAsync: token =>
@@ -2438,8 +2504,8 @@
                 {
                     new TestCaseDescriptor(
                         suiteId: "Client.Oplock",
-                        caseId: "ClientAppliesSignedOplockBreakNotificationsAndAcknowledgesExclusiveBreaks",
-                        displayName: "Client applies signed oplock-break notifications and acknowledges exclusive breaks",
+                        caseId: "ClientAppliesUnsignedOplockBreakNotificationsAndAcknowledgesExclusiveBreaks",
+                        displayName: "Client applies unsigned oplock-break notifications and acknowledges exclusive breaks",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -2466,11 +2532,11 @@
                                 Status = NtStatus.Success,
                                 Command = Smb2Command.OplockBreak,
                                 CreditRequest = 0,
-                                Flags = Smb2HeaderFlags.ServerToRedir | Smb2HeaderFlags.Signed,
+                                Flags = Smb2HeaderFlags.ServerToRedir,
                                 NextCommand = 0,
                                 MessageId = UInt64.MaxValue,
                                 ProcessId = 0,
-                                TreeId = 42,
+                                TreeId = 0,
                                 AsyncId = 0,
                                 SessionId = session.SessionId!.Value,
                                 Signature = new byte[16]
@@ -2490,7 +2556,7 @@
                             session.ValidateOplockBreakNotificationPacket(parsedNotificationPacket, notificationPacketBytes);
 
                             (OpenState appliedOpenState, Smb2OplockLevel previousOplockLevel, Smb2OplockLevel newOplockLevel, bool requiresAcknowledgment) =
-                                session.ApplyOplockBreakNotification(42, notification);
+                                session.ApplyOplockBreakNotification(0, notification);
                             TestAssertions.Equal(openState.PersistentFileId, appliedOpenState.PersistentFileId, "Expected oplock-break application to preserve the tracked open.");
                             TestAssertions.Equal(Smb2OplockLevel.Exclusive, previousOplockLevel, "Expected the previous oplock level to remain exclusive.");
                             TestAssertions.Equal(Smb2OplockLevel.None, newOplockLevel, "Expected the notification to lower the tracked oplock level to none.");
@@ -2517,8 +2583,8 @@
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Client.Oplock",
-                        caseId: "ClientRejectsUnexpectedOrUnsignedOplockBreakNotifications",
-                        displayName: "Client rejects unexpected or unsigned oplock-break notifications",
+                        caseId: "ClientRejectsUnexpectedOrInvalidOplockBreakNotifications",
+                        displayName: "Client rejects unexpected or invalid oplock-break notifications",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -2549,9 +2615,9 @@
                                 NextCommand = 0,
                                 MessageId = UInt64.MaxValue,
                                 ProcessId = 0,
-                                TreeId = 42,
+                                TreeId = 0,
                                 AsyncId = 0,
-                                SessionId = session.SessionId!.Value,
+                                SessionId = session.SessionId!.Value + 1,
                                 Signature = new byte[16]
                             };
                             Smb2OplockBreakNotification unsignedNotification = new Smb2OplockBreakNotification
@@ -2566,7 +2632,7 @@
                             }).ToByteArray();
                             TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ValidateOplockBreakNotificationPacket(Smb2CompoundPacket.ReadFrom(unsignedPacketBytes), unsignedPacketBytes),
-                                "Expected signed sessions to reject unsigned oplock-break notifications.");
+                                "Expected oplock-break notifications from an unrelated session to be rejected.");
 
                             TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ApplyOplockBreakNotification(
@@ -2607,8 +2673,8 @@
                 {
                     new TestCaseDescriptor(
                         suiteId: "Client.Lease",
-                        caseId: "ClientAppliesSignedLeaseBreakNotificationsAndAcknowledgesThem",
-                        displayName: "Client applies signed lease-break notifications and acknowledges them",
+                        caseId: "ClientAppliesUnsignedLeaseBreakNotificationsAndAcknowledgesThem",
+                        displayName: "Client applies unsigned lease-break notifications and acknowledges them",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -2650,13 +2716,13 @@
                                 Status = NtStatus.Success,
                                 Command = Smb2Command.OplockBreak,
                                 CreditRequest = 0,
-                                Flags = Smb2HeaderFlags.ServerToRedir | Smb2HeaderFlags.Signed,
+                                Flags = Smb2HeaderFlags.ServerToRedir,
                                 NextCommand = 0,
                                 MessageId = UInt64.MaxValue,
                                 ProcessId = 0,
-                                TreeId = 42,
+                                TreeId = 0,
                                 AsyncId = 0,
-                                SessionId = session.SessionId!.Value,
+                                SessionId = 0,
                                 Signature = new byte[16]
                             };
                             Smb2LeaseBreakNotification notification = new Smb2LeaseBreakNotification
@@ -2675,7 +2741,7 @@
                             session.ValidateLeaseBreakNotificationPacket(parsedNotificationPacket, notificationPacketBytes);
 
                             (OpenState appliedOpenState, Smb2LeaseState previousLeaseState, Smb2LeaseState newLeaseState, bool requiresAcknowledgment) =
-                                session.ApplyLeaseBreakNotification(42, notification);
+                                session.ApplyLeaseBreakNotification(0, notification);
                             TestAssertions.Equal(openState.PersistentFileId, appliedOpenState.PersistentFileId, "Expected the lease-break application to preserve the tracked open.");
                             TestAssertions.Equal(Smb2LeaseState.ReadCaching | Smb2LeaseState.HandleCaching | Smb2LeaseState.WriteCaching, previousLeaseState, "Expected the previous lease state to remain read-write-handle.");
                             TestAssertions.Equal(Smb2LeaseState.None, newLeaseState, "Expected the notification to lower the tracked lease state to none.");
@@ -2698,8 +2764,8 @@
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Client.Lease",
-                        caseId: "ClientRejectsUnexpectedOrUnsignedLeaseBreakNotifications",
-                        displayName: "Client rejects unexpected or unsigned lease-break notifications",
+                        caseId: "ClientRejectsUnexpectedOrInvalidLeaseBreakNotifications",
+                        displayName: "Client rejects unexpected or invalid lease-break notifications",
                         executeAsync: token =>
                         {
                             token.ThrowIfCancellationRequested();
@@ -2744,9 +2810,9 @@
                                 NextCommand = 0,
                                 MessageId = UInt64.MaxValue,
                                 ProcessId = 0,
-                                TreeId = 42,
+                                TreeId = 0,
                                 AsyncId = 0,
-                                SessionId = session.SessionId!.Value,
+                                SessionId = session.SessionId!.Value + 1,
                                 Signature = new byte[16]
                             };
                             Smb2LeaseBreakNotification unsignedNotification = new Smb2LeaseBreakNotification
@@ -2762,7 +2828,7 @@
                             }).ToByteArray();
                             TestAssertions.Throws<OpenCifsClientProtocolException>(
                                 () => session.ValidateLeaseBreakNotificationPacket(Smb2CompoundPacket.ReadFrom(unsignedPacketBytes), unsignedPacketBytes),
-                                "Expected signed sessions to reject unsigned lease-break notifications.");
+                                "Expected lease-break notifications from an unrelated session to be rejected.");
 
                             TestAssertions.Throws<InvalidOperationException>(
                                 () => session.ApplyLeaseBreakNotification(
@@ -6884,4 +6950,3 @@
         }
     }
 }
-

@@ -57,6 +57,26 @@ namespace OpenCIFS.Protocol
         public string NetworkAddress { get; set; } = string.Empty;
 
         /// <summary>
+        /// NameList special name preserved by the bounded managed surface when the NameList layout is selected.
+        /// </summary>
+        public string SpecialName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// NameList expanded names preserved by the bounded managed surface when the NameList layout is selected.
+        /// </summary>
+        public string[] ExpandedNames
+        {
+            get
+            {
+                return _ExpandedNames;
+            }
+            set
+            {
+                _ExpandedNames = value ?? Array.Empty<string>();
+            }
+        }
+
+        /// <summary>
         /// 16-byte ServiceSiteGuid identifying the site hosting the target.
         /// </summary>
         public byte[] ServiceSiteGuid
@@ -170,9 +190,9 @@ namespace OpenCIFS.Protocol
                 IsRootTarget = serverType == RootTargetServerType,
                 ReferralEntryFlags = (DfsReferralEntryFlags)referralFlags,
                 TimeToLive = timeToLive,
-                DfsPath = ReadNullTerminatedUnicodeString(entryBuffer, dfsPathOffset),
-                DfsAlternatePath = ReadNullTerminatedUnicodeString(entryBuffer, alternatePathOffset),
-                NetworkAddress = ReadNullTerminatedUnicodeString(entryBuffer, networkAddressOffset),
+                DfsPath = ReadNullTerminatedUnicodeString(entryBuffer, buffer, offset, dfsPathOffset, "dfs_path"),
+                DfsAlternatePath = ReadNullTerminatedUnicodeString(entryBuffer, buffer, offset, alternatePathOffset, "dfs_alternate_path"),
+                NetworkAddress = ReadNullTerminatedUnicodeString(entryBuffer, buffer, offset, networkAddressOffset, "network_address"),
                 ServiceSiteGuid = serviceSiteGuid
             };
             nextOffset = offset + entrySize;
@@ -184,11 +204,40 @@ namespace OpenCIFS.Protocol
             return Encoding.Unicode.GetBytes(value + '\0');
         }
 
-        private static string ReadNullTerminatedUnicodeString(ReadOnlyMemory<byte> buffer, int offset)
+        private static string ReadNullTerminatedUnicodeString(
+            ReadOnlyMemory<byte> entryBuffer,
+            ReadOnlyMemory<byte> fullBuffer,
+            int entryOffset,
+            int stringOffset,
+            string fieldName)
         {
-            if (offset < FixedLength || offset >= buffer.Length || (offset & 1) != 0)
+            if (TryReadNullTerminatedUnicodeString(entryBuffer, stringOffset, FixedLength, out string? value))
             {
-                throw new ProtocolEncodingException("The DFS referral V3 string offset is invalid.");
+                return value!;
+            }
+
+            if (TryReadNullTerminatedUnicodeString(fullBuffer, entryOffset + stringOffset, entryOffset + FixedLength, out value))
+            {
+                return value!;
+            }
+
+            throw new ProtocolEncodingException(
+                "The DFS referral V3 string offset is invalid for " + fieldName +
+                " (entry_offset=" + entryOffset + ", string_offset=" + stringOffset +
+                ", entry_length=" + entryBuffer.Length + ", payload_length=" + fullBuffer.Length + ").");
+        }
+
+        private static bool TryReadNullTerminatedUnicodeString(
+            ReadOnlyMemory<byte> buffer,
+            int offset,
+            int minimumOffset,
+            out string? value)
+        {
+            value = null;
+
+            if (offset < minimumOffset || offset >= buffer.Length || (offset & 1) != 0)
+            {
+                return false;
             }
 
             ReadOnlySpan<byte> span = buffer.Span;
@@ -197,13 +246,15 @@ namespace OpenCIFS.Protocol
             {
                 if (span[index] == 0 && span[index + 1] == 0)
                 {
-                    return Encoding.Unicode.GetString(span.Slice(offset, index - offset));
+                    value = Encoding.Unicode.GetString(span.Slice(offset, index - offset));
+                    return true;
                 }
             }
 
-            throw new ProtocolEncodingException("The DFS referral V3 string was not null-terminated.");
+            return false;
         }
 
+        private string[] _ExpandedNames = Array.Empty<string>();
         private byte[] _ServiceSiteGuid = new byte[16];
     }
 }

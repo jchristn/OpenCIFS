@@ -87,6 +87,11 @@ namespace OpenCIFS.Server.Tests.Shared
                                 throw new InvalidOperationException("Signing should be required by default.");
                             }
 
+                            if (options.AuthenticationMechanism != OpenCifsAuthenticationMechanism.Ntlm)
+                            {
+                                throw new InvalidOperationException("Expected NTLM to remain the default server authentication mechanism.");
+                            }
+
                             if (!options.RequireNtlmV2)
                             {
                                 throw new InvalidOperationException("NTLMv2 should be required by default.");
@@ -171,6 +176,11 @@ namespace OpenCIFS.Server.Tests.Shared
                             if (!options.RequireSigning || !options.RequireNtlmV2)
                             {
                                 throw new InvalidOperationException("Expected the sample configuration to require signing and NTLMv2.");
+                            }
+
+                            if (options.AuthenticationMechanism != OpenCifsAuthenticationMechanism.Ntlm || configuration.AuthenticationMechanism != OpenCifsAuthenticationMechanism.Ntlm)
+                            {
+                                throw new InvalidOperationException("Expected the sample configuration to default to NTLM session setup.");
                             }
 
                             if (options.AllowAnonymous || options.EnableSmb1)
@@ -1774,6 +1784,45 @@ namespace OpenCIFS.Server.Tests.Shared
                                 ExtractSessionBaseKey("alice", "WORKGROUP", "Password123!", challengeResult));
                             TestAssertions.SequenceEqual(expectedMechanismListMic, successToken.MechanismListMic!, "Expected the standard NTLM success leg mechListMIC to stay stable.");
 
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Server.SessionTree",
+                        caseId: "ServerReturnsNotSupportedForKerberosUntilImplemented",
+                        displayName: "Server returns STATUS_NOT_SUPPORTED for Kerberos session setup until the Kerberos path is implemented",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerHost host = new OpenCifsServerHost(new OpenCifsServerOptions
+                            {
+                                ServerName = "LAB-SERVER",
+                                AuthenticationMechanism = OpenCifsAuthenticationMechanism.Kerberos
+                            });
+                            host.RegisterAccount(new OpenCifsServerAccount
+                            {
+                                UserName = "alice",
+                                UserDomain = "WORKGROUP",
+                                Password = "Password123!"
+                            });
+
+                            Smb2SessionSetupRequest request = new Smb2SessionSetupRequest
+                            {
+                                Flags = 0,
+                                SecurityMode = Smb2SecurityMode.SigningEnabled | Smb2SecurityMode.SigningRequired,
+                                Capabilities = Smb2GlobalCapabilities.None,
+                                Channel = 0,
+                                PreviousSessionId = 0,
+                                SecurityBuffer = SpnegoTokenCodec.EncodeNegTokenInit(new SpnegoNegTokenInit
+                                {
+                                    MechanismTypes = OpenCifsAuthenticationMechanismCatalog.GetSpnegoMechanismOids(OpenCifsAuthenticationMechanism.Kerberos)
+                                })
+                            };
+
+                            OpenCifsServerSessionSetupResult result = host.HandleSessionSetup(0, request);
+                            TestAssertions.Equal(NtStatus.NotSupported, result.Status, "Expected the bounded Kerberos groundwork path to return STATUS_NOT_SUPPORTED until Kerberos token handling is implemented.");
+                            TestAssertions.Equal(0uL, result.SessionId, "Expected the bounded Kerberos groundwork path to avoid allocating a session.");
+                            TestAssertions.Equal(0, result.Response.SecurityBuffer.Length, "Expected the bounded Kerberos groundwork path to return an empty security buffer.");
                             return Task.CompletedTask;
                         }),
                     new TestCaseDescriptor(

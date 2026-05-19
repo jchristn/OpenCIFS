@@ -3,6 +3,7 @@ namespace Sample.OpenCifsServer
     using System;
     using System.IO;
     using OpenCIFS.Protocol;
+    using OpenCIFS.Security;
     using OpenCIFS.Server;
 
     /// <summary>
@@ -49,6 +50,11 @@ namespace Sample.OpenCifsServer
         /// Whether signing is required.
         /// </summary>
         public bool RequireSigning { get; set; } = true;
+
+        /// <summary>
+        /// Authentication mechanism accepted for SMB session setup.
+        /// </summary>
+        public OpenCifsAuthenticationMechanism AuthenticationMechanism { get; set; } = OpenCifsAuthenticationMechanism.Ntlm;
 
         /// <summary>
         /// Whether NTLMv2 is required.
@@ -107,6 +113,7 @@ namespace Sample.OpenCifsServer
                 MinimumDialect = options.MinimumDialect ?? MinimumDialect,
                 MaximumDialect = options.MaximumDialect ?? MaximumDialect,
                 RequireSigning = options.RequireSigning ?? RequireSigning,
+                AuthenticationMechanism = AuthenticationMechanism,
                 RequireNtlmV2 = options.RequireNtlmV2 ?? RequireNtlmV2,
                 AllowAnonymous = options.AllowAnonymous ?? AllowAnonymous,
                 EnableSmb1 = options.EnableSmb1 ?? EnableSmb1,
@@ -143,6 +150,7 @@ namespace Sample.OpenCifsServer
                 MinimumDialect = MinimumDialect,
                 MaximumDialect = MaximumDialect,
                 RequireSigning = RequireSigning,
+                AuthenticationMechanism = AuthenticationMechanism,
                 RequireNtlmV2 = RequireNtlmV2,
                 AllowAnonymous = AllowAnonymous,
                 EnableSmb1 = EnableSmb1,

@@ -1,6 +1,7 @@
 namespace OpenCIFS.Client
 {
     using System;
+    using OpenCIFS.Security;
 
     /// <summary>
     /// Client credential material for the current in-memory session-setup slice.
@@ -62,8 +63,30 @@ namespace OpenCIFS.Client
             }
         }
 
+        /// <summary>
+        /// Authentication mechanism requested for session setup.
+        /// Default value: <see cref="OpenCifsAuthenticationMechanism.Ntlm" />.
+        /// </summary>
+        public OpenCifsAuthenticationMechanism AuthenticationMechanism
+        {
+            get
+            {
+                return _AuthenticationMechanism;
+            }
+            set
+            {
+                if (!Enum.IsDefined(typeof(OpenCifsAuthenticationMechanism), value))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(AuthenticationMechanism), "The authentication mechanism is not recognized.");
+                }
+
+                _AuthenticationMechanism = value;
+            }
+        }
+
         private string _UserName = string.Empty;
         private string _UserDomain = string.Empty;
         private string _Password = string.Empty;
+        private OpenCifsAuthenticationMechanism _AuthenticationMechanism = OpenCifsAuthenticationMechanism.Ntlm;
     }
 }

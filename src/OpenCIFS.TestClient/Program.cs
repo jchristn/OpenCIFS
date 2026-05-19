@@ -238,44 +238,44 @@ namespace OpenCIFS.TestClient
         {
             Console.WriteLine();
             Console.WriteLine("Available commands:");
-            Console.WriteLine("  ?                          help");
-            Console.WriteLine("  q                          quit");
-            Console.WriteLine("  cls                        clear the screen");
-            Console.WriteLine("  status                     show client configuration and connection state");
+            WriteMenuCommand("?", "help");
+            WriteMenuCommand("q", "quit");
+            WriteMenuCommand("cls", "clear the screen");
+            WriteMenuCommand("status", "show client configuration and connection state");
             Console.WriteLine();
-            Console.WriteLine("  server <host>              set the SMB server host or address");
-            Console.WriteLine("  port <number>              set the direct-TCP port");
-            Console.WriteLine("  user <name>                set the user name");
-            Console.WriteLine("  domain [value]             set or clear the user domain");
-            Console.WriteLine("  password [value]           set the password; omit value to prompt");
-            Console.WriteLine("  dialects <min> <max>       set the dialect range");
-            Console.WriteLine("  signing <on|off>           require or relax signing");
-            Console.WriteLine("  encryption <on|off>        prefer or avoid encryption when supported");
-            Console.WriteLine("  timeout <milliseconds>     set the connect timeout");
+            WriteMenuCommand("server <host>", "set the SMB server host or address", _ServerName);
+            WriteMenuCommand("port <number>", "set the direct-TCP port", _ServerPort.ToString());
+            WriteMenuCommand("user <name>", "set the user name", _UserName);
+            WriteMenuCommand("domain [value]", "set or clear the user domain", FormatCurrentText(_UserDomain));
+            WriteMenuCommand("password [value]", "set the password; omit value to prompt", FormatPasswordState(_Password));
+            WriteMenuCommand("dialects <min> <max>", "set the dialect range", FormatDialectRange(_MinimumDialect, _MaximumDialect));
+            WriteMenuCommand("signing <on|off>", "require or relax signing", FormatOnOff(_RequireSigning));
+            WriteMenuCommand("encryption <on|off>", "prefer or avoid encryption when supported", FormatOnOff(_PreferEncryption));
+            WriteMenuCommand("timeout <milliseconds>", "set the connect timeout", _ConnectTimeoutMs + " ms");
             Console.WriteLine();
-            Console.WriteLine("  shares [server]            list shares through OpenCIFS IPC$/srvsvc browsing");
+            WriteMenuCommand("shares [server]", "list shares through OpenCIFS IPC$/srvsvc browsing");
             Console.WriteLine("                             requires credentials that can authenticate to the target SMB server");
-            Console.WriteLine("  shareinfo <share>          query bounded detailed share information through OpenCIFS IPC$/srvsvc");
-            Console.WriteLine("  pipe <name> <text>         transceive UTF-8 text through a bounded named pipe under IPC$");
-            Console.WriteLine("  connect                    connect and authenticate");
-            Console.WriteLine("  disconnect                 close the active client session");
-            Console.WriteLine("  open <share>               open a share-scoped work session");
-            Console.WriteLine("  close                      close the active share session");
+            WriteMenuCommand("shareinfo <share>", "query bounded detailed share information through OpenCIFS IPC$/srvsvc");
+            WriteMenuCommand("pipe <name> <text>", "transceive UTF-8 text through a bounded named pipe under IPC$");
+            WriteMenuCommand("connect", "connect and authenticate");
+            WriteMenuCommand("disconnect", "close the active client session");
+            WriteMenuCommand("open <share>", "open a share-scoped work session", _ShareSession?.ShareName ?? "none");
+            WriteMenuCommand("close", "close the active share session");
             Console.WriteLine();
-            Console.WriteLine("  pwd                        show the current remote directory");
-            Console.WriteLine("  cd [path]                  change the current remote directory");
-            Console.WriteLine("  ls [path] [pattern]        enumerate a directory");
-            Console.WriteLine("  tree [path]                recursively enumerate a directory");
-            Console.WriteLine("  stat [path]                show metadata for a file or directory");
-            Console.WriteLine("  mkdir <path>               create a directory");
-            Console.WriteLine("  rmdir <path>               delete an empty directory");
-            Console.WriteLine("  cat <path>                 read a UTF-8 text file");
-            Console.WriteLine("  write-text <path> <text>   write UTF-8 text to a file");
-            Console.WriteLine("  put <local> <remote>       upload a local file");
-            Console.WriteLine("  get <remote> <local>       download a remote file");
-            Console.WriteLine("  rm <path>                  delete a file");
-            Console.WriteLine("  mv <source> <dest>         rename a file or directory");
-            Console.WriteLine("  wait <seconds>             pause the console, useful for scripted smoke runs");
+            WriteMenuCommand("pwd", "show the current remote directory", GetDisplayRemotePath(_CurrentRemotePath));
+            WriteMenuCommand("cd [path]", "change the current remote directory", GetDisplayRemotePath(_CurrentRemotePath));
+            WriteMenuCommand("ls [path] [pattern]", "enumerate a directory");
+            WriteMenuCommand("tree [path]", "recursively enumerate a directory");
+            WriteMenuCommand("stat [path]", "show metadata for a file or directory");
+            WriteMenuCommand("mkdir <path>", "create a directory");
+            WriteMenuCommand("rmdir <path>", "delete an empty directory");
+            WriteMenuCommand("cat <path>", "read a UTF-8 text file");
+            WriteMenuCommand("write-text <path> <text>", "write UTF-8 text to a file");
+            WriteMenuCommand("put <local> <remote>", "upload a local file");
+            WriteMenuCommand("get <remote> <local>", "download a remote file");
+            WriteMenuCommand("rm <path>", "delete a file");
+            WriteMenuCommand("mv <source> <dest>", "rename a file or directory");
+            WriteMenuCommand("wait <seconds>", "pause the console, useful for scripted smoke runs");
             Console.WriteLine();
         }
 
@@ -1057,6 +1057,37 @@ namespace OpenCIFS.TestClient
         private static string DisplayOrBlank(string value)
         {
             return string.IsNullOrWhiteSpace(value) ? "(blank)" : value;
+        }
+
+        private static void WriteMenuCommand(string command, string description, string? currentValue = null)
+        {
+            string line = "  " + command.PadRight(26) + description;
+            if (!string.IsNullOrWhiteSpace(currentValue))
+            {
+                line += " (current: " + currentValue + ")";
+            }
+
+            Console.WriteLine(line);
+        }
+
+        private static string FormatPasswordState(string password)
+        {
+            return string.IsNullOrWhiteSpace(password) ? "not set" : "set";
+        }
+
+        private static string FormatDialectRange(SmbDialect minimumDialect, SmbDialect maximumDialect)
+        {
+            return minimumDialect + " -> " + maximumDialect;
+        }
+
+        private static string FormatOnOff(bool value)
+        {
+            return value ? "on" : "off";
+        }
+
+        private static string FormatCurrentText(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "blank" : value;
         }
 
         private static bool ContainsWildcard(string value)

@@ -95,26 +95,18 @@ namespace OpenCIFS.SambaInterop.Console
                 firstTree = await firstClient.TreeConnectAsync(options.Share, cancellationToken).ConfigureAwait(false);
                 secondTree = await secondClient.TreeConnectAsync(options.Share, cancellationToken).ConfigureAwait(false);
 
-                directoryHandle = await firstClient.OpenAsync(
+                directoryHandle = await OpenDirectoryCreateCompatAsync(
+                    firstClient,
                     firstTree,
                     DirectoryName,
-                    GenericReadAccess,
-                    SmbFileAttributes.Directory,
-                    ShareAccess,
-                    Smb2CreateDisposition.OpenIf,
-                    Smb2CreateOptions.DirectoryFile,
                     cancellationToken).ConfigureAwait(false);
                 await firstClient.CloseAsync(directoryHandle, cancellationToken: cancellationToken).ConfigureAwait(false);
                 directoryHandle = null;
 
-                nestedDirectoryHandle = await firstClient.OpenAsync(
+                nestedDirectoryHandle = await OpenDirectoryCreateCompatAsync(
+                    firstClient,
                     firstTree,
                     nestedDirectoryPath,
-                    GenericReadAccess,
-                    SmbFileAttributes.Directory,
-                    ShareAccess,
-                    Smb2CreateDisposition.OpenIf,
-                    Smb2CreateOptions.DirectoryFile,
                     cancellationToken).ConfigureAwait(false);
                 await firstClient.CloseAsync(nestedDirectoryHandle, cancellationToken: cancellationToken).ConfigureAwait(false);
                 nestedDirectoryHandle = null;
@@ -495,6 +487,53 @@ namespace OpenCIFS.SambaInterop.Console
             return totalWritten;
         }
 
+        private static async Task<OpenCifsClientOpenHandle> OpenDirectoryCreateCompatAsync(
+            OpenCifsClientConnection client,
+            OpenCifsClientTreeHandle treeHandle,
+            string path,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await client.OpenAsync(
+                    treeHandle,
+                    path,
+                    GenericReadAccess,
+                    SmbFileAttributes.Normal,
+                    ShareAccess,
+                    Smb2CreateDisposition.OpenIf,
+                    Smb2CreateOptions.DirectoryFile,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OpenCifsStatusException exception) when (exception.Status == NtStatus.ObjectNameNotFound)
+            {
+                try
+                {
+                    return await client.OpenAsync(
+                        treeHandle,
+                        path,
+                        GenericReadAccess,
+                        SmbFileAttributes.Directory,
+                        ShareAccess,
+                        Smb2CreateDisposition.OpenIf,
+                        Smb2CreateOptions.DirectoryFile,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OpenCifsStatusException secondException) when (secondException.Status == NtStatus.ObjectNameNotFound)
+                {
+                    return await client.OpenAsync(
+                        treeHandle,
+                        path,
+                        GenericReadAccess,
+                        SmbFileAttributes.Directory,
+                        ShareAccess,
+                        Smb2CreateDisposition.OpenIf,
+                        Smb2CreateOptions.None,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+
         private static async Task<byte[]> ReadAllBytesAsync(
             OpenCifsClientConnection client,
             OpenCifsClientOpenHandle openHandle,
@@ -575,6 +614,7 @@ namespace OpenCIFS.SambaInterop.Console
             OpenCifsClientOpenHandle? durableOpen = null;
             OpenCifsClientOpenHandle? competingOpen = null;
             OpenCifsClientOpenHandle? reconnectedOpen = null;
+            bool competingDetachedLockSucceeded = false;
 
             try
             {
@@ -627,15 +667,37 @@ namespace OpenCIFS.SambaInterop.Console
                 competingClient = new OpenCifsClientConnection(CreateClientOptions(options));
                 await competingClient.ConnectAndAuthenticateAsync(credential, cancellationToken).ConfigureAwait(false);
                 OpenCifsClientTreeHandle competingTree = await competingClient.TreeConnectAsync(options.Share, cancellationToken).ConfigureAwait(false);
-                competingOpen = await competingClient.OpenExistingPathAsync(competingTree, filePath, GenericReadAccess, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    competingOpen = await competingClient.OpenExistingPathAsync(competingTree, filePath, GenericReadAccess, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OpenCifsStatusException exception) when (exception.Status == NtStatus.ObjectNameNotFound)
+                {
+                    result.Outcome = "unsupported";
+                    result.Failure = exception.Message;
+                    result.UnsupportedReason = "The Samba peer granted durable-handle v2 reconnect state but did not keep the detached file reopenable from a competing client before reconnect.";
+                    return result;
+                }
+                catch (OpenCifsStatusException exception)
+                {
+                    throw new InvalidOperationException("The durable-handle v2 probe could not open the detached file from a competing client: " + exception.Message, exception);
+                }
 
-                await ExpectStatusAsync(
+                StringBuilder unsupportedReasonBuilder = new StringBuilder();
+                (bool detachedReadConflictPreserved, bool detachedReadUnexpectedSuccess, NtStatus? detachedReadActualStatus) = await ObserveExpectedStatusAsync(
                     async () => { _ = await competingClient.ReadAsync(competingOpen, checked((uint)payload.Length), 0, cancellationToken: cancellationToken).ConfigureAwait(false); },
-                    NtStatus.FileLockConflict,
-                    "detached durable read conflict").ConfigureAwait(false);
-                result.PreservedReadLockConflict = true;
+                    NtStatus.FileLockConflict).ConfigureAwait(false);
+                result.PreservedReadLockConflict = detachedReadConflictPreserved;
 
-                await ExpectStatusAsync(
+                if (!detachedReadConflictPreserved)
+                {
+                    unsupportedReasonBuilder.Append("The Samba peer granted durable-handle v2 reconnect state but did not preserve detached exclusive byte-range read conflicts before reconnect");
+                    unsupportedReasonBuilder.Append(detachedReadUnexpectedSuccess
+                        ? "."
+                        : " (returned " + detachedReadActualStatus!.Value.ToString() + ").");
+                }
+
+                (bool detachedLockConflictPreserved, bool detachedLockUnexpectedSuccess, NtStatus? detachedLockActualStatus) = await ObserveExpectedStatusAsync(
                     () => competingClient.LockAsync(competingOpen, new[]
                     {
                         new Smb2LockElement
@@ -645,14 +707,61 @@ namespace OpenCIFS.SambaInterop.Console
                             Flags = Smb2LockFlags.ExclusiveLock | Smb2LockFlags.FailImmediately
                         }
                     }, cancellationToken),
-                    NtStatus.LockNotGranted,
-                    "detached durable lock conflict").ConfigureAwait(false);
-                result.PreservedLockConflict = true;
+                    NtStatus.LockNotGranted).ConfigureAwait(false);
+                result.PreservedLockConflict = detachedLockConflictPreserved;
+
+                if (!detachedLockConflictPreserved)
+                {
+                    if (unsupportedReasonBuilder.Length != 0)
+                    {
+                        unsupportedReasonBuilder.Append(' ');
+                    }
+
+                    unsupportedReasonBuilder.Append("The peer also did not preserve detached exclusive byte-range lock conflicts before reconnect");
+                    unsupportedReasonBuilder.Append(detachedLockUnexpectedSuccess
+                        ? "."
+                        : " (returned " + detachedLockActualStatus!.Value.ToString() + ").");
+                    competingDetachedLockSucceeded = detachedLockUnexpectedSuccess;
+                }
+
+                if (competingDetachedLockSucceeded)
+                {
+                    await competingClient.LockAsync(competingOpen, new[]
+                    {
+                        new Smb2LockElement
+                        {
+                            Offset = 0,
+                            Length = checked((ulong)payload.Length),
+                            Flags = Smb2LockFlags.Unlock
+                        }
+                    }, cancellationToken).ConfigureAwait(false);
+                    competingDetachedLockSucceeded = false;
+                }
 
                 reconnectClient = new OpenCifsClientConnection(CreateClientOptions(options));
                 await reconnectClient.ConnectAndAuthenticateAsync(credential, cancellationToken).ConfigureAwait(false);
                 OpenCifsClientTreeHandle reconnectTree = await reconnectClient.TreeConnectAsync(options.Share, cancellationToken).ConfigureAwait(false);
-                reconnectedOpen = await reconnectClient.ReconnectDurableOpenAsync(reconnectTree, durableOpen, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    reconnectedOpen = await reconnectClient.ReconnectDurableOpenAsync(reconnectTree, durableOpen, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OpenCifsStatusException exception) when (exception.Status == NtStatus.ObjectNameNotFound)
+                {
+                    if (unsupportedReasonBuilder.Length != 0)
+                    {
+                        unsupportedReasonBuilder.Append(' ');
+                    }
+
+                    unsupportedReasonBuilder.Append("The peer also rejected the durable reconnect create after the detached competing-open phase with STATUS_OBJECT_NAME_NOT_FOUND.");
+                    result.Outcome = "unsupported";
+                    result.Failure = exception.Message;
+                    result.UnsupportedReason = unsupportedReasonBuilder.ToString();
+                    return result;
+                }
+                catch (OpenCifsStatusException exception)
+                {
+                    throw new InvalidOperationException("The durable-handle v2 probe could not reconnect the durable open after disconnect: " + exception.Message, exception);
+                }
                 result.Reconnected = true;
 
                 byte[] reconnectedBytes = await reconnectClient.ReadAsync(reconnectedOpen, checked((uint)payload.Length), 0, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -696,6 +805,13 @@ namespace OpenCIFS.SambaInterop.Console
                     }
                 }, cancellationToken).ConfigureAwait(false);
                 result.PostReconnectCompetingLockSucceeded = true;
+                if (unsupportedReasonBuilder.Length != 0)
+                {
+                    result.Outcome = "unsupported";
+                    result.UnsupportedReason = unsupportedReasonBuilder.ToString();
+                    return result;
+                }
+
                 result.Outcome = "passed";
                 return result;
             }
@@ -986,18 +1102,21 @@ namespace OpenCIFS.SambaInterop.Console
             }
         }
 
-        private static async Task ExpectStatusAsync(Func<Task> operation, NtStatus expectedStatus, string operationName)
+        private static async Task<(bool Matched, bool Succeeded, NtStatus? ActualStatus)> ObserveExpectedStatusAsync(Func<Task> operation, NtStatus expectedStatus)
         {
             try
             {
                 await operation().ConfigureAwait(false);
+                return (false, true, null);
             }
             catch (OpenCifsStatusException exception) when (exception.Status == expectedStatus)
             {
-                return;
+                return (true, false, exception.Status);
             }
-
-            throw new InvalidOperationException("Expected " + operationName + " to fail with NTSTATUS " + expectedStatus + ".");
+            catch (OpenCifsStatusException exception)
+            {
+                return (false, false, exception.Status);
+            }
         }
 
         private static async Task SimulateAbruptDisconnectAsync(OpenCifsClientConnection connection)

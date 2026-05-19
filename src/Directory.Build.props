@@ -22,4 +22,5 @@
   <ItemGroup Condition="'$(IsPackable)' == 'true'">
     <None Include="$(MSBuildThisFileDirectory)..\LICENSE.md" Pack="true" PackagePath="\" />
   </ItemGroup>
+
 </Project>

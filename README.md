@@ -2,6 +2,12 @@
 
 OpenCIFS is an MIT-licensed SMB/CIFS library suite for .NET.
 
+## Status
+
+- Current library and package version: `0.1.0`
+- Release state: alpha
+- Compatibility posture: the current coverage and interoperability claims are bounded and evidence-backed, but thorough or exhaustive compatibility testing across SMB dialects, operating systems, client or server products, NAS devices, and deployment environments has not been performed.
+
 Current repository status:
 
 - Milestone 0 bootstrap is in place.
@@ -77,6 +83,7 @@ dotnet test src/OpenCIFS.sln --no-build
 powershell -ExecutionPolicy Bypass -File .\eng\run-samba-interop.ps1
 powershell -ExecutionPolicy Bypass -File .\eng\run-real-client-interop.ps1
 powershell -ExecutionPolicy Bypass -File .\eng\run-windows-client-interop.ps1
+powershell -ExecutionPolicy Bypass -File .\eng\run-local-windows-server-interop.ps1
 powershell -ExecutionPolicy Bypass -File .\eng\run-nightly-interop.ps1 -Configuration Release
 powershell -ExecutionPolicy Bypass -File .\eng\run-integration-gates.ps1
 powershell -ExecutionPolicy Bypass -File .\eng\run-release-gates.ps1 -Configuration Release
@@ -412,7 +419,7 @@ That script runs `OpenCIFS.TestClient` against `OpenCIFS.TestServer` as separate
 For the package-backed cross-version managed compatibility lane, run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\eng\run-cross-version-managed-interop.ps1 -PreviousPackageVersion 1.2.3
+powershell -ExecutionPolicy Bypass -File .\eng\run-cross-version-managed-interop.ps1 -PreviousPackageVersion 0.0.9
 ```
 
 That script restores the specified released `OpenCIFS.Client` and `OpenCIFS.Server` packages from a configurable package source, builds temporary current-project and previous-package consumers, runs `current client -> previous server` and `previous client -> current server` across SMB 2.0.2, SMB 2.1, and SMB 3.0.2, and writes `artifacts/cross-version-managed-interop/cross-version-managed-interop.json`. You can also set `OPENCIFS_CROSS_VERSION_PACKAGE_VERSION`, or the more specific `OPENCIFS_PREVIOUS_CLIENT_PACKAGE_VERSION` and `OPENCIFS_PREVIOUS_SERVER_PACKAGE_VERSION`, plus optional `OPENCIFS_CROSS_VERSION_PACKAGE_SOURCE`.
@@ -432,6 +439,14 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-windows-server-interop.ps1 -S
 ```
 
 That script writes `artifacts/windows-server-interop/windows-server-interop.json`. It also accepts the same settings through `OPENCIFS_WINDOWS_SERVER_NAME`, `OPENCIFS_WINDOWS_SERVER_SHARE_NAME`, `OPENCIFS_WINDOWS_SERVER_USER_NAME`, `OPENCIFS_WINDOWS_SERVER_PASSWORD`, and the optional `OPENCIFS_WINDOWS_SERVER_DOMAIN` or `OPENCIFS_WINDOWS_SERVER_PORT` environment variables so secrets do not need to appear on the command line.
+
+For the local Windows-only path with no external server dependency, run the elevated helper instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\eng\run-local-windows-server-interop.ps1
+```
+
+That script must be run from an elevated PowerShell session. It creates a temporary local account and SMB share, grants access, delegates to `eng/run-windows-server-interop.ps1` against `127.0.0.1`, writes the normal `artifacts/windows-server-interop/windows-server-interop.json` evidence plus `artifacts/windows-server-local-share/local-share-provisioning.json`, and removes the temporary share and account afterward.
 
 When the DFS environment variables are present, `eng/run-integration-gates.ps1` and `.github/workflows/external-interop.yaml` automatically include the DFS lane. It is still not part of the default release gate until stable external DFS evidence exists.
 
@@ -522,6 +537,8 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-linux-cifs-interop.ps1
 ```
 
 That script builds a small Debian `cifs-utils` image, starts `Sample.OpenCifsServer`, mounts the share with `mount.cifs` from a privileged container for SMB 2.0.2, SMB 2.1, and SMB 3.0.2, and writes evidence to `artifacts/linux-cifs-interop`.
+
+On WSL2/Docker Desktop hosts whose kernel blocks legacy `vers=2.0` mounts, the artifact now records an explicit skipped `smb2002` lane with a structured host-policy `skip_reason`, while SMB 2.1 and SMB 3.0.2 still run normally.
 
 It also accepts the image tag through `OPENCIFS_LINUX_CIFS_IMAGE_NAME`. When `OPENCIFS_ENABLE_LINUX_CIFS_INTEROP=true`, `eng/run-integration-gates.ps1` and `.github/workflows/external-interop.yaml` automatically include this lane on hosts that are explicitly provisioned for privileged CIFS mounts.
 

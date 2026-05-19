@@ -18,9 +18,9 @@ namespace OpenCIFS.TestServer
     {
         private static bool _RunForever = true;
         private static string _ServerName = Environment.MachineName;
-        private static string _BindAddress = "0.0.0.0";
+        private static string _BindAddress = "127.0.0.1";
         private static int _BindPort = 4450;
-        private static string _ShareName = "share";
+        private static string _ShareName = "public";
         private static string _UserName = "tester";
         private static string _UserDomain = string.Empty;
         private static string _Password = "Password123!";
@@ -209,32 +209,32 @@ namespace OpenCIFS.TestServer
         {
             Console.WriteLine();
             Console.WriteLine("Available commands:");
-            Console.WriteLine("  ?                          help");
-            Console.WriteLine("  q                          quit");
-            Console.WriteLine("  cls                        clear the screen");
-            Console.WriteLine("  status                     show current configuration and runtime state");
+            WriteMenuCommand("?", "help");
+            WriteMenuCommand("q", "quit");
+            WriteMenuCommand("cls", "clear the screen");
+            WriteMenuCommand("status", "show current configuration and runtime state");
             Console.WriteLine();
-            Console.WriteLine("  server <name>              set the SMB server name advertised to clients");
-            Console.WriteLine("  bind <address>             set the bind address");
-            Console.WriteLine("  port <number>              set the bind port");
-            Console.WriteLine("  share <name>               set the exposed share name");
-            Console.WriteLine("  user <name>                set the in-memory account name");
-            Console.WriteLine("  domain [value]             set or clear the in-memory account domain");
-            Console.WriteLine("  password [value]           set the in-memory account password; omit value to prompt");
-            Console.WriteLine("  dialects <min> <max>       set the dialect range");
-            Console.WriteLine("  signing <on|off>           require or relax signing");
-            Console.WriteLine("  encryption <on|off>        require or relax SMB3 encryption");
+            WriteMenuCommand("server <name>", "set the SMB server name advertised to clients", _ServerName);
+            WriteMenuCommand("bind <address>", "set the bind address", _BindAddress);
+            WriteMenuCommand("port <number>", "set the bind port", _BindPort.ToString());
+            WriteMenuCommand("share <name>", "set the exposed share name", _ShareName);
+            WriteMenuCommand("user <name>", "set the in-memory account name", _UserName);
+            WriteMenuCommand("domain [value]", "set or clear the in-memory account domain", FormatCurrentText(_UserDomain));
+            WriteMenuCommand("password [value]", "set the in-memory account password; omit value to prompt", FormatPasswordState(_Password));
+            WriteMenuCommand("dialects <min> <max>", "set the dialect range", FormatDialectRange(_MinimumDialect, _MaximumDialect));
+            WriteMenuCommand("signing <on|off>", "require or relax signing", FormatOnOff(_RequireSigning));
+            WriteMenuCommand("encryption <on|off>", "require or relax SMB3 encryption", FormatOnOff(_RequireEncryptionForSmb3));
             Console.WriteLine();
-            Console.WriteLine("  root                       show the temporary backing-store path");
-            Console.WriteLine("  root reset                 replace the temporary backing store with a new directory");
-            Console.WriteLine("  openroot                   open the backing store in Explorer");
-            Console.WriteLine("  dir [relative-path]        list the local backing-store directory");
-            Console.WriteLine("  shares                     show the shares that the configured server exposes");
-            Console.WriteLine("  pipes                      show the bounded named-pipe endpoints exposed under IPC$");
+            WriteMenuCommand("root", "show the temporary backing-store path", _RootPath);
+            WriteMenuCommand("root reset", "replace the temporary backing store with a new directory");
+            WriteMenuCommand("openroot", "open the backing store in Explorer");
+            WriteMenuCommand("dir [relative-path]", "list the local backing-store directory");
+            WriteMenuCommand("shares", "show the shares that the configured server exposes");
+            WriteMenuCommand("pipes", "show the bounded named-pipe endpoints exposed under IPC$");
             Console.WriteLine();
-            Console.WriteLine("  start                      start the server listener");
-            Console.WriteLine("  stop                       stop the server listener");
-            Console.WriteLine("  wait <seconds>             pause the console, useful for scripted smoke runs");
+            WriteMenuCommand("start", "start the server listener");
+            WriteMenuCommand("stop", "stop the server listener");
+            WriteMenuCommand("wait <seconds>", "pause the console, useful for scripted smoke runs");
             Console.WriteLine();
         }
 
@@ -559,6 +559,37 @@ namespace OpenCIFS.TestServer
         private static string DisplayOrBlank(string value)
         {
             return string.IsNullOrWhiteSpace(value) ? "(blank)" : value;
+        }
+
+        private static void WriteMenuCommand(string command, string description, string? currentValue = null)
+        {
+            string line = "  " + command.PadRight(26) + description;
+            if (!string.IsNullOrWhiteSpace(currentValue))
+            {
+                line += " (current: " + currentValue + ")";
+            }
+
+            Console.WriteLine(line);
+        }
+
+        private static string FormatPasswordState(string password)
+        {
+            return string.IsNullOrWhiteSpace(password) ? "not set" : "set";
+        }
+
+        private static string FormatDialectRange(SmbDialect minimumDialect, SmbDialect maximumDialect)
+        {
+            return minimumDialect + " -> " + maximumDialect;
+        }
+
+        private static string FormatOnOff(bool value)
+        {
+            return value ? "on" : "off";
+        }
+
+        private static string FormatCurrentText(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "blank" : value;
         }
 
         private static int ParsePositiveInt(string value, int minimum, int maximum)

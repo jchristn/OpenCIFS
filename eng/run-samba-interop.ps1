@@ -151,12 +151,8 @@ $sampleServerErrorPath = Join-Path $artifactRoot "sample-server.err.log"
 $sambaClientLogPath = Join-Path $artifactRoot "sample-server-samba-client.log"
 $sambaClientSummaryPath = Join-Path $artifactRoot "sample-server-samba-client.json"
 
-if (Test-Path $sambaShareRoot) {
-    Get-ChildItem -Force -Path $sambaShareRoot | Remove-Item -Recurse -Force
-}
-
-if (Test-Path $sampleShareRoot) {
-    Get-ChildItem -Force -Path $sampleShareRoot | Remove-Item -Recurse -Force
+if (Test-Path $artifactRoot) {
+    Remove-Item -LiteralPath $artifactRoot -Recurse -Force
 }
 
 New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null

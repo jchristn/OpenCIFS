@@ -2,6 +2,7 @@ namespace OpenCIFS.Server
 {
     using System;
     using OpenCIFS.Protocol;
+    using OpenCIFS.Security;
 
     /// <summary>
     /// Server bootstrap options for OpenCIFS.
@@ -129,6 +130,27 @@ namespace OpenCIFS.Server
         public bool RequireSigning { get; set; } = true;
 
         /// <summary>
+        /// Authentication mechanism accepted for SMB session setup.
+        /// Default value: <see cref="OpenCifsAuthenticationMechanism.Ntlm" />.
+        /// </summary>
+        public OpenCifsAuthenticationMechanism AuthenticationMechanism
+        {
+            get
+            {
+                return _AuthenticationMechanism;
+            }
+            set
+            {
+                if (!Enum.IsDefined(typeof(OpenCifsAuthenticationMechanism), value))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(AuthenticationMechanism), "The authentication mechanism is not recognized.");
+                }
+
+                _AuthenticationMechanism = value;
+            }
+        }
+
+        /// <summary>
         /// Whether NTLMv2 is required.
         /// Default value: <c>true</c>.
         /// </summary>
@@ -215,5 +237,6 @@ namespace OpenCIFS.Server
         private int _MaximumCredits = 64;
         private string _ShareName = "share";
         private string _SharePath = "SampleShare";
+        private OpenCifsAuthenticationMechanism _AuthenticationMechanism = OpenCifsAuthenticationMechanism.Ntlm;
     }
 }

@@ -93,6 +93,28 @@ namespace OpenCIFS.Client
         }
 
         /// <summary>
+        /// Set the optional DFS site name for bounded DFS referral requests.
+        /// </summary>
+        /// <param name="dfsSiteName">DFS site name, or an empty string to omit it.</param>
+        /// <returns>The current builder.</returns>
+        public OpenCifsClientBuilder WithDfsSiteName(string? dfsSiteName)
+        {
+            _DfsSiteName = dfsSiteName ?? string.Empty;
+            return this;
+        }
+
+        /// <summary>
+        /// Set the bounded DFS referral cache capacity.
+        /// </summary>
+        /// <param name="dfsReferralCacheCapacity">Maximum referral entries to retain.</param>
+        /// <returns>The current builder.</returns>
+        public OpenCifsClientBuilder WithDfsReferralCacheCapacity(int dfsReferralCacheCapacity)
+        {
+            _DfsReferralCacheCapacity = Math.Clamp(dfsReferralCacheCapacity, 1, 65535);
+            return this;
+        }
+
+        /// <summary>
         /// Enable the bounded SMB 3.1.1 preview slice on the negotiate path.
         /// When enabled, the client advertises <see cref="SmbDialect.Smb311" /> and emits typed
         /// SMB 3.1.1 negotiate-context entries (preauth integrity, signing, encryption).
@@ -124,6 +146,8 @@ namespace OpenCIFS.Client
                 _RequireSigning,
                 _PreferEncryption,
                 _ConnectTimeoutMs,
+                _DfsSiteName,
+                _DfsReferralCacheCapacity,
                 _EnableSmb311Preview);
         }
 
@@ -143,6 +167,8 @@ namespace OpenCIFS.Client
         private bool _RequireSigning = true;
         private bool _PreferEncryption = true;
         private int _ConnectTimeoutMs = 30000;
+        private string _DfsSiteName = string.Empty;
+        private int _DfsReferralCacheCapacity = 128;
         private bool _EnableSmb311Preview = false;
     }
 }

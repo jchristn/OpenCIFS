@@ -7,6 +7,7 @@
   "MinimumDialect": "Smb2002",
   "MaximumDialect": "Smb311",
   "RequireSigning": true,
+  "AuthenticationMechanism": "Ntlm",
   "RequireNtlmV2": true,
   "AllowAnonymous": false,
   "EnableSmb1": false,

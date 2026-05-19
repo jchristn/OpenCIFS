@@ -114,6 +114,8 @@ namespace OpenCIFS.SambaInterop.Console
 
         public string SkipReason { get; set; } = string.Empty;
 
+        public string UnsupportedReason { get; set; } = string.Empty;
+
         public bool UsesDurableHandleV2 { get; set; }
     }
 

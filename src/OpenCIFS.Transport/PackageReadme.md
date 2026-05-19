@@ -2,6 +2,8 @@
 
 Shared OpenCIFS transport helpers for direct-TCP SMB framing, NetBIOS session-service framing, and framed connection lifecycle handling.
 
+OpenCIFS `0.1.0` is alpha software. This package reflects the bounded transport surface currently exercised by OpenCIFS, and exhaustive compatibility testing across SMB dialects, platforms, and external peers has not been performed.
+
 ## Scope
 
 - direct-TCP frame handling

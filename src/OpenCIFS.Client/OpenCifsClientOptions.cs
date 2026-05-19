@@ -103,6 +103,30 @@ namespace OpenCIFS.Client
         }
 
         /// <summary>
+        /// Optional DFS site name to include in bounded DFS_GET_REFERRALS_EX requests.
+        /// Default value: an empty string.
+        /// </summary>
+        public string DfsSiteName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Maximum number of DFS referral entries retained in the bounded in-memory cache.
+        /// Default value: <c>128</c>.
+        /// Minimum value: <c>1</c>.
+        /// Maximum value: <c>65535</c>.
+        /// </summary>
+        public int DfsReferralCacheCapacity
+        {
+            get
+            {
+                return _DfsReferralCacheCapacity;
+            }
+            set
+            {
+                _DfsReferralCacheCapacity = Math.Clamp(value, 1, 65535);
+            }
+        }
+
+        /// <summary>
         /// Validate option combinations.
         /// </summary>
         /// <exception cref="ArgumentException">Thrown when the configured dialect range is invalid.</exception>
@@ -117,5 +141,6 @@ namespace OpenCIFS.Client
         private string _ServerName = "127.0.0.1";
         private int _ServerPort = 445;
         private int _ConnectTimeoutMs = 30000;
+        private int _DfsReferralCacheCapacity = 128;
     }
 }

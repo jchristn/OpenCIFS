@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
+    <Version>0.1.0</Version>
     <Description>Shared OpenCIFS SMB/CIFS protocol models, codecs, and wire-format foundations.</Description>
     <PackageTags>smb;cifs;protocol;wire-format;dotnet</PackageTags>
     <PackageReadmeFile>PackageReadme.md</PackageReadmeFile>

@@ -9,18 +9,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Invoke-ChildPowerShellScript {
-    param(
-        [Parameter(Mandatory = $true)][string]$ScriptPath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
-    )
-
-    & powershell -ExecutionPolicy Bypass -File $ScriptPath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-}
-
 function Get-SambaPeer {
     param([string]$Peer)
 
@@ -61,30 +49,41 @@ New-Item -ItemType Directory -Path $matrixArtifactRoot -Force | Out-Null
 
 foreach ($peerName in $Peers) {
     $peer = Get-SambaPeer -Peer $peerName
-    $arguments = @(
-        "-Configuration", $Configuration,
-        "-Framework", $Framework,
-        "-Dialects"
-    ) + $Dialects + @(
-        "-LargePayloadLength", $LargePayloadLength.ToString([System.Globalization.CultureInfo]::InvariantCulture),
-        "-SambaImageName", $peer.ImageName,
-        "-DockerContext", $contextPath,
-        "-Dockerfile", $peer.Dockerfile,
-        "-PeerLabel", $peer.Label
-    )
-
-    if ($IncludeSmb311Preview) {
-        $arguments += "-IncludeSmb311Preview"
-    }
-
-    Invoke-ChildPowerShellScript -ScriptPath $scriptPath -Arguments $arguments
-
     $peerArtifactRoot = Join-Path $matrixArtifactRoot $peer.Label
     if (Test-Path $peerArtifactRoot) {
         Remove-Item -LiteralPath $peerArtifactRoot -Recurse -Force
     }
 
-    Copy-Item -LiteralPath $sourceArtifactRoot -Destination $peerArtifactRoot -Recurse -Force
+    try {
+        if ($IncludeSmb311Preview) {
+            & $scriptPath `
+                -Configuration $Configuration `
+                -Framework $Framework `
+                -Dialects $Dialects `
+                -LargePayloadLength $LargePayloadLength `
+                -SambaImageName $peer.ImageName `
+                -DockerContext $contextPath `
+                -Dockerfile $peer.Dockerfile `
+                -PeerLabel $peer.Label `
+                -IncludeSmb311Preview
+        }
+        else {
+            & $scriptPath `
+                -Configuration $Configuration `
+                -Framework $Framework `
+                -Dialects $Dialects `
+                -LargePayloadLength $LargePayloadLength `
+                -SambaImageName $peer.ImageName `
+                -DockerContext $contextPath `
+                -Dockerfile $peer.Dockerfile `
+                -PeerLabel $peer.Label
+        }
+    }
+    finally {
+        if (Test-Path $sourceArtifactRoot) {
+            Copy-Item -LiteralPath $sourceArtifactRoot -Destination $peerArtifactRoot -Recurse -Force
+        }
+    }
 }
 
 Write-Output "Samba peer matrix completed. Evidence:"

@@ -23,6 +23,31 @@ namespace OpenCIFS.Client
         public string NetworkAddress { get; set; } = string.Empty;
 
         /// <summary>
+        /// Whether the entry uses the NameList referral layout instead of a storage-target network address.
+        /// </summary>
+        public bool IsNameListReferral { get; set; }
+
+        /// <summary>
+        /// NameList special name returned by the server when <see cref="IsNameListReferral" /> is set.
+        /// </summary>
+        public string SpecialName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// NameList expanded names returned by the server when <see cref="IsNameListReferral" /> is set.
+        /// </summary>
+        public string[] ExpandedNames
+        {
+            get
+            {
+                return _ExpandedNames;
+            }
+            set
+            {
+                _ExpandedNames = value ?? Array.Empty<string>();
+            }
+        }
+
+        /// <summary>
         /// Parsed target server name.
         /// </summary>
         public string TargetServerName { get; set; } = string.Empty;
@@ -56,5 +81,7 @@ namespace OpenCIFS.Client
         /// Whether the entry points at another DFS root target instead of a final storage target.
         /// </summary>
         public bool IsRootTarget { get; set; }
+
+        private string[] _ExpandedNames = Array.Empty<string>();
     }
 }

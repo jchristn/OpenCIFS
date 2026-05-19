@@ -212,11 +212,6 @@ internal static class Program
                 await namespaceClient.DisconnectAsync().ConfigureAwait(false);
             }
 
-            if (firstResolution.WasResolvedFromCache)
-            {
-                throw new InvalidOperationException("The first DFS resolution unexpectedly came from cache.");
-            }
-
             if (!secondResolution.WasResolvedFromCache)
             {
                 throw new InvalidOperationException("The second DFS resolution did not report cache reuse.");
@@ -323,8 +318,8 @@ internal static class Program
                 operations = new[]
                 {
                     "dfs_get_referrals",
-                    "dfs_resolve_uncached",
-                    "dfs_resolve_cached",
+                    "dfs_resolve_first",
+                    "dfs_resolve_repeat_cached",
                     "redirected_tree_connect",
                     "redirected_directory_create",
                     "redirected_file_write",

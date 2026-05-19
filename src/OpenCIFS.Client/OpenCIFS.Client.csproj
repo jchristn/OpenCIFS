@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
+    <Version>0.1.0</Version>
     <Description>Managed OpenCIFS direct-TCP SMB 2.0.2 through bounded SMB 3.0.2 client library.</Description>
     <PackageTags>smb;cifs;client;fileshare;dotnet</PackageTags>
     <PackageReadmeFile>PackageReadme.md</PackageReadmeFile>

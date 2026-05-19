@@ -149,13 +149,29 @@ namespace OpenCIFS.Client
 
         private async Task CreateCoreAsync(OpenCifsClientConnection connection, OpenCifsClientTreeHandle treeHandle, string path, CancellationToken cancellationToken)
         {
-            OpenCifsClientOpenHandle openHandle = await connection.OpenAsync(
-                treeHandle,
-                path,
-                desiredAccess: GenericReadAccess,
-                createDisposition: Smb2CreateDisposition.OpenIf,
-                createOptions: Smb2CreateOptions.DirectoryFile,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            OpenCifsClientOpenHandle openHandle;
+
+            try
+            {
+                openHandle = await connection.OpenAsync(
+                    treeHandle,
+                    path,
+                    desiredAccess: GenericReadAccess,
+                    createDisposition: Smb2CreateDisposition.OpenIf,
+                    createOptions: Smb2CreateOptions.DirectoryFile,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (OpenCifsStatusException exception) when (exception.Status == NtStatus.ObjectNameNotFound)
+            {
+                openHandle = await connection.OpenAsync(
+                    treeHandle,
+                    path,
+                    desiredAccess: GenericReadAccess,
+                    fileAttributes: FileAttributes.Directory,
+                    createDisposition: Smb2CreateDisposition.OpenIf,
+                    createOptions: Smb2CreateOptions.None,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
 
             try
             {

@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 
 function Get-ConfiguredValue {
     param(
-        [Parameter(Mandatory = $true)][string]$ParameterValue,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ParameterValue,
         [Parameter(Mandatory = $true)][string]$EnvironmentVariableName
     )
 
@@ -25,7 +25,7 @@ function Get-ConfiguredValue {
 
 function Get-RequiredConfiguredValue {
     param(
-        [Parameter(Mandatory = $true)][string]$ParameterValue,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ParameterValue,
         [Parameter(Mandatory = $true)][string]$ParameterName,
         [Parameter(Mandatory = $true)][string]$EnvironmentVariableName
     )

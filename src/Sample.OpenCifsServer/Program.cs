@@ -125,6 +125,7 @@ namespace Sample.OpenCifsServer
             OpenCifsServerBuilder builder = new OpenCifsServerBuilder(options);
             builder.AddFileSystemShare(options.ShareName, options.SharePath, createRootIfMissing: true);
             builder.AddAccount(account);
+            builder.AddSrvsvcShareEnumerationEndpoint();
             return builder;
         }
 

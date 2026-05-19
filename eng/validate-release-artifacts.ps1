@@ -175,6 +175,22 @@ function Get-ArtifactRunFailure {
     return $null
 }
 
+function Get-ArtifactRunSkipReason {
+    param(
+        [Parameter(Mandatory = $true)]$Run
+    )
+
+    if ($null -eq $Run.final_state) {
+        return $null
+    }
+
+    if ($Run.final_state.skipped -eq $true -and -not [string]::IsNullOrWhiteSpace([string]$Run.final_state.skip_reason)) {
+        return [string]$Run.final_state.skip_reason
+    }
+
+    return $null
+}
+
 Invoke-BuildValidator -Command "validate-coverage" -Path $coverageMatrixPath
 Invoke-BuildValidator -Command "validate-interop" -Path $interopMatrixPath
 Invoke-BuildValidator -Command "validate-package-claims" -Path $repositoryRoot
@@ -430,6 +446,11 @@ if (Test-Path $linuxCifsInteropPath) {
         $linuxCifsFailure = Get-ArtifactRunFailure -Run $run
         if ($null -ne $linuxCifsFailure) {
             $errors.Add("The linux-cifs-interop artifact recorded a failed run for dialect '$linuxCifsDialectId': $linuxCifsFailure")
+        }
+
+        $linuxCifsSkipReason = Get-ArtifactRunSkipReason -Run $run
+        if ($run.final_state.skipped -eq $true -and [string]::IsNullOrWhiteSpace($linuxCifsSkipReason)) {
+            $errors.Add("The linux-cifs-interop artifact run '$linuxCifsDialectId' is marked skipped but does not record a skip_reason.")
         }
 
         foreach ($pathField in @("client_log_path", "server_config_path", "server_log_path", "server_error_path")) {

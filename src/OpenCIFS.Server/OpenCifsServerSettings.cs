@@ -2,6 +2,7 @@ namespace OpenCIFS.Server
 {
     using System;
     using OpenCIFS.Protocol;
+    using OpenCIFS.Security;
 
     /// <summary>
     /// Immutable validated server settings for the primary OpenCIFS server happy-path surface.
@@ -19,6 +20,7 @@ namespace OpenCIFS.Server
         /// <param name="minimumDialect">Minimum negotiated dialect.</param>
         /// <param name="maximumDialect">Maximum negotiated dialect.</param>
         /// <param name="requireSigning">Whether signing is required.</param>
+        /// <param name="authenticationMechanism">Authentication mechanism accepted for session setup.</param>
         /// <param name="requireNtlmV2">Whether NTLMv2 is required.</param>
         /// <param name="allowAnonymous">Whether anonymous access is allowed.</param>
         /// <param name="enableSmb1">Whether SMB1 is enabled.</param>
@@ -34,6 +36,7 @@ namespace OpenCIFS.Server
             SmbDialect minimumDialect = SmbDialect.Smb2002,
             SmbDialect maximumDialect = SmbDialect.Smb311,
             bool requireSigning = true,
+            OpenCifsAuthenticationMechanism authenticationMechanism = OpenCifsAuthenticationMechanism.Ntlm,
             bool requireNtlmV2 = true,
             bool allowAnonymous = false,
             bool enableSmb1 = false,
@@ -79,6 +82,7 @@ namespace OpenCIFS.Server
             MinimumDialect = minimumDialect;
             MaximumDialect = maximumDialect;
             RequireSigning = requireSigning;
+            AuthenticationMechanism = authenticationMechanism;
             RequireNtlmV2 = requireNtlmV2;
             AllowAnonymous = allowAnonymous;
             EnableSmb1 = enableSmb1;
@@ -128,6 +132,11 @@ namespace OpenCIFS.Server
         public bool RequireSigning { get; }
 
         /// <summary>
+        /// Authentication mechanism accepted for session setup.
+        /// </summary>
+        public OpenCifsAuthenticationMechanism AuthenticationMechanism { get; }
+
+        /// <summary>
         /// Whether NTLMv2 is required.
         /// </summary>
         public bool RequireNtlmV2 { get; }
@@ -169,6 +178,7 @@ namespace OpenCIFS.Server
                 MinimumDialect = MinimumDialect,
                 MaximumDialect = MaximumDialect,
                 RequireSigning = RequireSigning,
+                AuthenticationMechanism = AuthenticationMechanism,
                 RequireNtlmV2 = RequireNtlmV2,
                 AllowAnonymous = AllowAnonymous,
                 EnableSmb1 = EnableSmb1,
@@ -194,6 +204,7 @@ namespace OpenCIFS.Server
                 options.MinimumDialect,
                 options.MaximumDialect,
                 options.RequireSigning,
+                options.AuthenticationMechanism,
                 options.RequireNtlmV2,
                 options.AllowAnonymous,
                 options.EnableSmb1,

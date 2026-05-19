@@ -1496,9 +1496,13 @@
             _Session.ValidateOplockBreakNotificationPacket(responsePacket, responseBytes);
             Smb2CompoundPacketEntry responseEntry = responsePacket.Entries[0];
             Smb2OplockBreakNotification notification = Smb2OplockBreakNotification.ReadFrom(GetResponsePayloadBytes(responseEntry));
-            (OpenState openState, Smb2OplockLevel previousOplockLevel, Smb2OplockLevel newOplockLevel, bool requiresAcknowledgment) = _Session.ApplyOplockBreakNotification(
+            OpenCifsClientOplockBreakNotificationResult oplockBreakResult = _Session.ApplyOplockBreakNotification(
                 responseEntry.Header.TreeId,
                 notification);
+            OpenState openState = oplockBreakResult.OpenState;
+            Smb2OplockLevel previousOplockLevel = oplockBreakResult.PreviousOplockLevel;
+            Smb2OplockLevel newOplockLevel = oplockBreakResult.NewOplockLevel;
+            bool requiresAcknowledgment = oplockBreakResult.RequiresAcknowledgment;
             OpenCifsClientOpenHandle openHandle = GetTrackedOpenHandle(openState.PersistentFileId, openState.VolatileFileId);
             openHandle.SetOplockLevel(newOplockLevel);
             bool wasAcknowledged = false;
@@ -1564,9 +1568,13 @@
             _Session.ValidateLeaseBreakNotificationPacket(responsePacket, responseBytes);
             Smb2CompoundPacketEntry responseEntry = responsePacket.Entries[0];
             Smb2LeaseBreakNotification notification = Smb2LeaseBreakNotification.ReadFrom(GetResponsePayloadBytes(responseEntry));
-            (OpenState openState, Smb2LeaseState previousLeaseState, Smb2LeaseState newLeaseState, bool requiresAcknowledgment) = _Session.ApplyLeaseBreakNotification(
+            OpenCifsClientLeaseBreakNotificationResult leaseBreakResult = _Session.ApplyLeaseBreakNotification(
                 responseEntry.Header.TreeId,
                 notification);
+            OpenState openState = leaseBreakResult.OpenState;
+            Smb2LeaseState previousLeaseState = leaseBreakResult.PreviousLeaseState;
+            Smb2LeaseState newLeaseState = leaseBreakResult.NewLeaseState;
+            bool requiresAcknowledgment = leaseBreakResult.RequiresAcknowledgment;
             OpenCifsClientOpenHandle openHandle = GetTrackedOpenHandle(openState.PersistentFileId, openState.VolatileFileId);
             openHandle.SetLeaseState(newLeaseState);
             bool wasAcknowledged = false;
@@ -3492,4 +3500,3 @@
         }
     }
 }
-

@@ -2,6 +2,8 @@
 
 Managed direct-TCP SMB 2.0.2 through bounded SMB 3.0.2 client surface for OpenCIFS.
 
+OpenCIFS `0.1.0` is alpha software. The documented client surface and interop claims are intentionally bounded, and exhaustive compatibility testing across SMB dialects, platforms, and third-party peers has not been performed.
+
 A bounded managed SMB 3.0.2 AES-128-CCM encrypted session slice now exists on the managed path, alongside the bounded non-encrypted SMB 3.0 / SMB 3.0.2 compatibility slice exposed through `WithPreferredEncryption(false)`.
 
 ## Scope

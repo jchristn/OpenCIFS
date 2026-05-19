@@ -369,6 +369,11 @@
         /// <param name="responseHeader">Response header from the server.</param>
         public void ApplyResponseHeader(Smb2Header responseHeader)
         {
+            ApplyResponseHeader(responseHeader, allowZeroSynchronousCreditGrant: false);
+        }
+
+        private void ApplyResponseHeader(Smb2Header responseHeader, bool allowZeroSynchronousCreditGrant)
+        {
             if (responseHeader == null)
             {
                 throw new ArgumentNullException(nameof(responseHeader), "ResponseHeader cannot be null.");
@@ -428,6 +433,14 @@
             {
                 if (responseHeader.CreditRequest == 0)
                 {
+                    if (allowZeroSynchronousCreditGrant)
+                    {
+                        requestState.Complete();
+                        requestState.Dispose();
+                        _PendingRequests.Remove(responseHeader.MessageId);
+                        return;
+                    }
+
                     throw new OpenCifsClientProtocolException("SMB 2.0.2 synchronous response headers must grant at least one credit.", nameof(responseHeader));
                 }
 
@@ -454,7 +467,7 @@
 
             for (int index = 0; index < entries.Count; index++)
             {
-                ApplyResponseHeader(entries[index].Header);
+                ApplyResponseHeader(entries[index].Header, allowZeroSynchronousCreditGrant: index < entries.Count - 1);
             }
         }
 
@@ -839,15 +852,10 @@
                 throw new OpenCifsClientStateException("Negotiate must complete before session setup can begin.");
             }
 
-            NtlmNegotiateMessage mechanismToken = CreateStandardNegotiateMessage(credential);
-            byte[] negotiateMessageBytes = mechanismToken.ToByteArray();
-            _StandardNegotiateMessage = (byte[])negotiateMessageBytes.Clone();
-
-            SpnegoNegTokenInit initToken = new SpnegoNegTokenInit
-            {
-                MechanismTypes = new string[] { SpnegoMechanismOid.Ntlm },
-                MechanismToken = negotiateMessageBytes
-            };
+            SpnegoNegTokenInit initToken = OpenCifsClientSessionProtocolSupport.CreateInitialSessionSetupNegTokenInit(credential, out byte[]? negotiateMessageBytes);
+            _StandardNegotiateMessage = negotiateMessageBytes == null
+                ? null
+                : (byte[])negotiateMessageBytes.Clone();
 
             Smb2SessionSetupRequest request = new Smb2SessionSetupRequest
             {
@@ -905,6 +913,11 @@
             if (challengeResponse.SecurityBuffer.Length == 0)
             {
                 throw new OpenCifsClientStateException("The server challenge did not include a security buffer.");
+            }
+
+            if (credential.AuthenticationMechanism == OpenCifsAuthenticationMechanism.Kerberos)
+            {
+                OpenCifsClientSessionProtocolSupport.ThrowKerberosNotImplemented();
             }
 
             if (TryExtractStandardChallengeToken(challengeResponse.SecurityBuffer, out byte[]? challengeTokenBytes, out bool wrapAuthenticateInSpnego) &&
@@ -1596,8 +1609,8 @@
         /// </summary>
         /// <param name="treeId">Tree identifier carried by the SMB2 header.</param>
         /// <param name="notification">Decoded notification payload.</param>
-        /// <returns>Applied open state, previous oplock level, new oplock level, and whether an acknowledgment is required.</returns>
-        public (OpenState OpenState, Smb2OplockLevel PreviousOplockLevel, Smb2OplockLevel NewOplockLevel, bool RequiresAcknowledgment) ApplyOplockBreakNotification(
+        /// <returns>Applied oplock-break notification result.</returns>
+        public OpenCifsClientOplockBreakNotificationResult ApplyOplockBreakNotification(
             uint treeId,
             Smb2OplockBreakNotification notification)
         {
@@ -1609,7 +1622,7 @@
             Smb2OplockBreakNotificationValidator.Validate(notification);
             ClientOpenRecord openRecord = GetTrackedOpen(notification.PersistentFileId, notification.VolatileFileId);
 
-            if (openRecord.TreeId != treeId)
+            if (treeId != 0 && openRecord.TreeId != treeId)
             {
                 throw new OpenCifsClientProtocolException("The SMB2 oplock-break notification tree identifier does not match the tracked open.", nameof(treeId));
             }
@@ -1633,7 +1646,11 @@
             }
 
             openRecord.State.SetOplockLevel(notification.OplockLevel);
-            return (openRecord.State, previousOplockLevel, notification.OplockLevel, requiresAcknowledgment);
+            return new OpenCifsClientOplockBreakNotificationResult(
+                openRecord.State,
+                previousOplockLevel,
+                notification.OplockLevel,
+                requiresAcknowledgment);
         }
 
         /// <summary>
@@ -1641,8 +1658,8 @@
         /// </summary>
         /// <param name="treeId">Tree identifier carried by the SMB2 header.</param>
         /// <param name="notification">Decoded notification payload.</param>
-        /// <returns>Applied open state, previous lease state, new lease state, and whether an acknowledgment is required.</returns>
-        public (OpenState OpenState, Smb2LeaseState PreviousLeaseState, Smb2LeaseState NewLeaseState, bool RequiresAcknowledgment) ApplyLeaseBreakNotification(
+        /// <returns>Applied lease-break notification result.</returns>
+        public OpenCifsClientLeaseBreakNotificationResult ApplyLeaseBreakNotification(
             uint treeId,
             Smb2LeaseBreakNotification notification)
         {
@@ -1666,7 +1683,7 @@
             }
 
             openRecord.State.SetLeaseState(notification.NewLeaseState);
-            return (
+            return new OpenCifsClientLeaseBreakNotificationResult(
                 openRecord.State,
                 previousLeaseState,
                 notification.NewLeaseState,
@@ -2816,7 +2833,7 @@
 
             foreach (ClientOpenRecord openRecord in _Opens.Values)
             {
-                if (openRecord.TreeId == treeId &&
+                if ((treeId == 0 || openRecord.TreeId == treeId) &&
                     openRecord.State.LeaseKey.AsSpan().SequenceEqual(leaseKey))
                 {
                     return openRecord;
@@ -2928,7 +2945,8 @@
                 throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification must not set the AsyncCommand flag.", nameof(responsePacket));
             }
 
-            if (SessionId == null || responseHeader.SessionId != SessionId.Value)
+            if (SessionId == null ||
+                (responseHeader.SessionId != 0 && responseHeader.SessionId != SessionId.Value))
             {
                 throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification session identifier is invalid.", nameof(responsePacket));
             }
@@ -2947,18 +2965,13 @@
                 throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification structure size is invalid.", nameof(responsePacket));
             }
 
-            bool mustBeSigned =
-                IsAuthenticated &&
-                IsSigningRequired &&
-                !IsSessionEncryptionActive(responseHeader.SessionId);
-
             if ((responseHeader.Flags & Smb2HeaderFlags.Signed) == 0)
             {
-                if (mustBeSigned)
-                {
-                    throw new OpenCifsClientProtocolException("The unsolicited SMB2 " + notificationName + " notification omitted the required Signed flag.", nameof(responsePacket));
-                }
+                return;
+            }
 
+            if (responseHeader.SessionId == 0)
+            {
                 return;
             }
 
@@ -3459,4 +3472,3 @@
         }
     }
 }
-

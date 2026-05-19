@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
+    <Version>0.1.0</Version>
     <Description>Shared OpenCIFS direct-TCP, NetBIOS session-service, and framing helpers.</Description>
     <PackageTags>smb;cifs;transport;direct-tcp;netbios</PackageTags>
     <PackageReadmeFile>PackageReadme.md</PackageReadmeFile>

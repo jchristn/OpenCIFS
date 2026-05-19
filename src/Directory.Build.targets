@@ -1,4 +1,9 @@
 <Project>
+  <PropertyGroup Condition="'$(IsPackable)' == 'true'">
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
   <ItemGroup Condition="'$(MSBuildProjectName)' == 'OpenCIFS.Protocol' or '$(MSBuildProjectName)' == 'OpenCIFS.Transport' or '$(MSBuildProjectName)' == 'OpenCIFS.Security' or '$(MSBuildProjectName)' == 'OpenCIFS.Server' or '$(MSBuildProjectName)' == 'OpenCIFS.Client'">
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>OpenCIFS.Core.Tests.Shared</_Parameter1>

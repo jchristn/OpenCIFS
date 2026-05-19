@@ -108,9 +108,9 @@ namespace OpenCIFS.Protocol
             {
                 IsRootTarget = serverType == RootTargetServerType,
                 TimeToLive = timeToLive,
-                DfsPath = ReadNullTerminatedUnicodeString(entryBuffer, dfsPathOffset),
-                DfsAlternatePath = ReadNullTerminatedUnicodeString(entryBuffer, alternatePathOffset),
-                NetworkAddress = ReadNullTerminatedUnicodeString(entryBuffer, networkAddressOffset)
+                DfsPath = ReadNullTerminatedUnicodeString(entryBuffer, buffer, offset, dfsPathOffset, "dfs_path"),
+                DfsAlternatePath = ReadNullTerminatedUnicodeString(entryBuffer, buffer, offset, alternatePathOffset, "dfs_alternate_path"),
+                NetworkAddress = ReadNullTerminatedUnicodeString(entryBuffer, buffer, offset, networkAddressOffset, "network_address")
             };
             nextOffset = offset + entrySize;
             return entry;
@@ -121,11 +121,40 @@ namespace OpenCIFS.Protocol
             return Encoding.Unicode.GetBytes(value + '\0');
         }
 
-        private static string ReadNullTerminatedUnicodeString(ReadOnlyMemory<byte> buffer, int offset)
+        private static string ReadNullTerminatedUnicodeString(
+            ReadOnlyMemory<byte> entryBuffer,
+            ReadOnlyMemory<byte> fullBuffer,
+            int entryOffset,
+            int stringOffset,
+            string fieldName)
         {
-            if (offset < FixedLength || offset >= buffer.Length || (offset & 1) != 0)
+            if (TryReadNullTerminatedUnicodeString(entryBuffer, stringOffset, FixedLength, out string? value))
             {
-                throw new ProtocolEncodingException("The DFS referral string offset is invalid.");
+                return value!;
+            }
+
+            if (TryReadNullTerminatedUnicodeString(fullBuffer, entryOffset + stringOffset, entryOffset + FixedLength, out value))
+            {
+                return value!;
+            }
+
+            throw new ProtocolEncodingException(
+                "The DFS referral string offset is invalid for " + fieldName +
+                " (entry_offset=" + entryOffset + ", string_offset=" + stringOffset +
+                ", entry_length=" + entryBuffer.Length + ", payload_length=" + fullBuffer.Length + ").");
+        }
+
+        private static bool TryReadNullTerminatedUnicodeString(
+            ReadOnlyMemory<byte> buffer,
+            int offset,
+            int minimumOffset,
+            out string? value)
+        {
+            value = null;
+
+            if (offset < minimumOffset || offset >= buffer.Length || (offset & 1) != 0)
+            {
+                return false;
             }
 
             ReadOnlySpan<byte> span = buffer.Span;
@@ -134,11 +163,12 @@ namespace OpenCIFS.Protocol
             {
                 if (span[index] == 0 && span[index + 1] == 0)
                 {
-                    return Encoding.Unicode.GetString(span.Slice(offset, index - offset));
+                    value = Encoding.Unicode.GetString(span.Slice(offset, index - offset));
+                    return true;
                 }
             }
 
-            throw new ProtocolEncodingException("The DFS referral string was not null-terminated.");
+            return false;
         }
     }
 }
