@@ -11,7 +11,7 @@ OpenCIFS is an MIT-licensed SMB/CIFS library suite for .NET.
 Current repository status:
 
 - Milestone 0 bootstrap is in place.
-- The solution, project graph, package management, CI entrypoints, coverage matrix, and Touchstone runner matrix are implemented.
+- The solution, project graph, package management, local automation entrypoints, coverage matrix, and Touchstone runner matrix are implemented.
 - The verified managed dialect surface now covers direct-TCP SMB 2.0.2, SMB 2.1, a bounded SMB 3.0 / SMB 3.0.2 slice, and a bounded SMB 3.1.1 opt-in preview slice. By default the current managed client and server path prefer encryption-capable SMB 3.0.2 when the peer supports it; `WithPreferredEncryption(false)` plus `WithSmb3EncryptionRequired(false)` expose the bounded non-encrypted SMB3 compatibility slice, and bounded managed SMB 3.0 / SMB 3.0.2 secure-negotiate validation plus non-persistent durable-handle v2 reconnect now runs on the direct-TCP path. The bounded SMB 3.1.1 opt-in preview is reachable through `OpenCifsClientBuilder.WithSmb311Preview()` and `OpenCifsServerBuilder.WithSmb311Preview()`, or through `Sample.OpenCifsServer --enable-smb311-preview true`; when both sides opt in the negotiated dialect lifts to `Smb311` with SHA-512 preauth integrity transcript hashing, AES-GMAC per-message signing, AES-128-GCM session encryption, and full session-setup transcript carry-through into the SMB 3.1.1 key-derivation context. AES-256-GCM/CCM ciphers (gated on Kerberos session keys) remain backlog. SMB1/CIFS codec and bootstrap work exists, but real SMB1 peer interoperability is intentionally outside the current release-gated claim scope.
 - `OpenCIFS.Protocol`, `OpenCIFS.Security`, `OpenCIFS.Transport`, `OpenCIFS.Server`, and `OpenCIFS.Client` now form a packable package graph, each package now emits package-specific readme and metadata content, build-time package-claim validation now rejects overbroad nuspec descriptions or package-readme scope claims, and a local-feed downstream package-smoke consumer verifies the packaged client/server/protocol flow end to end.
 - `eng/run-readme-smoke.ps1` and `eng/run-integration-gates.ps1` now keep the documented consumer surface executable: README smoke compiles a temporary project-reference consumer from the client and server examples below and verifies authenticated echo, directory create, file write or read, metadata query, enumeration, rename, cleanup, callback invocation, and non-empty-directory delete rejection, while the broader integration gate layers that on top of build, Touchstone, framework runners, package smoke, published-sample smoke, and external Python real-client, Samba, and native Windows smoke coverage replayed under three merged dialect milestones: SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2.
@@ -448,9 +448,9 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-local-windows-server-interop.
 
 That script must be run from an elevated PowerShell session. It creates a temporary local account and SMB share, grants access, delegates to `eng/run-windows-server-interop.ps1` against `127.0.0.1`, writes the normal `artifacts/windows-server-interop/windows-server-interop.json` evidence plus `artifacts/windows-server-local-share/local-share-provisioning.json`, and removes the temporary share and account afterward.
 
-When the DFS environment variables are present, `eng/run-integration-gates.ps1` and `.github/workflows/external-interop.yaml` automatically include the DFS lane. It is still not part of the default release gate until stable external DFS evidence exists.
+When the DFS environment variables are present, `eng/run-integration-gates.ps1` automatically includes the DFS lane. It is still not part of the default release gate until stable external DFS evidence exists.
 
-When those environment variables are present, `eng/run-integration-gates.ps1` and `.github/workflows/external-interop.yaml` automatically include the Windows-server lane. It is still not part of the default release gate until stable live Windows-server evidence exists.
+When those environment variables are present, `eng/run-integration-gates.ps1` automatically includes the Windows-server lane. It is still not part of the default release gate until stable live Windows-server evidence exists.
 
 ## Sample Utility
 
@@ -540,7 +540,7 @@ That script builds a small Debian `cifs-utils` image, starts `Sample.OpenCifsSer
 
 On WSL2/Docker Desktop hosts whose kernel blocks legacy `vers=2.0` mounts, the artifact now records an explicit skipped `smb2002` lane with a structured host-policy `skip_reason`, while SMB 2.1 and SMB 3.0.2 still run normally.
 
-It also accepts the image tag through `OPENCIFS_LINUX_CIFS_IMAGE_NAME`. When `OPENCIFS_ENABLE_LINUX_CIFS_INTEROP=true`, `eng/run-integration-gates.ps1` and `.github/workflows/external-interop.yaml` automatically include this lane on hosts that are explicitly provisioned for privileged CIFS mounts.
+It also accepts the image tag through `OPENCIFS_LINUX_CIFS_IMAGE_NAME`. When `OPENCIFS_ENABLE_LINUX_CIFS_INTEROP=true`, `eng/run-integration-gates.ps1` automatically includes this lane on hosts that are explicitly provisioned for privileged CIFS mounts.
 
 Run the bounded native Windows mapped-drive smoke against the sample host:
 
