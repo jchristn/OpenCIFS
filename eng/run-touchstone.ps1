@@ -1,20 +1,29 @@
 param(
     [string]$Configuration = "Debug",
-    [string]$Framework = "net8.0"
+    [string]$Framework = "net8.0",
+    [string]$ResultsPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-$projects = @(
-    "src/OpenCIFS.Core.Tests.Console/OpenCIFS.Core.Tests.Console.csproj",
-    "src/OpenCIFS.Server.Tests.Console/OpenCIFS.Server.Tests.Console.csproj",
-    "src/OpenCIFS.Client.Tests.Console/OpenCIFS.Client.Tests.Console.csproj",
-    "src/OpenCIFS.Interop.Tests.Console/OpenCIFS.Interop.Tests.Console.csproj"
+# The entire OpenCIFS Touchstone suite (Core, Server, Client, and Interop) is now
+# exposed through the single consolidated automated runner, OpenCIFS.Test.Automated,
+# which executes OpenCIFS.Test.Shared.AllSuites.All.
+$project = "src/OpenCIFS.Test.Automated/OpenCIFS.Test.Automated.csproj"
+
+$runArgs = @(
+    "run",
+    "--project", "$PSScriptRoot\..\$project",
+    "--configuration", $Configuration,
+    "--framework", $Framework,
+    "--no-build"
 )
 
-foreach ($project in $projects) {
-    dotnet run --project "$PSScriptRoot\..\$project" --configuration $Configuration --framework $Framework --no-build
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
+if (-not [string]::IsNullOrWhiteSpace($ResultsPath)) {
+    $runArgs += @("--", "--results", $ResultsPath)
+}
+
+dotnet @runArgs
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
 }

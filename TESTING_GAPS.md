@@ -1,4 +1,4 @@
-# Testing Gaps
+﻿# Testing Gaps
 
 Reviewed on 2026-05-18.
 
@@ -32,9 +32,9 @@ Gaps:
 Current state: strongly covered for internal managed-path regression, but not enough to claim full interoperability.
 
 What exists:
-- `src/OpenCIFS.Client.Tests.Shared/ClientTestSupport.cs` starts a real `OpenCifsDirectTcpServer` on loopback and exercises the client over direct TCP.
+- `src/OpenCIFS.Test.Shared/Client/ClientTestSupport.cs` starts a real `OpenCifsDirectTcpServer` on loopback and exercises the client over direct TCP.
 - `docs/coverage-matrix.md` records extensive live-listener managed client coverage over `OpenCifsDirectTcpServer`.
-- `src/OpenCIFS.Interop.Tests.Shared/InteropTestSuites.cs` provides broad loopback suites for negotiate, session/tree, file I/O, metadata, locking, notify, oplocks, leases, durable handles, compound requests, and IOCTLs.
+- `src/OpenCIFS.Test.Shared/Interop/InteropTestSuites.cs` provides broad loopback suites for negotiate, session/tree, file I/O, metadata, locking, notify, oplocks, leases, durable handles, compound requests, and IOCTLs.
 - `eng/run-test-console-smoke.ps1` runs `OpenCIFS.TestClient` and `OpenCIFS.TestServer` as separate processes and drives end-to-end operations over loopback.
 - `eng/run-managed-interop.ps1` runs `OpenCIFS.TestClient` against `OpenCIFS.TestServer` as separate processes across SMB 2.0.2, SMB 2.1, and SMB 3.0.2 and writes `artifacts/managed-interop/managed-interop.json`.
 - `eng/run-cross-version-managed-interop.ps1` now runs a bounded N-to-N-1 package-feed matrix, and `artifacts/cross-version-managed-interop/cross-version-managed-interop.json` now records a 2026-05-15 local feed run using package version `0.0.0-git.4af1f6d` built from commit `4af1f6d`.
@@ -70,12 +70,12 @@ Gaps:
 Current state: strongly covered for internal managed-path regression, but not enough to claim full interoperability.
 
 What exists:
-- `src/OpenCIFS.Client.Tests.Shared/ClientTestSupport.cs` starts `OpenCifsDirectTcpServer` and drives the managed client against it over real loopback TCP.
+- `src/OpenCIFS.Test.Shared/Client/ClientTestSupport.cs` starts `OpenCifsDirectTcpServer` and drives the managed client against it over real loopback TCP.
 - `docs/coverage-matrix.md` records extensive direct-TCP managed client coverage against the managed server.
 - `eng/run-test-console-smoke.ps1` runs `OpenCIFS.TestClient` against `OpenCIFS.TestServer` as separate executables.
 - `eng/run-managed-interop.ps1` records a dialect-by-dialect managed client/server artifact for SMB 2.0.2, SMB 2.1, and SMB 3.0.2.
 - `eng/run-cross-version-managed-interop.ps1` now records a bounded N-to-N-1 package-feed matrix for `current client -> previous server` and `previous client -> current server`.
-- `src/OpenCIFS.Interop.Tests.Shared/InteropTestSuites.cs` covers a broad set of managed loopback protocol behaviors.
+- `src/OpenCIFS.Test.Shared/Interop/InteropTestSuites.cs` covers a broad set of managed loopback protocol behaviors.
 
 Gaps:
 - There is no released-binary managed client/server compatibility matrix; the current evidence is a bounded local package-feed N-to-N-1 run.

@@ -6,64 +6,16 @@
 
   <ItemGroup Condition="'$(MSBuildProjectName)' == 'OpenCIFS.Protocol' or '$(MSBuildProjectName)' == 'OpenCIFS.Transport' or '$(MSBuildProjectName)' == 'OpenCIFS.Security' or '$(MSBuildProjectName)' == 'OpenCIFS.Server' or '$(MSBuildProjectName)' == 'OpenCIFS.Client'">
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Core.Tests.Shared</_Parameter1>
+      <_Parameter1>OpenCIFS.Test.Shared</_Parameter1>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Core.Tests.Console</_Parameter1>
+      <_Parameter1>OpenCIFS.Test.Automated</_Parameter1>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Core.Tests.Xunit</_Parameter1>
+      <_Parameter1>OpenCIFS.Test.Xunit</_Parameter1>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Core.Tests.Nunit</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Core.Tests.Mstest</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Server.Tests.Shared</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Server.Tests.Console</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Server.Tests.Xunit</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Server.Tests.Nunit</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Server.Tests.Mstest</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Client.Tests.Shared</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Client.Tests.Console</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Client.Tests.Xunit</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Client.Tests.Nunit</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Client.Tests.Mstest</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Interop.Tests.Shared</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Interop.Tests.Console</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Interop.Tests.Xunit</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Interop.Tests.Nunit</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>OpenCIFS.Interop.Tests.Mstest</_Parameter1>
+      <_Parameter1>OpenCIFS.Test.Nunit</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 

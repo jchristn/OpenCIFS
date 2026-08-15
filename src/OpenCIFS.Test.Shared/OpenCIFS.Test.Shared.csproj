@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>OpenCIFS.Test.Shared</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenCIFS.Protocol\OpenCIFS.Protocol.csproj" />
+    <ProjectReference Include="..\OpenCIFS.Security\OpenCIFS.Security.csproj" />
+    <ProjectReference Include="..\OpenCIFS.Transport\OpenCIFS.Transport.csproj" />
+    <ProjectReference Include="..\OpenCIFS.Server\OpenCIFS.Server.csproj" />
+    <ProjectReference Include="..\OpenCIFS.Client\OpenCIFS.Client.csproj" />
+    <ProjectReference Include="..\Sample.OpenCifsServer\Sample.OpenCifsServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Pipelines" />
+    <PackageReference Include="Touchstone.Core" />
+  </ItemGroup>
+
+</Project>
