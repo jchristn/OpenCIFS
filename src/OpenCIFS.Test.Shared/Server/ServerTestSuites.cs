@@ -147,6 +147,48 @@ namespace OpenCIFS.Server.Tests.Shared
                         }),
                     new TestCaseDescriptor(
                         suiteId: "Server.Defaults",
+                        caseId: "EqualDialectBoundsAccepted",
+                        displayName: "Server options accept an equal minimum and maximum dialect bound",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerOptions options = new OpenCifsServerOptions
+                            {
+                                MinimumDialect = SmbDialect.Smb302,
+                                MaximumDialect = SmbDialect.Smb302
+                            };
+
+                            options.Validate();
+                            return Task.CompletedTask;
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Server.Defaults",
+                        caseId: "InvertedDialectRangeRejected",
+                        displayName: "Server options reject a maximum dialect below the minimum dialect",
+                        executeAsync: token =>
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            OpenCifsServerOptions options = new OpenCifsServerOptions
+                            {
+                                MinimumDialect = SmbDialect.Smb302,
+                                MaximumDialect = SmbDialect.Smb2002
+                            };
+
+                            try
+                            {
+                                options.Validate();
+                            }
+                            catch (ArgumentException)
+                            {
+                                return Task.CompletedTask;
+                            }
+
+                            throw new InvalidOperationException("Expected Validate to reject a maximum dialect below the minimum dialect.");
+                        }),
+                    new TestCaseDescriptor(
+                        suiteId: "Server.Defaults",
                         caseId: "SampleConfigurationExists",
                         displayName: "Sample configuration file exists",
                         executeAsync: token =>
