@@ -3,6 +3,9 @@
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <UseAppHost>true</UseAppHost>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     <RootNamespace>OpenCIFS.Test.Xunit</RootNamespace>
   </PropertyGroup>
 
@@ -13,8 +16,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="Touchstone.Core" />
-    <PackageReference Include="Touchstone.XunitAdapter" />
-    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
 
