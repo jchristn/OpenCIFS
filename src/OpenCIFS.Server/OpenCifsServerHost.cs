@@ -59,7 +59,7 @@ namespace OpenCIFS.Server
         private readonly Dictionary<ulong, byte[]> _RetainedResponseSigningKeys = new Dictionary<ulong, byte[]>();
         private readonly Dictionary<ulong, byte[]> _RetainedResponseEncryptionKeys = new Dictionary<ulong, byte[]>();
         private readonly Dictionary<string, ulong> _DeclaredAllocationSizes = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, TrackedFileTimestamps> _TrackedFileTimestamps = new Dictionary<string, TrackedFileTimestamps>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TrackedFileTimestamps> _TrackedFileTimestamps;
         private readonly OpenCifsServerSharedState _SharedState;
         private readonly SemaphoreSlim _AsyncResponseSignal = new SemaphoreSlim(0);
         private readonly ulong _ServerStartTime;
@@ -90,6 +90,10 @@ namespace OpenCIFS.Server
             Options = options ?? throw new ArgumentNullException(nameof(options), "Options cannot be null.");
             Options.Validate();
             _SharedState = sharedState ?? new OpenCifsServerSharedState();
+
+            // Timestamps are tracked server-wide, not per connection: every connection (and every client) must observe
+            // the same creation, access, write, and change times for a path.
+            _TrackedFileTimestamps = _SharedState.TrackedFileTimestamps;
             ServerGuid = Guid.NewGuid();
             _ServerStartTime = ToFileTimeUtc(DateTimeOffset.UtcNow);
             _AvailableMessageIds.Add(0);
@@ -1966,6 +1970,14 @@ namespace OpenCIFS.Server
                 State = openState
             };
             sessionRecord.Opens[fileId] = openRecord;
+
+            if (!isDirectoryRequest &&
+                (createAction == Smb2CreateAction.Overwritten || createAction == Smb2CreateAction.Superseded))
+            {
+                // Truncating an existing file is a modification: advance the last-write and change times even when
+                // no data is written afterwards (for example an empty overwrite).
+                NoteTimestampMutation(openRecord, updateLastWrite: true, updateChange: true);
+            }
 
             if (attachedLeaseRecord != null)
             {
@@ -6988,14 +7000,14 @@ namespace OpenCIFS.Server
 
             if (updateLastAccess)
             {
-                SetLastAccessTimeUtc(openRecord.Backend, openRecord.FullPath, DateTime.FromFileTimeUtc(unchecked((long)currentTime)));
+                SetOpenLastAccessTimeUtc(openRecord, DateTime.FromFileTimeUtc(unchecked((long)currentTime)));
                 timestamps.LastAccessTime = currentTime;
                 changeNotifyFilter |= FileNotifyChangeFilter.LastAccess;
             }
 
             if (updateLastWrite)
             {
-                SetLastWriteTimeUtc(openRecord.Backend, openRecord.FullPath, DateTime.FromFileTimeUtc(unchecked((long)currentTime)));
+                SetOpenLastWriteTimeUtc(openRecord, DateTime.FromFileTimeUtc(unchecked((long)currentTime)));
                 timestamps.LastWriteTime = currentTime;
                 changeNotifyFilter |= FileNotifyChangeFilter.LastWrite;
             }
@@ -7007,6 +7019,63 @@ namespace OpenCIFS.Server
 
             _TrackedFileTimestamps[openRecord.FullPath] = timestamps;
             return changeNotifyFilter;
+        }
+
+        private static void SetOpenLastWriteTimeUtc(ServerOpenRecord openRecord, DateTime utcValue)
+        {
+            // Stamp the time through the handle that wrote the data. NTFS treats a time set on a handle as explicitly
+            // set for that handle and does not overwrite it with its own clock when the handle is later flushed or
+            // closed. Setting it through a separate path-based handle (as before) let NTFS replace it at close, so the
+            // time on disk drifted from the tracked value that clients had already observed.
+            if (!TrySetTimeThroughOpenHandle(openRecord, utcValue, lastWrite: true))
+            {
+                SetLastWriteTimeUtc(openRecord.Backend, openRecord.FullPath, utcValue);
+            }
+        }
+
+        private static void SetOpenLastAccessTimeUtc(ServerOpenRecord openRecord, DateTime utcValue)
+        {
+            if (!TrySetTimeThroughOpenHandle(openRecord, utcValue, lastWrite: false))
+            {
+                SetLastAccessTimeUtc(openRecord.Backend, openRecord.FullPath, utcValue);
+            }
+        }
+
+        private static bool TrySetTimeThroughOpenHandle(ServerOpenRecord openRecord, DateTime utcValue, bool lastWrite)
+        {
+            FileStream? stream = openRecord.Stream;
+
+            if (stream == null || !stream.CanWrite || stream.SafeFileHandle.IsClosed)
+            {
+                // Read-only handles lack FILE_WRITE_ATTRIBUTES; fall back to the backend's path-based setter.
+                return false;
+            }
+
+            try
+            {
+                if (lastWrite)
+                {
+                    File.SetLastWriteTimeUtc(stream.SafeFileHandle, utcValue);
+                }
+                else
+                {
+                    File.SetLastAccessTimeUtc(stream.SafeFileHandle, utcValue);
+                }
+
+                return true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (PlatformNotSupportedException)
+            {
+                return false;
+            }
         }
 
         private void SetTrackedChangeTime(OpenCifsServerShareBackend backend, string fullPath, ulong fileTime)
@@ -9175,17 +9244,6 @@ namespace OpenCIFS.Server
             public ulong TotalAllocationUnits;
 
             public ulong AvailableAllocationUnits;
-        }
-
-        private struct TrackedFileTimestamps
-        {
-            public ulong CreationTime;
-
-            public ulong LastAccessTime;
-
-            public ulong LastWriteTime;
-
-            public ulong ChangeTime;
         }
 
         private enum FileTimeField

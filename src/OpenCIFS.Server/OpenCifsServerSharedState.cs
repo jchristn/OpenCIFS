@@ -11,6 +11,11 @@ namespace OpenCIFS.Server
     {
         internal object SyncRoot { get; } = new object();
 
+        /// <summary>
+        /// Server-wide tracked file timestamps keyed by full backing path, shared by every connection-scoped host.
+        /// </summary>
+        internal Dictionary<string, TrackedFileTimestamps> TrackedFileTimestamps { get; } = new Dictionary<string, TrackedFileTimestamps>(StringComparer.OrdinalIgnoreCase);
+
         internal IReadOnlyCollection<OpenCifsServerHost> Hosts
         {
             get
