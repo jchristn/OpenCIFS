@@ -200,6 +200,31 @@ Notes:
 - One `OpenCifsClient` (and every `OpenCifsShareSession` opened from it) is safe to share across concurrent callers. Requests are serialized over the single SMB connection, so concurrent operations interleave at request granularity rather than running in parallel on the wire. A long-lived `Directories.WaitForChangeAsync(...)` holds the connection until it completes or is cancelled, so use a dedicated client for change notifications. Open more clients if you need more parallel throughput.
 - Cancelling an operation is safe: the connection drains the abandoned response before the next request, so later operations on the same client keep working.
 
+### Connection Loss And Timeouts
+
+Transport failures on the client surfaces raise `OpenCifsClientTransportException` (an `OpenCifsClientException` with category `IoError`; the original `SocketException`, `IOException`, or framing failure is the `InnerException`). That covers refused connects, connect timeouts, and a server that closes or resets the connection. `OperationCanceledException` is raised only when your own `CancellationToken` is cancelled.
+
+```csharp
+try
+{
+    await share.Files.WriteAllBytesAsync("/docs/hello.txt", payload);
+}
+catch (OpenCifsClientTransportException exception) when (exception.IsTimeout)
+{
+    // ConnectTimeoutMs elapsed while connecting; exception.InnerException is a TimeoutException.
+}
+catch (OpenCifsClientTransportException)
+{
+    // The connection is gone: client.IsConnected and client.IsAuthenticated are now false.
+    // Reconnect (await client.ConnectAsync(credential)) or build a new client, then reopen the share.
+}
+```
+
+- `IsConnected` / `IsAuthenticated` turn `false` as soon as the transport is known to be closed, so you can check them before reusing a pooled client.
+- Operations that are in flight when the connection drops fail promptly with the transport exception; later calls on the same client and its share sessions keep failing with it until you reconnect.
+- The `Try...Async` companions return transport failures as failure results with `ErrorCategory == OpenCifsErrorCategory.IoError`.
+- `WithConnectTimeoutMs(...)` bounds the TCP connect plus the SMB NEGOTIATE exchange. There is no per-request response timeout; use a `CancellationToken` to bound individual operations.
+
 Server-returned SMB failures on the high-level and advanced client surfaces now raise `OpenCifsStatusException`, so callers can inspect the exact SMB2 command, NTSTATUS, and normalized category:
 
 ```csharp

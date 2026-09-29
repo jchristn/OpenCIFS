@@ -20,7 +20,7 @@
     <PackageProjectUrl>https://github.com/jchristn/OpenCIFS</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageReleaseNotes>0.1.1: fixed truncated multi-page directory enumeration (and '.'/'..' are no longer returned), short-read truncation in ReadAllBytesAsync, READ/WRITE frames that exceeded the direct-TCP frame limit, stale responses after cancellation, and unsafe concurrent use of one client connection; added ranged ReadAsync, streaming OpenReadAsync and WriteAsync(Stream), Metadata.ExistsAsync, recursive Directories.CreateAsync, share-root paths, and directory-entry IsDirectory plus UTC timestamps. See https://github.com/jchristn/OpenCIFS/blob/main/CHANGELOG.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.1: fixed truncated multi-page directory enumeration (and '.'/'..' are no longer returned), short-read truncation in ReadAllBytesAsync, READ/WRITE frames that exceeded the direct-TCP frame limit, stale responses after cancellation, unsafe concurrent use of one client connection, raw ChannelClosedException on transport loss, and OperationCanceledException on connect timeout; added OpenCifsClientTransportException, ranged ReadAsync, streaming OpenReadAsync and WriteAsync(Stream), Metadata.ExistsAsync, recursive Directories.CreateAsync, share-root paths, and directory-entry IsDirectory plus UTC timestamps. See https://github.com/jchristn/OpenCIFS/blob/main/CHANGELOG.md.</PackageReleaseNotes>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
 

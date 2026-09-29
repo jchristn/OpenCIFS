@@ -4,6 +4,7 @@
     using System.Collections.Generic;
     using System.Net.Sockets;
     using System.Threading;
+    using System.Threading.Channels;
     using System.Threading.Tasks;
     using OpenCIFS.Protocol;
     using OpenCIFS.Transport;
@@ -53,22 +54,27 @@
         /// <summary>
         /// Whether a direct-TCP transport connection is currently active.
         /// </summary>
+        /// <remarks>
+        /// Reports <c>false</c> as soon as the transport is known to be unusable (peer close, reset, or failed write), even
+        /// before the next operation observes the failure, so callers can detect a dead connection and rebuild it.
+        /// </remarks>
         public bool IsConnected
         {
             get
             {
-                return _Connection != null;
+                FramedPipeConnection? connection = _Connection;
+                return connection != null && !connection.IsClosed;
             }
         }
 
         /// <summary>
-        /// Whether the active client session is authenticated.
+        /// Whether the active client session is authenticated over a live transport.
         /// </summary>
         public bool IsAuthenticated
         {
             get
             {
-                return _Session.IsAuthenticated;
+                return IsConnected && _Session.IsAuthenticated;
             }
         }
 
@@ -91,6 +97,7 @@
                 throw new OpenCifsClientStateException("The client connection is already connected.");
             }
 
+            _TransportFailure = null;
             ResetSession();
 
             using CancellationTokenSource timeoutTokenSource = new CancellationTokenSource(Options.ConnectTimeoutMs);
@@ -106,10 +113,27 @@
                 _Connection.Start();
                 await NegotiateAsync(linkedToken).ConfigureAwait(false);
             }
-            catch
+            catch (Exception exception)
             {
                 await ResetTransportAsync().ConfigureAwait(false);
                 ResetSession();
+
+                if (exception is OperationCanceledException &&
+                    !cancellationToken.IsCancellationRequested &&
+                    timeoutTokenSource.IsCancellationRequested)
+                {
+                    // The caller's token was never cancelled: this is the connect timeout, not a cancellation.
+                    string timeoutMessage = "Connecting to " + Options.ServerName + ":" + Options.ServerPort + " did not complete within the " + Options.ConnectTimeoutMs + " ms connect timeout.";
+                    throw new OpenCifsClientTransportException(timeoutMessage, new TimeoutException(timeoutMessage, exception), isTimeout: true);
+                }
+
+                if (exception is SocketException || exception is System.IO.IOException)
+                {
+                    throw new OpenCifsClientTransportException(
+                        "Connecting to " + Options.ServerName + ":" + Options.ServerPort + " failed: " + exception.Message,
+                        exception);
+                }
+
                 throw;
             }
         }
@@ -1643,7 +1667,7 @@
 
             if (_Connection == null)
             {
-                throw new OpenCifsClientStateException("The client connection is not connected.");
+                throw CreateNotConnectedException();
             }
 
             byte[] responseBytes = await ReadNextResponsePacketBytesAsync(cancellationToken).ConfigureAwait(false);
@@ -1720,7 +1744,7 @@
 
             if (_Connection == null)
             {
-                throw new OpenCifsClientStateException("The client connection is not connected.");
+                throw CreateNotConnectedException();
             }
 
             byte[] responseBytes = await ReadNextResponsePacketBytesAsync(cancellationToken).ConfigureAwait(false);
@@ -2448,7 +2472,7 @@
 
             if (_Connection == null)
             {
-                throw new OpenCifsClientStateException("The client connection is not connected.");
+                throw CreateNotConnectedException();
             }
 
             await ResetTransportAsync().ConfigureAwait(false);
@@ -2529,6 +2553,8 @@
 
         private async Task DisconnectCoreAsync(CancellationToken cancellationToken)
         {
+            _TransportFailure = null;
+
             if (_Connection == null)
             {
                 ResetSession();
@@ -2687,13 +2713,13 @@
 
             if (_Connection == null)
             {
-                throw new OpenCifsClientStateException("The client connection is not connected.");
+                throw CreateNotConnectedException();
             }
 
             // Once message identifiers are allocated the request must reach the server, otherwise the local
             // sequence window and the server's view of outstanding credits diverge. Only the response wait
             // honors cancellation; an abandoned response is drained later by ReadNextResponsePacketBytesAsync.
-            await _Connection.WriteAsync(_Session.FinalizeRequestPacket(requestPacket), CancellationToken.None).ConfigureAwait(false);
+            await TransportWriteAsync(_Session.FinalizeRequestPacket(requestPacket), CancellationToken.None).ConfigureAwait(false);
             byte[] responseBytes;
 
             try
@@ -2758,7 +2784,7 @@
 
             if (_Connection == null)
             {
-                throw new OpenCifsClientStateException("The client connection is not connected.");
+                throw CreateNotConnectedException();
             }
 
             Smb2CompoundPacket requestPacket = new Smb2CompoundPacket(new Smb2CompoundPacketEntry[]
@@ -2766,7 +2792,7 @@
                 new Smb2CompoundPacketEntry(requestHeader, requestPayload)
             });
 
-            await _Connection.WriteAsync(_Session.FinalizeRequestPacket(requestPacket), cancellationToken).ConfigureAwait(false);
+            await TransportWriteAsync(_Session.FinalizeRequestPacket(requestPacket), cancellationToken).ConfigureAwait(false);
 
             bool cancellationRequested = false;
             bool cancelIssued = false;
@@ -2850,7 +2876,7 @@
 
             if (_Connection == null)
             {
-                throw new OpenCifsClientStateException("The client connection is not connected.");
+                throw CreateNotConnectedException();
             }
 
             Smb2CompoundPacket requestPacket = new Smb2CompoundPacket(new Smb2CompoundPacketEntry[]
@@ -2858,7 +2884,7 @@
                 new Smb2CompoundPacketEntry(requestHeader, requestPayload)
             });
 
-            await _Connection.WriteAsync(_Session.FinalizeRequestPacket(requestPacket), CancellationToken.None).ConfigureAwait(false);
+            await TransportWriteAsync(_Session.FinalizeRequestPacket(requestPacket), CancellationToken.None).ConfigureAwait(false);
             bool pendingResponseObserved = false;
 
             while (true)
@@ -3250,7 +3276,7 @@
         {
             if (_Connection == null)
             {
-                throw new OpenCifsClientStateException("The client connection is not connected.");
+                throw CreateNotConnectedException();
             }
 
             Smb2Header cancelHeader = _Session.CreateCancelRequestHeader(pendingMessageId);
@@ -3259,14 +3285,14 @@
             {
                 new Smb2CompoundPacketEntry(cancelHeader, cancelRequest.ToByteArray())
             });
-            await _Connection.WriteAsync(_Session.FinalizeRequestPacket(cancelPacket), CancellationToken.None).ConfigureAwait(false);
+            await TransportWriteAsync(_Session.FinalizeRequestPacket(cancelPacket), CancellationToken.None).ConfigureAwait(false);
         }
 
         private async Task<byte[]> ReadNextResponsePacketBytesAsync(CancellationToken cancellationToken)
         {
             if (_Connection == null)
             {
-                throw new OpenCifsClientStateException("The client connection is not connected.");
+                throw CreateNotConnectedException();
             }
 
             if (_DeferredResponsePackets.Count > 0)
@@ -3276,7 +3302,7 @@
 
             while (true)
             {
-                byte[] responseBytes = _Session.UnwrapResponsePacket(await _Connection.ReadAsync(cancellationToken).ConfigureAwait(false));
+                byte[] responseBytes = _Session.UnwrapResponsePacket(await TransportReadAsync(cancellationToken).ConfigureAwait(false));
 
                 if (_AbandonedMessageIds.Count == 0 || !TryDrainAbandonedResponse(responseBytes))
                 {
@@ -3295,7 +3321,7 @@
                     return;
                 }
 
-                byte[] responseBytes = _Session.UnwrapResponsePacket(await _Connection.ReadAsync(cancellationToken).ConfigureAwait(false));
+                byte[] responseBytes = _Session.UnwrapResponsePacket(await TransportReadAsync(cancellationToken).ConfigureAwait(false));
 
                 if (!TryDrainAbandonedResponse(responseBytes))
                 {
@@ -3532,6 +3558,7 @@
         private void EnsureNegotiatedConnection()
         {
             ThrowIfDisposed();
+            ThrowIfTransportLost();
 
             if (_Connection == null || !_Session.IsNegotiated)
             {
@@ -3542,6 +3569,7 @@
         private void EnsureAuthenticatedSession()
         {
             ThrowIfDisposed();
+            ThrowIfTransportLost();
 
             if (_Connection == null || !_Session.IsAuthenticated || _Session.SessionId == null)
             {
@@ -3717,7 +3745,14 @@
                 {
                 }
 
-                await connection.DisposeAsync().ConfigureAwait(false);
+                try
+                {
+                    await connection.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsTransportException(exception) || exception is ArgumentException || exception is OperationCanceledException)
+                {
+                    // The read or write loop already failed; that failure has been (or is being) reported to the caller.
+                }
             }
 
             if (tcpClient != null)
@@ -3885,6 +3920,110 @@
             return clones;
         }
 
+        internal Exception? GetTransportFailure()
+        {
+            Exception? failure = _TransportFailure;
+
+            if (failure != null)
+            {
+                return failure;
+            }
+
+            FramedPipeConnection? connection = _Connection;
+            return connection != null && connection.IsClosed
+                ? connection.Fault ?? CreatePeerClosedException()
+                : null;
+        }
+
+        internal OpenCifsClientTransportException CreateTransportLostException(Exception cause)
+        {
+            return new OpenCifsClientTransportException(
+                "The connection to " + Options.ServerName + ":" + Options.ServerPort + " was lost: " + cause.Message + " Reconnect or create a new client to continue.",
+                cause);
+        }
+
+        private async Task TransportWriteAsync(byte[] payload, CancellationToken cancellationToken)
+        {
+            FramedPipeConnection connection = _Connection ?? throw CreateNotConnectedException();
+
+            try
+            {
+                await connection.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsTransportException(exception))
+            {
+                Exception cause = UnwrapTransportFailure(exception);
+                await HandleTransportLossAsync(cause).ConfigureAwait(false);
+                throw CreateTransportLostException(cause);
+            }
+        }
+
+        private async Task<byte[]> TransportReadAsync(CancellationToken cancellationToken)
+        {
+            FramedPipeConnection connection = _Connection ?? throw CreateNotConnectedException();
+
+            try
+            {
+                return await connection.ReadAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsTransportException(exception))
+            {
+                Exception cause = UnwrapTransportFailure(exception);
+                await HandleTransportLossAsync(cause).ConfigureAwait(false);
+                throw CreateTransportLostException(cause);
+            }
+        }
+
+        private async Task HandleTransportLossAsync(Exception cause)
+        {
+            // Tear the dead transport down so IsConnected/IsAuthenticated report false and every tracked handle is
+            // invalidated. Durable reconnect state is preserved so durable opens can be reconnected on a new session.
+            _TransportFailure ??= cause;
+            await ResetTransportAsync().ConfigureAwait(false);
+            ResetSession(invalidateDurableReconnect: false);
+        }
+
+        private void ThrowIfTransportLost()
+        {
+            Exception? failure = _TransportFailure;
+
+            if (_Connection == null && failure != null)
+            {
+                throw CreateTransportLostException(failure);
+            }
+        }
+
+        private OpenCifsClientException CreateNotConnectedException()
+        {
+            Exception? failure = _TransportFailure;
+            return failure != null
+                ? CreateTransportLostException(failure)
+                : new OpenCifsClientStateException("The client connection is not connected.");
+        }
+
+        private static Exception UnwrapTransportFailure(Exception exception)
+        {
+            if (exception is ChannelClosedException)
+            {
+                return exception.InnerException ?? CreatePeerClosedException();
+            }
+
+            return exception;
+        }
+
+        private static System.IO.IOException CreatePeerClosedException()
+        {
+            return new System.IO.IOException("The server closed the connection.");
+        }
+
+        private static bool IsTransportException(Exception exception)
+        {
+            return exception is ChannelClosedException ||
+                exception is System.IO.IOException ||
+                exception is SocketException ||
+                exception is ObjectDisposedException;
+        }
+
         private async Task RunExclusiveAsync(Func<Task> operation, CancellationToken cancellationToken)
         {
             await RunExclusiveAsync<object?>(
@@ -3911,6 +4050,15 @@
             try
             {
                 _OperationLockHeld.Value = true;
+
+                // A transport that died while idle (for example the server restarted) is torn down here so the operation
+                // fails with a transport exception instead of writing into a closed connection.
+                FramedPipeConnection? currentConnection = _Connection;
+
+                if (currentConnection != null && currentConnection.IsClosed)
+                {
+                    await HandleTransportLossAsync(currentConnection.Fault ?? CreatePeerClosedException()).ConfigureAwait(false);
+                }
 
                 // Responses to requests whose callers were cancelled still carry the credits the next request
                 // needs, so consume them before issuing anything new on the shared stream.
@@ -3951,6 +4099,7 @@
         private readonly AsyncLocal<bool> _OperationLockHeld = new AsyncLocal<bool>();
         private readonly HashSet<ulong> _AbandonedMessageIds = new HashSet<ulong>();
         private readonly Queue<byte[]> _DeferredResponsePackets = new Queue<byte[]>();
+        private Exception? _TransportFailure;
         private OpenCifsClientSession _Session;
         private FramedPipeConnection? _Connection;
         private TcpClient? _TcpClient;

@@ -60,6 +60,30 @@ namespace OpenCIFS.Transport
         }
 
         /// <summary>
+        /// Whether the connection can no longer exchange frames: it was disposed, the peer closed or reset the inbound
+        /// stream and every buffered inbound frame has been consumed, or the outbound write loop stopped.
+        /// </summary>
+        public bool IsClosed
+        {
+            get
+            {
+                return _Disposed ||
+                    (_Started && (_InboundFrames.Reader.Completion.IsCompleted || _WriteLoop.IsCompleted));
+            }
+        }
+
+        /// <summary>
+        /// First transport failure observed by the read or write loop, or null when the loops stopped cleanly.
+        /// </summary>
+        public Exception? Fault
+        {
+            get
+            {
+                return Volatile.Read(ref _Fault);
+            }
+        }
+
+        /// <summary>
         /// Start the read and write loops.
         /// </summary>
         public void Start()
@@ -74,6 +98,7 @@ namespace OpenCIFS.Transport
             _Started = true;
             Task readLoop = ReadLoopAsync(_CancellationTokenSource.Token);
             Task writeLoop = WriteLoopAsync(_CancellationTokenSource.Token);
+            _WriteLoop = writeLoop;
             _Completion = Task.WhenAll(readLoop, writeLoop);
         }
 
@@ -232,6 +257,7 @@ namespace OpenCIFS.Transport
             }
             catch (Exception exception)
             {
+                RecordFault(exception);
                 _InboundFrames.Writer.TryComplete(exception);
                 throw;
             }
@@ -277,6 +303,16 @@ namespace OpenCIFS.Transport
             catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
             {
             }
+            catch (Exception exception)
+            {
+                // A failed write means no further request can reach the peer. Complete both frame queues with the
+                // failure so pending and future reads and writes fail promptly instead of waiting for a response to a
+                // request that was never sent.
+                RecordFault(exception);
+                _OutboundFrames.Writer.TryComplete(exception);
+                _InboundFrames.Writer.TryComplete(exception);
+                throw;
+            }
             finally
             {
                 try
@@ -292,6 +328,11 @@ namespace OpenCIFS.Transport
             }
         }
 
+        private void RecordFault(Exception exception)
+        {
+            Interlocked.CompareExchange(ref _Fault, exception, null);
+        }
+
         private readonly PipeReader _InboundReader;
         private readonly PipeWriter _OutboundWriter;
         private readonly IFrameProtocol _FrameProtocol;
@@ -300,6 +341,8 @@ namespace OpenCIFS.Transport
         private readonly Channel<byte[]> _OutboundFrames;
         private readonly CancellationTokenSource _CancellationTokenSource = new CancellationTokenSource();
         private Task _Completion = Task.CompletedTask;
+        private Task _WriteLoop = Task.CompletedTask;
+        private Exception? _Fault;
         private bool _Started = false;
         private bool _Disposed = false;
     }

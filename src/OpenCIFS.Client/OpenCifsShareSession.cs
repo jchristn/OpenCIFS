@@ -252,6 +252,13 @@
 
             if (!_Client.IsConnected || !_Client.IsAuthenticated)
             {
+                Exception? transportFailure = _Client.Connection.GetTransportFailure();
+
+                if (transportFailure != null)
+                {
+                    throw _Client.Connection.CreateTransportLostException(transportFailure);
+                }
+
                 throw new OpenCifsClientStateException("The parent client must remain connected and authenticated while using a share session.");
             }
         }

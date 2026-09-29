@@ -50,6 +50,7 @@
                     ClientPrimarySuite(),
                     ClientPrimaryDataSuiteBuilder.ClientPrimaryDataSuite(),
                     ClientPrimaryRangeAndStreamSuiteBuilder.ClientPrimaryRangeAndStreamSuite(),
+                    ClientTransportFailureSuiteBuilder.ClientTransportFailureSuite(),
                     ClientFacadeSuite()
                 };
             }
