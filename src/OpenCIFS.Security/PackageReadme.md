@@ -2,7 +2,7 @@
 
 Shared OpenCIFS security helpers for NTLMv2, SPNEGO, signing, encryption, transcript hashing, and SMB key derivation.
 
-OpenCIFS `0.1.0` is alpha software. This package reflects the bounded security surface currently exercised by OpenCIFS, and exhaustive compatibility testing across SMB dialects, authentication environments, and external peers has not been performed.
+OpenCIFS `0.1.1` is alpha software. This package reflects the bounded security surface currently exercised by OpenCIFS, and exhaustive compatibility testing across SMB dialects, authentication environments, and external peers has not been performed.
 
 ## Scope
 

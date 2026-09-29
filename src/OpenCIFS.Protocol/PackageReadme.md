@@ -2,7 +2,7 @@
 
 Shared SMB/CIFS protocol models, enums, codecs, validators, and state types used by the OpenCIFS client and server packages.
 
-OpenCIFS `0.1.0` is alpha software. This package exposes bounded protocol foundations used by the current client and server surfaces, and exhaustive compatibility testing across SMB dialects and external peers has not been performed.
+OpenCIFS `0.1.1` is alpha software. This package exposes bounded protocol foundations used by the current client and server surfaces, and exhaustive compatibility testing across SMB dialects and external peers has not been performed.
 
 ## Scope
 

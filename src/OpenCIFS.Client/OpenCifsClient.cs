@@ -8,6 +8,12 @@ namespace OpenCIFS.Client
     /// <summary>
     /// Primary OpenCIFS client happy-path surface.
     /// </summary>
+    /// <remarks>
+    /// One client owns one SMB connection. The client and every <see cref="OpenCifsShareSession"/> opened from it are safe
+    /// to use from concurrent callers: requests are serialized over the connection, so concurrent operations interleave
+    /// at request granularity. A long wait such as <see cref="OpenCifsShareDirectoryOperations.WaitForChangeAsync"/> holds
+    /// the connection until it completes or is cancelled; use a separate client for long-lived notification waits.
+    /// </remarks>
     public sealed class OpenCifsClient : IDisposable, IAsyncDisposable
     {
         /// <summary>

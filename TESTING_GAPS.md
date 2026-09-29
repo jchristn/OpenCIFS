@@ -1,8 +1,8 @@
 ﻿# Testing Gaps
 
-Reviewed on 2026-05-18.
+Reviewed on 2026-09-28.
 
-Bottom line: OpenCIFS `0.1.0` is alpha software. The repository has strong internal coverage and bounded external interoperability coverage, but thorough or exhaustive compatibility testing has not yet been completed.
+Bottom line: OpenCIFS `0.1.1` is alpha software. The repository has strong internal coverage and bounded external interoperability coverage, but thorough or exhaustive compatibility testing has not yet been completed.
 
 ## 1. OpenCIFS client against a live Docker CIFS server
 
@@ -16,6 +16,7 @@ What exists:
 - `eng/run-local-windows-server-interop.ps1` can provision a temporary local Windows SMB share plus local account from an elevated PowerShell session, delegate to `eng/run-windows-server-interop.ps1`, and clean up afterward.
 - `docs/interop-matrix.md` records passing evidence for `OpenCIFS.Client -> Samba server` on SMB 2.0.2, SMB 2.1, and SMB 3.0.2.
 - The checked-in Docker peer matrix now includes Samba `smbd` 4.17.12 on Debian bookworm and 4.22.8 on Debian trixie.
+- Since 0.1.1, every `eng/run-samba-interop.ps1` dialect lane also runs a primary-surface pass against a container-local Samba share: recursive create, `ExistsAsync`, zero-length and read-only files, 5 MiB transfers, ranged and streamed reads, streamed writes, a 1,500-entry multi-page enumeration, dot-entry exclusion, directory-entry timestamps, and a 32-worker concurrency stress on one share session.
 
 Gaps:
 - Only one live Docker server implementation family is covered: Samba, now with Bookworm and Trixie peer-matrix evidence.
@@ -185,6 +186,9 @@ Keep this section as the execution register for the gaps above. When an item lan
 | TG-010 | P2 | completed | Define and implement a real SMB1/CIFS interop policy. Real SMB1 peer interoperability is excluded from current release-gated interoperability claims; any future real SMB1 testing must be isolated, opt-in, and separate from default gates. | `docs/coverage-matrix.md`, `docs/interop-matrix.md`, `README.md`, `OPENCIFS.md`, and this file consistently state that SMB1 codec/bootstrap work exists but real SMB1 peer interop remains outside the current claim scope. | Completed in docs; add an `eng/` SMB1 harness only if the project deliberately expands scope later. |
 | TG-011 | P2 | in_progress | Add Kerberos SMB interoperability coverage after native Kerberos support exists. The codebase now has explicit client and server authentication-mechanism plumbing plus bounded Kerberos SPNEGO advertisement/selection handling, but it still lacks real Kerberos token exchange and SMB session-key derivation. Test domain-backed authentication against Windows and, if feasible, Samba AD after that product work lands. | Coverage rows move from Kerberos backlog to implemented or shared as appropriate; interop evidence records domain setup, principal, dialect, signing, encryption, and failure modes without storing secrets. | Groundwork now exists in `src/OpenCIFS.Security/OpenCifsAuthenticationMechanism*.cs`, `src/OpenCIFS.Client/OpenCifsClientCredential.cs`, `src/OpenCIFS.Client/OpenCifsClientSession.cs`, `src/OpenCIFS.Server/OpenCifsServerOptions.cs`, and `src/OpenCIFS.Server/OpenCifsServerHost.cs`. Remaining blockers are still product-level: no GSS-API/SSPI-backed Kerberos token generation or verification, no exported Kerberos SMB session-key plumbing for signing or encryption, and no domain-backed external harness yet. |
 | TG-012 | P2 | completed | Keep evidence freshness enforceable. The current policy is exact `AsOfDate` matching for passed interop rows and non-`n/a` coverage verification dates during release validation. | `eng/validate-release-artifacts.ps1` rejects stale passed matrix rows relative to its `-AsOfDate` value; evidence refreshes must update `docs/interop-matrix.md` and `docs/coverage-matrix.md` in the same change as the artifacts. | Completed in `eng/validate-release-artifacts.ps1` and documented in this register. |
+| TG-013 | P0 | completed | Cover the primary client data path beyond single-response happy paths: multi-page directory enumeration, short server reads, multi-megabyte transfers that exceed one transport frame, zero-length files, read-only files, and the share root. | Large directories, short reads, and >1 MiB transfers are proven against the managed server and Samba, and the fixes are recorded in `CHANGELOG.md`. | Completed in 0.1.1 with the `Client.PrimaryData` and `Client.PrimaryRangeAndStream` Touchstone suites (1,600-entry enumeration, a short-read share backend, 5 MiB round trips, zero-length and read-only files, share-root paths) and the `PrimarySurface` pass of `eng/run-samba-interop.ps1` (1,500 entries, 5 MiB, zero-length, read-only) on SMB 2.0.2, SMB 2.1, and SMB 3.0.2. |
+| TG-014 | P0 | completed | Prove that one `OpenCifsClient` / `OpenCifsShareSession` is safe under concurrent callers and after cancellation. | Stress tests with at least 32 concurrent mixed operations on one share session pass against the managed server and Samba, and a cancelled operation no longer breaks later operations on the same connection. | Completed in 0.1.1: connection operations are serialized internally and abandoned responses are drained; covered by the 32-worker stress cases in `Client.PrimaryData` and `Client.PrimaryRangeAndStream`, the cancellation-recovery case, and the 32-worker `PrimarySurface` stress in the Samba harness. True wire-level multiplexing (parallel in-flight requests on one connection) remains backlog. |
+| TG-015 | P1 | completed | Exercise the 0.1.1 ranged, streamed, existence, and recursive-create APIs against a real server. | `ReadAsync`, `OpenReadAsync`, `WriteAsync(Stream)`, `ExistsAsync`, and `CreateAsync(path, createParents)` pass against Samba on every default dialect lane. | Completed in 0.1.1 through the Samba harness `PrimarySurface` pass; Windows-server coverage of the same APIs remains part of TG-001. |
 
 Suggested execution order:
 1. Run `eng/run-local-windows-server-interop.ps1` from an elevated PowerShell session, or point `eng/run-windows-server-interop.ps1` at another live Windows SMB target, so TG-001 can move from harness-ready to evidenced.
@@ -196,7 +200,7 @@ Suggested execution order:
 The repository is not yet at full interoperability testing.
 
 What it has today:
-- Strong unit, shared, loopback, and managed direct-TCP regression coverage.
+- Strong unit, shared, loopback, and managed direct-TCP regression coverage, including (since 0.1.1) multi-page enumeration, short-read, multi-megabyte, cancellation-recovery, and 32-worker concurrency coverage of the primary client surface.
 - Refreshed 2026-05-15 bounded external interoperability against Samba in Docker, now with Bookworm and Trixie peer-matrix evidence plus Dockerized Samba DFS namespace coverage.
 - Refreshed 2026-05-15 bounded external server coverage against Windows built-in SMB client and Linux kernel CIFS on SMB 2.1 and SMB 3.0.2, with an explicit `smb2002` host-policy skip recorded for the current WSL2/Docker Desktop kernel.
 - Refreshed 2026-05-15 same-build managed two-process and bounded local package-feed cross-version interoperability evidence.

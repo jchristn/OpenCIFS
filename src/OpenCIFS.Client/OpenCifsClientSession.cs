@@ -17,6 +17,7 @@
         private const ulong WildcardIoctlFileId = UInt64.MaxValue;
         private const int Smb2HeaderSignatureOffset = 48;
         private const int Smb2HeaderSignatureLength = 16;
+        private const string ShareRootOpenPath = "\\";
 
         private readonly ConnectionState _ConnectionState = new ConnectionState();
         private SessionState _SessionState = new SessionState();
@@ -1498,7 +1499,7 @@
             }
 
             OpenState openState = new OpenState();
-            openState.Bind(response.PersistentFileId, response.VolatileFileId, normalizedPath);
+            openState.Bind(response.PersistentFileId, response.VolatileFileId, normalizedPath.Length == 0 ? ShareRootOpenPath : normalizedPath);
             openState.SetOplockLevel(response.OplockLevel);
             openState.SetDurable(durableGranted, durableHandleV2Granted, durableCreateGuid, durableTimeoutMs, isPersistent);
 
@@ -2572,7 +2573,7 @@
         /// <returns>Set-info request.</returns>
         public Smb2SetInfoRequest CreateSetRenameInfoRequest(ulong persistentFileId, ulong volatileFileId, string path, bool replaceIfExists = false)
         {
-            string normalizedPath = NormalizeOpenPath(path);
+            string normalizedPath = NormalizeRenamePath(path);
             return CreateSetInfoRequest(
                 persistentFileId,
                 volatileFileId,
@@ -2636,7 +2637,7 @@
         {
             ClientOpenRecord openRecord = GetTrackedOpen(persistentFileId, volatileFileId);
             ApplySetInfoResult(persistentFileId, volatileFileId, status, response);
-            openRecord.State.UpdatePath(NormalizeOpenPath(path));
+            openRecord.State.UpdatePath(NormalizeRenamePath(path));
         }
 
         /// <summary>
@@ -3424,12 +3425,24 @@
 
         private static string NormalizeOpenPath(string path)
         {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path), "Path cannot be null.");
+            }
+
+            // An empty relative name (for example "", "/", or "\") addresses the connected share root, which SMB2
+            // permits for directory OPEN and OPEN_IF creates; the create-request validator rejects other shapes.
+            return path.Trim().Replace('/', '\\').Trim('\\');
+        }
+
+        private static string NormalizeRenamePath(string path)
+        {
             if (string.IsNullOrWhiteSpace(path))
             {
                 throw new ArgumentNullException(nameof(path), "Path cannot be null or whitespace.");
             }
 
-            string normalizedPath = path.Trim().Replace('/', '\\').Trim('\\');
+            string normalizedPath = NormalizeOpenPath(path);
 
             if (normalizedPath.Length == 0)
             {

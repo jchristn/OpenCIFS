@@ -6,6 +6,8 @@ namespace OpenCIFS.SambaInterop.Console
     {
         public SambaInteropAdvancedSmb3Result AdvancedSmb3 { get; init; } = new SambaInteropAdvancedSmb3Result();
 
+        public SambaInteropPrimarySurfaceResult? PrimarySurface { get; set; }
+
         public string[] BrowsedShareNames { get; init; } = Array.Empty<string>();
 
         public string BrowsedShareLocalPath { get; init; } = string.Empty;

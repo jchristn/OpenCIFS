@@ -13,6 +13,8 @@ namespace OpenCIFS.Client
     {
         private const uint GenericReadAccess = 0x80000000U;
         private const uint GenericWriteAccess = 0x40000000U;
+        private const uint ReadAttributesAccess = 0x00000080U;
+        private const uint WriteAttributesAccess = 0x00000100U;
 
         internal OpenCifsShareMetadataOperations(OpenCifsShareSession shareSession)
         {
@@ -42,6 +44,37 @@ namespace OpenCIFS.Client
         public Task<OpenCifsClientResult<OpenCifsClientFileMetadata>> TryGetAttributesAsync(string path, CancellationToken cancellationToken = default)
         {
             return OpenCifsClientResultFactory.TryAsync(() => GetAttributesAsync(path, cancellationToken));
+        }
+
+        /// <summary>
+        /// Determine whether a file or directory exists at the specified path.
+        /// </summary>
+        /// <remarks>
+        /// Returns <c>false</c> when the server reports a not-found status for the target or any ancestor
+        /// (<c>STATUS_OBJECT_NAME_NOT_FOUND</c>, <c>STATUS_OBJECT_PATH_NOT_FOUND</c>, <c>STATUS_NO_SUCH_FILE</c>,
+        /// or <c>STATUS_NOT_A_DIRECTORY</c> for a file used as a path component) and when the target is already
+        /// delete-pending (<c>STATUS_DELETE_PENDING</c>). Every other failure, including access denied, propagates.
+        /// </remarks>
+        /// <param name="path">Relative file or directory path.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>True when a file or directory exists at the path.</returns>
+        public async Task<bool> ExistsAsync(string path, CancellationToken cancellationToken = default)
+        {
+            return await _ShareSession.ExecuteSinglePathAsync(
+                path,
+                cancellationToken,
+                (connection, treeHandle, resolvedPath, token) => ExistsCoreAsync(connection, treeHandle, resolvedPath, token)).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Determine whether a file or directory exists without throwing for typed client failures.
+        /// </summary>
+        /// <param name="path">Relative file or directory path.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>Non-throwing result envelope.</returns>
+        public Task<OpenCifsClientResult<bool>> TryExistsAsync(string path, CancellationToken cancellationToken = default)
+        {
+            return OpenCifsClientResultFactory.TryAsync(() => ExistsAsync(path, cancellationToken));
         }
 
         /// <summary>
@@ -75,10 +108,10 @@ namespace OpenCIFS.Client
 
             FileBasicInformation information = new FileBasicInformation
             {
-                CreationTime = creationTimeUtc.HasValue ? ToFileTimeUtc(creationTimeUtc.Value) : 0,
-                LastAccessTime = lastAccessTimeUtc.HasValue ? ToFileTimeUtc(lastAccessTimeUtc.Value) : 0,
-                LastWriteTime = lastWriteTimeUtc.HasValue ? ToFileTimeUtc(lastWriteTimeUtc.Value) : 0,
-                ChangeTime = changeTimeUtc.HasValue ? ToFileTimeUtc(changeTimeUtc.Value) : 0,
+                CreationTime = creationTimeUtc.HasValue ? OpenCifsClientFileTime.ToFileTimeUtc(creationTimeUtc.Value) : 0,
+                LastAccessTime = lastAccessTimeUtc.HasValue ? OpenCifsClientFileTime.ToFileTimeUtc(lastAccessTimeUtc.Value) : 0,
+                LastWriteTime = lastWriteTimeUtc.HasValue ? OpenCifsClientFileTime.ToFileTimeUtc(lastWriteTimeUtc.Value) : 0,
+                ChangeTime = changeTimeUtc.HasValue ? OpenCifsClientFileTime.ToFileTimeUtc(changeTimeUtc.Value) : 0,
                 FileAttributes = fileAttributes ?? ProtocolFileAttributes.None
             };
             await _ShareSession.ExecuteSinglePathAsync(
@@ -132,12 +165,73 @@ namespace OpenCIFS.Client
                 (connection, treeHandle, resolvedPath, token) => SetFileLengthCoreAsync(connection, treeHandle, resolvedPath, endOfFile, token)).ConfigureAwait(false);
         }
 
+        private static async Task<bool> ExistsCoreAsync(
+            OpenCifsClientConnection connection,
+            OpenCifsClientTreeHandle treeHandle,
+            string path,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                // Neither FILE_DIRECTORY_FILE nor FILE_NON_DIRECTORY_FILE is set, so files and directories both
+                // open; FILE_READ_ATTRIBUTES keeps the probe from conflicting with most existing share modes.
+                await connection.CompoundCreateQueryInfoCloseAsync(
+                    treeHandle,
+                    path,
+                    FileInformationClass.BasicInformation,
+                    desiredAccess: ReadAttributesAccess,
+                    createDisposition: Smb2CreateDisposition.Open,
+                    createOptions: Smb2CreateOptions.None,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+            catch (OpenCifsStatusException exception) when (IsNotFoundStatus(exception.Status))
+            {
+                return false;
+            }
+        }
+
+        private static bool IsShareRootPath(string path)
+        {
+            return path != null && path.Trim().Trim('/', '\\').Length == 0;
+        }
+
+        private static bool IsNotFoundStatus(NtStatus status)
+        {
+            switch (status)
+            {
+                case NtStatus.ObjectNameNotFound:
+                case NtStatus.ObjectPathNotFound:
+                case NtStatus.NoSuchFile:
+                case NtStatus.NotADirectory:
+                case NtStatus.DeletePending:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         private static async Task<OpenCifsClientFileMetadata> GetAttributesCoreAsync(
             OpenCifsClientConnection connection,
             OpenCifsClientTreeHandle treeHandle,
             string path,
             CancellationToken cancellationToken)
         {
+            if (IsShareRootPath(path))
+            {
+                // The share root is always a directory and SMB2 rejects non-directory opens with an empty name.
+                return CreateMetadataFromAllInformation(
+                    FileAllInformation.ReadFrom(
+                        await connection.CompoundCreateQueryInfoCloseAsync(
+                            treeHandle,
+                            path,
+                            FileInformationClass.AllInformation,
+                            desiredAccess: GenericReadAccess,
+                            createDisposition: Smb2CreateDisposition.Open,
+                            createOptions: Smb2CreateOptions.DirectoryFile,
+                            cancellationToken: cancellationToken).ConfigureAwait(false)));
+            }
+
             try
             {
                 return CreateMetadataFromAllInformation(
@@ -173,10 +267,12 @@ namespace OpenCIFS.Client
             FileBasicInformation information,
             CancellationToken cancellationToken)
         {
+            // FILE_WRITE_ATTRIBUTES is all FILE_BASIC_INFORMATION needs; GENERIC_WRITE would be refused for read-only
+            // files, which made it impossible to clear the read-only attribute.
             OpenCifsClientOpenHandle openHandle = await connection.OpenExistingPathAsync(
                 treeHandle,
                 path,
-                GenericWriteAccess,
+                WriteAttributesAccess,
                 cancellationToken).ConfigureAwait(false);
 
             try
@@ -228,35 +324,6 @@ namespace OpenCIFS.Client
             return OpenCifsClientResultFactory.TryAsync(() => SetFileLengthAsync(path, endOfFile, cancellationToken));
         }
 
-        private static DateTime? TryConvertFileTimeToUtcDateTime(ulong value)
-        {
-            if (value == 0 || value > Int64.MaxValue)
-            {
-                return null;
-            }
-
-            try
-            {
-                return DateTime.FromFileTimeUtc((long)value);
-            }
-            catch (ArgumentOutOfRangeException)
-            {
-                return null;
-            }
-        }
-
-        private static ulong ToFileTimeUtc(DateTime value)
-        {
-            DateTime utcValue = value.Kind switch
-            {
-                DateTimeKind.Utc => value,
-                DateTimeKind.Local => value.ToUniversalTime(),
-                _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
-            };
-
-            return unchecked((ulong)utcValue.ToFileTimeUtc());
-        }
-
         private static OpenCifsClientFileMetadata CreateMetadataFromAllInformation(FileAllInformation information)
         {
             return new OpenCifsClientFileMetadata
@@ -267,10 +334,10 @@ namespace OpenCIFS.Client
                 AllocationSize = information.StandardInformation.AllocationSize,
                 EndOfFile = information.StandardInformation.EndOfFile,
                 FileAttributes = information.BasicInformation.FileAttributes,
-                CreationTimeUtc = TryConvertFileTimeToUtcDateTime(information.BasicInformation.CreationTime),
-                LastAccessTimeUtc = TryConvertFileTimeToUtcDateTime(information.BasicInformation.LastAccessTime),
-                LastWriteTimeUtc = TryConvertFileTimeToUtcDateTime(information.BasicInformation.LastWriteTime),
-                ChangeTimeUtc = TryConvertFileTimeToUtcDateTime(information.BasicInformation.ChangeTime)
+                CreationTimeUtc = OpenCifsClientFileTime.ToUtcDateTimeOrNull(information.BasicInformation.CreationTime),
+                LastAccessTimeUtc = OpenCifsClientFileTime.ToUtcDateTimeOrNull(information.BasicInformation.LastAccessTime),
+                LastWriteTimeUtc = OpenCifsClientFileTime.ToUtcDateTimeOrNull(information.BasicInformation.LastWriteTime),
+                ChangeTimeUtc = OpenCifsClientFileTime.ToUtcDateTimeOrNull(information.BasicInformation.ChangeTime)
             };
         }
 

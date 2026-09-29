@@ -8,14 +8,19 @@
     <AnalysisLevel>latest</AnalysisLevel>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <LangVersion>latest</LangVersion>
-    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true' or '$(Configuration)' == 'Release'">true</ContinuousIntegrationBuild>
+    <Version>0.1.1</Version>
     <Company>OpenCIFS Contributors</Company>
     <Authors>OpenCIFS Contributors</Authors>
-    <RepositoryUrl>https://github.com/opencifs/opencifs</RepositoryUrl>
+    <Copyright>Copyright (c) 2026 OpenCIFS Contributors</Copyright>
+    <RepositoryUrl>https://github.com/jchristn/OpenCIFS</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
-    <PackageProjectUrl>https://github.com/opencifs/opencifs</PackageProjectUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PackageProjectUrl>https://github.com/jchristn/OpenCIFS</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReleaseNotes>0.1.1: fixed truncated multi-page directory enumeration (and '.'/'..' are no longer returned), short-read truncation in ReadAllBytesAsync, READ/WRITE frames that exceeded the direct-TCP frame limit, stale responses after cancellation, and unsafe concurrent use of one client connection; added ranged ReadAsync, streaming OpenReadAsync and WriteAsync(Stream), Metadata.ExistsAsync, recursive Directories.CreateAsync, share-root paths, and directory-entry IsDirectory plus UTC timestamps. See https://github.com/jchristn/OpenCIFS/blob/main/CHANGELOG.md.</PackageReleaseNotes>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
 

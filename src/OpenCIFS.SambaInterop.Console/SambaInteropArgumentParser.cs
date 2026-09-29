@@ -33,7 +33,10 @@ namespace OpenCIFS.SambaInterop.Console
                 LargePayloadLength = values.TryGetValue("large-payload-length", out string? largePayloadLengthValue)
                     ? Int32.Parse(largePayloadLengthValue, CultureInfo.InvariantCulture)
                     : 200000,
-                OutputPath = values.TryGetValue("output", out string? outputPath) ? outputPath : String.Empty
+                OutputPath = values.TryGetValue("output", out string? outputPath) ? outputPath : String.Empty,
+                PrimaryShare = values.TryGetValue("primary-share", out string? primaryShare) && !String.IsNullOrWhiteSpace(primaryShare)
+                    ? primaryShare
+                    : GetRequired(values, "share")
             };
         }
 

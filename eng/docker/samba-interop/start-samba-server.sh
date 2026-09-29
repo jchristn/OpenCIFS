@@ -6,6 +6,8 @@ password="${SAMBA_PASSWORD:-Password123!}"
 share_name="${SAMBA_SHARE_NAME:-share}"
 share_path="${SAMBA_SHARE_PATH:-/share}"
 workgroup="${SAMBA_WORKGROUP:-WORKGROUP}"
+scratch_share_name="${SAMBA_SCRATCH_SHARE_NAME:-}"
+scratch_share_path="${SAMBA_SCRATCH_SHARE_PATH:-/srv/samba-scratch}"
 
 mkdir -p /run/samba "${share_path}"
 
@@ -48,6 +50,29 @@ cat > /etc/samba/smb.conf <<EOF
     locking = yes
     strict locking = yes
 EOF
+
+if [ -n "${scratch_share_name}" ]; then
+    # Optional share on container-local storage. Host bind mounts (for example Docker Desktop on Windows) do not
+    # keep telldir/seekdir cookies stable, which makes smbd skip entries when a directory listing spans several
+    # QUERY_DIRECTORY responses, so large-directory interop checks run against this share instead.
+    mkdir -p "${scratch_share_path}"
+    chown -R "${username}:${username}" "${scratch_share_path}"
+
+    cat >> /etc/samba/smb.conf <<EOF
+
+[${scratch_share_name}]
+    path = ${scratch_share_path}
+    browseable = yes
+    read only = no
+    guest ok = no
+    valid users = ${username}
+    force user = ${username}
+    create mask = 0666
+    directory mask = 0777
+    locking = yes
+    strict locking = yes
+EOF
+fi
 
 testparm -s /etc/samba/smb.conf >/dev/null
 

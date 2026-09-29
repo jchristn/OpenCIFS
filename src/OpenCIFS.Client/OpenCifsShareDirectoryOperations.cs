@@ -1,6 +1,7 @@
 namespace OpenCIFS.Client
 {
     using System;
+    using System.Collections.Generic;
     using System.Threading;
     using System.Threading.Tasks;
     using OpenCIFS.Protocol;
@@ -11,6 +12,7 @@ namespace OpenCIFS.Client
     public sealed class OpenCifsShareDirectoryOperations
     {
         private const uint DefaultDirectoryQueryBufferLength = 4096;
+        private const uint MaximumDirectoryQueryBufferLength = 65536;
         private const uint DefaultChangeNotifyBufferLength = 4096;
         private const uint GenericReadAccess = 0x80000000U;
         private const uint DeleteAccessMask = 0x00010000U;
@@ -46,8 +48,52 @@ namespace OpenCIFS.Client
         }
 
         /// <summary>
+        /// Create a directory if it does not already exist, optionally creating every missing ancestor first.
+        /// </summary>
+        /// <remarks>
+        /// When <paramref name="createParents"/> is true the call is idempotent across the whole path: ancestors and
+        /// the target that already exist as directories are left unchanged. An ancestor that exists as a file fails
+        /// with the server status (for example <c>STATUS_NOT_A_DIRECTORY</c> or <c>STATUS_OBJECT_NAME_COLLISION</c>).
+        /// When <paramref name="createParents"/> is false this behaves exactly like <see cref="CreateAsync(string, CancellationToken)"/>.
+        /// </remarks>
+        /// <param name="path">Relative directory path.</param>
+        /// <param name="createParents">Whether missing ancestor directories are created.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>Completion task.</returns>
+        public async Task CreateAsync(string path, bool createParents, CancellationToken cancellationToken = default)
+        {
+            if (!createParents)
+            {
+                await CreateAsync(path, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            await _ShareSession.ExecuteSinglePathAsync(
+                path,
+                cancellationToken,
+                (connection, treeHandle, resolvedPath, token) => CreateWithParentsCoreAsync(connection, treeHandle, resolvedPath, token)).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Create a directory, optionally including missing ancestors, without throwing for typed client failures.
+        /// </summary>
+        /// <param name="path">Relative directory path.</param>
+        /// <param name="createParents">Whether missing ancestor directories are created.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>Non-throwing result envelope.</returns>
+        public Task<OpenCifsClientResult> TryCreateAsync(string path, bool createParents, CancellationToken cancellationToken = default)
+        {
+            return OpenCifsClientResultFactory.TryAsync(() => CreateAsync(path, createParents, cancellationToken));
+        }
+
+        /// <summary>
         /// Enumerate a directory through FILE_FULL_DIRECTORY_INFORMATION responses.
         /// </summary>
+        /// <remarks>
+        /// Issues as many QUERY_DIRECTORY requests as needed (the first with SMB2_RESTART_SCANS) until the server
+        /// reports the end of the scan, so arbitrarily large directories are returned completely. The <c>.</c> and
+        /// <c>..</c> pseudo-entries are never included in the results.
+        /// </remarks>
         /// <param name="path">Relative directory path.</param>
         /// <param name="fileNamePattern">Optional search pattern.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
@@ -130,6 +176,10 @@ namespace OpenCIFS.Client
         /// <summary>
         /// Wait for a bounded directory change-notify completion.
         /// </summary>
+        /// <remarks>
+        /// The wait holds the parent client's connection until a change arrives or the token is cancelled, so other
+        /// operations on the same <see cref="OpenCifsClient"/> queue behind it. Use a dedicated client for notification waits.
+        /// </remarks>
         /// <param name="path">Relative directory path.</param>
         /// <param name="completionFilter">Requested completion filter.</param>
         /// <param name="watchTree">Whether to watch the full subtree beneath the directory.</param>
@@ -184,6 +234,33 @@ namespace OpenCIFS.Client
             }
         }
 
+        private async Task CreateWithParentsCoreAsync(OpenCifsClientConnection connection, OpenCifsClientTreeHandle treeHandle, string path, CancellationToken cancellationToken)
+        {
+            string[] segments = (path ?? string.Empty).Split(_PathSeparators, StringSplitOptions.RemoveEmptyEntries);
+
+            if (segments.Length == 0)
+            {
+                // The share root always exists; open it exactly as the non-recursive overload would.
+                await CreateCoreAsync(connection, treeHandle, path ?? string.Empty, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            try
+            {
+                // Common case: every ancestor already exists, so one create round trip is enough.
+                await CreateCoreAsync(connection, treeHandle, string.Join("\\", segments), cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (OpenCifsStatusException exception) when (exception.Status == NtStatus.ObjectPathNotFound || exception.Status == NtStatus.ObjectNameNotFound)
+            {
+            }
+
+            for (int index = 1; index <= segments.Length; index++)
+            {
+                await CreateCoreAsync(connection, treeHandle, string.Join("\\", segments, 0, index), cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         private async Task<OpenCifsClientDirectoryEntry[]> EnumerateCoreAsync(
             OpenCifsClientConnection connection,
             OpenCifsClientTreeHandle treeHandle,
@@ -201,29 +278,72 @@ namespace OpenCIFS.Client
 
             try
             {
-                byte[] outputBuffer = await connection.QueryDirectoryAsync(
-                    openHandle,
-                    FileInformationClass.FullDirectoryInformation,
-                    outputBufferLength: DefaultDirectoryQueryBufferLength,
-                    fileNamePattern: fileNamePattern,
-                    flags: Smb2QueryDirectoryFlags.RestartScans,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-                FileFullDirectoryInformationEntry[] entries = FileFullDirectoryInformationEntry.DecodeEntries(outputBuffer);
-                OpenCifsClientDirectoryEntry[] results = new OpenCifsClientDirectoryEntry[entries.Length];
+                uint outputBufferLength = GetDirectoryQueryBufferLength(connection);
+                Smb2QueryDirectoryFlags flags = Smb2QueryDirectoryFlags.RestartScans;
+                List<OpenCifsClientDirectoryEntry> results = new List<OpenCifsClientDirectoryEntry>();
 
-                for (int index = 0; index < entries.Length; index++)
+                // A single QUERY_DIRECTORY response only carries as many entries as fit in the output buffer.
+                // Keep issuing continuation queries on the same open until the server reports that the scan is
+                // exhausted (STATUS_NO_MORE_FILES, or STATUS_NO_SUCH_FILE when the pattern never matched).
+                while (true)
                 {
-                    results[index] = new OpenCifsClientDirectoryEntry
+                    byte[] outputBuffer;
+
+                    try
                     {
-                        FileName = entries[index].FileName,
-                        EndOfFile = entries[index].EndOfFile,
-                        AllocationSize = entries[index].AllocationSize,
-                        FileAttributes = entries[index].FileAttributes
-                    };
+                        outputBuffer = await connection.QueryDirectoryAsync(
+                            openHandle,
+                            FileInformationClass.FullDirectoryInformation,
+                            outputBufferLength: outputBufferLength,
+                            fileNamePattern: fileNamePattern,
+                            flags: flags,
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OpenCifsStatusException exception) when (exception.Status == NtStatus.NoMoreFiles || exception.Status == NtStatus.NoSuchFile)
+                    {
+                        break;
+                    }
+
+                    if (outputBuffer.Length == 0)
+                    {
+                        break;
+                    }
+
+                    FileFullDirectoryInformationEntry[] entries = FileFullDirectoryInformationEntry.DecodeEntries(outputBuffer);
+
+                    if (entries.Length == 0)
+                    {
+                        break;
+                    }
+
+                    for (int index = 0; index < entries.Length; index++)
+                    {
+                        FileFullDirectoryInformationEntry entry = entries[index];
+
+                        if (string.Equals(entry.FileName, ".", StringComparison.Ordinal) ||
+                            string.Equals(entry.FileName, "..", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        results.Add(new OpenCifsClientDirectoryEntry
+                        {
+                            FileName = entry.FileName,
+                            EndOfFile = entry.EndOfFile,
+                            AllocationSize = entry.AllocationSize,
+                            FileAttributes = entry.FileAttributes,
+                            CreationTimeUtc = OpenCifsClientFileTime.ToUtcDateTimeOrNull(entry.CreationTime),
+                            LastAccessTimeUtc = OpenCifsClientFileTime.ToUtcDateTimeOrNull(entry.LastAccessTime),
+                            LastWriteTimeUtc = OpenCifsClientFileTime.ToUtcDateTimeOrNull(entry.LastWriteTime),
+                            ChangeTimeUtc = OpenCifsClientFileTime.ToUtcDateTimeOrNull(entry.ChangeTime)
+                        });
+                    }
+
+                    flags = Smb2QueryDirectoryFlags.None;
                 }
 
                 await connection.CloseAsync(openHandle, cancellationToken: cancellationToken).ConfigureAwait(false);
-                return results;
+                return results.ToArray();
             }
             catch
             {
@@ -340,6 +460,21 @@ namespace OpenCIFS.Client
             return OpenCifsClientResultFactory.TryAsync(() => WaitForChangeAsync(path, completionFilter, watchTree, cancellationToken));
         }
 
+        private static uint GetDirectoryQueryBufferLength(OpenCifsClientConnection connection)
+        {
+            // 64 KiB is the largest output buffer that a single credit covers, so it needs no multi-credit charge
+            // on SMB 2.1+ and stays valid on SMB 2.0.2. Never exceed the negotiated transact size.
+            uint negotiatedMaximum = connection.Session.NegotiatedMaxTransactSize;
+
+            if (negotiatedMaximum == 0)
+            {
+                return DefaultDirectoryQueryBufferLength;
+            }
+
+            return Math.Min(MaximumDirectoryQueryBufferLength, negotiatedMaximum);
+        }
+
+        private static readonly char[] _PathSeparators = new[] { '\\', '/' };
         private readonly OpenCifsShareSession _ShareSession;
     }
 }

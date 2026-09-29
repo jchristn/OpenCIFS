@@ -76,9 +76,8 @@ namespace OpenCIFS.Protocol
         /// <returns>Request-body bytes.</returns>
         public byte[] ToByteArray()
         {
-            ushort dataOffset = DataBuffer.Length == 0
-                ? (ushort)0
-                : (ushort)(ProtocolConstants.Smb2HeaderLength + FixedBodyLength);
+            // DataOffset always points at the variable buffer, matching Windows clients, even for zero-length writes.
+            ushort dataOffset = (ushort)(ProtocolConstants.Smb2HeaderLength + FixedBodyLength);
             ushort writeChannelInfoOffset = WriteChannelInfo.Length == 0
                 ? (ushort)0
                 : (ushort)(ProtocolConstants.Smb2HeaderLength + FixedBodyLength + DataBuffer.Length);
@@ -97,6 +96,14 @@ namespace OpenCIFS.Protocol
             writer.WriteUInt32((uint)Flags);
             writer.WriteBytes(DataBuffer);
             writer.WriteBytes(WriteChannelInfo);
+
+            if (DataBuffer.Length == 0 && WriteChannelInfo.Length == 0)
+            {
+                // MS-SMB2 2.2.21: the variable Buffer is at least one byte long even for a zero-length write, and
+                // servers such as Samba reject a WRITE body that stops at the 48-byte fixed part.
+                writer.WriteByte(0);
+            }
+
             return writer.ToArray();
         }
 

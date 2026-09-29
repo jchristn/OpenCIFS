@@ -109,7 +109,7 @@ namespace OpenCIFS.Client.Tests.Shared
                             }
 
                             if (typeof(OpenCifsShareFileOperations).GetMethod(nameof(OpenCifsShareFileOperations.TryReadAllBytesAsync)) == null ||
-                                typeof(OpenCifsShareDirectoryOperations).GetMethod(nameof(OpenCifsShareDirectoryOperations.TryCreateAsync)) == null ||
+                                typeof(OpenCifsShareDirectoryOperations).GetMethod(nameof(OpenCifsShareDirectoryOperations.TryCreateAsync), new[] { typeof(string), typeof(CancellationToken) }) == null ||
                                 typeof(OpenCifsShareMetadataOperations).GetMethod(nameof(OpenCifsShareMetadataOperations.TryGetAttributesAsync)) == null ||
                                 typeof(OpenCifsShareLockOperations).GetMethod(nameof(OpenCifsShareLockOperations.TryAcquireExclusiveAsync)) == null)
                             {

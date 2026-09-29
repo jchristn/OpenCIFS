@@ -87,9 +87,9 @@ namespace OpenCIFS.Protocol
             int createContextPadding = createContexts.Length == 0
                 ? 0
                 : GetEightBytePadding(ProtocolConstants.Smb2HeaderLength + FixedBodyLength + nameBytes.Length);
-            ushort nameOffset = nameBytes.Length == 0
-                ? (ushort)0
-                : (ushort)(ProtocolConstants.Smb2HeaderLength + FixedBodyLength);
+            // NameOffset always points at the variable buffer, matching Windows clients, even for the empty
+            // share-root name.
+            ushort nameOffset = (ushort)(ProtocolConstants.Smb2HeaderLength + FixedBodyLength);
             uint createContextsOffset = createContexts.Length == 0
                 ? 0U
                 : (uint)(ProtocolConstants.Smb2HeaderLength + FixedBodyLength + nameBytes.Length + createContextPadding);
@@ -118,6 +118,14 @@ namespace OpenCIFS.Protocol
             }
 
             writer.WriteBytes(createContexts);
+
+            if (nameBytes.Length == 0 && createContexts.Length == 0)
+            {
+                // MS-SMB2 2.2.13: the variable Buffer MUST be at least one byte long. Servers such as Samba reject a
+                // share-root create (empty name, no contexts) whose body stops at the 56-byte fixed part.
+                writer.WriteByte(0);
+            }
+
             return writer.ToArray();
         }
 

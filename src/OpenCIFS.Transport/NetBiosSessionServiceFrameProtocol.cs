@@ -17,7 +17,7 @@ namespace OpenCIFS.Transport
 
         /// <summary>
         /// Maximum permitted frame payload length.
-        /// Default value: <c>1048576</c>.
+        /// Default value: <c>1114112</c> (1 MiB of SMB2 READ or WRITE data plus 64 KiB of header, command, and SMB3 transform headroom).
         /// Minimum value: <c>1024</c>.
         /// Maximum value: <c>16777215</c>.
         /// </summary>
@@ -95,6 +95,6 @@ namespace OpenCIFS.Transport
             return ValueTask.CompletedTask;
         }
 
-        private int _MaximumFrameLength = 1024 * 1024;
+        private int _MaximumFrameLength = (1024 * 1024) + (64 * 1024);
     }
 }

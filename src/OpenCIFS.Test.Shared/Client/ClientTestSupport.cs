@@ -259,7 +259,8 @@ namespace OpenCIFS.Client.Tests.Shared
             OpenCifsServerDfsReferral? dfsReferral = null,
             IReadOnlyCollection<OpenCifsServerDfsReferral>? dfsReferrals = null,
             bool enableSmb311Preview = false,
-            IReadOnlyCollection<OpenCifsServerFileSystemShare>? additionalShares = null)
+            IReadOnlyCollection<OpenCifsServerFileSystemShare>? additionalShares = null,
+            OpenCifsServerShareBackend? primaryShareBackend = null)
         {
             DirectTcpPortReservation reservation = GetDirectTcpPortReservation(port);
             OpenCifsServerOptions options = new OpenCifsServerOptions
@@ -288,12 +289,19 @@ namespace OpenCIFS.Client.Tests.Shared
             options.EnableSmb311Preview = enableSmb311Preview;
 
             OpenCifsServerHostBuilder builder = new OpenCifsServerHostBuilder(options);
-            builder.AddFileSystemShare(new OpenCifsServerFileSystemShare
+            if (primaryShareBackend != null)
             {
-                ShareName = TestEnvironmentDefaults.DefaultShareName,
-                RootPath = sharePath,
-                CreateRootIfMissing = true
-            });
+                builder.AddShare(primaryShareBackend);
+            }
+            else
+            {
+                builder.AddFileSystemShare(new OpenCifsServerFileSystemShare
+                {
+                    ShareName = TestEnvironmentDefaults.DefaultShareName,
+                    RootPath = sharePath,
+                    CreateRootIfMissing = true
+                });
+            }
 
             if (additionalShares != null)
             {

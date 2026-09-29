@@ -14,6 +14,7 @@ namespace OpenCIFS.SambaInterop.Console
             {
                 SambaInteropOptions options = SambaInteropArgumentParser.ParseArguments(args);
                 SambaInteropSmokeResult result = await SambaInteropSmokeRunner.RunAsync(options).ConfigureAwait(false);
+                result.PrimarySurface = await SambaInteropPrimarySurfaceRunner.RunAsync(options).ConfigureAwait(false);
                 JsonSerializerOptions serializerOptions = new JsonSerializerOptions
                 {
                     WriteIndented = true

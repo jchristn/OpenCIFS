@@ -20,6 +20,8 @@ namespace OpenCIFS.SambaInterop.Console
 
         public string Share { get; init; } = string.Empty;
 
+        public string PrimaryShare { get; init; } = string.Empty;
+
         public string UserName { get; init; } = string.Empty;
     }
 }

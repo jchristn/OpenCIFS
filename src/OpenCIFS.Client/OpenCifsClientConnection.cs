@@ -21,6 +21,7 @@
         private const ulong RelatedCompoundFileId = UInt64.MaxValue;
         private const string IpcShareName = "IPC$";
         private const string SrvsvcPipeName = "srvsvc";
+        private const int DisposeOperationLockTimeoutMs = 5000;
 
         /// <summary>
         /// Initialize a managed direct-TCP client connection.
@@ -76,7 +77,12 @@
         /// </summary>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task ConnectAsync(CancellationToken cancellationToken = default)
+        public Task ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => ConnectCoreAsync(cancellationToken), cancellationToken);
+        }
+
+        private async Task ConnectCoreAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
 
@@ -124,7 +130,12 @@
         /// <param name="credential">Client credential.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task ConnectAndAuthenticateAsync(OpenCifsClientCredential credential, CancellationToken cancellationToken = default)
+        public Task ConnectAndAuthenticateAsync(OpenCifsClientCredential credential, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => ConnectAndAuthenticateCoreAsync(credential, cancellationToken), cancellationToken);
+        }
+
+        private async Task ConnectAndAuthenticateCoreAsync(OpenCifsClientCredential credential, CancellationToken cancellationToken = default)
         {
             await ConnectAsync(cancellationToken).ConfigureAwait(false);
             await AuthenticateAsync(credential, cancellationToken).ConfigureAwait(false);
@@ -147,7 +158,12 @@
         /// <param name="credential">Client credential.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task AuthenticateAsync(OpenCifsClientCredential credential, CancellationToken cancellationToken = default)
+        public Task AuthenticateAsync(OpenCifsClientCredential credential, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => AuthenticateCoreAsync(credential, cancellationToken), cancellationToken);
+        }
+
+        private async Task AuthenticateCoreAsync(OpenCifsClientCredential credential, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
 
@@ -234,7 +250,12 @@
         /// </summary>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task EchoAsync(CancellationToken cancellationToken = default)
+        public Task EchoAsync(CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => EchoCoreAsync(cancellationToken), cancellationToken);
+        }
+
+        private async Task EchoCoreAsync(CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
             Smb2Header requestHeader = _Session.CreateRequestHeader(Smb2Command.Echo, sessionId: _Session.SessionId!.Value);
@@ -260,7 +281,12 @@
         /// </summary>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Remote share entries.</returns>
-        public async Task<OpenCifsRemoteShareInfo[]> EnumerateRemoteSharesAsync(CancellationToken cancellationToken = default)
+        public Task<OpenCifsRemoteShareInfo[]> EnumerateRemoteSharesAsync(CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => EnumerateRemoteSharesCoreAsync(cancellationToken), cancellationToken);
+        }
+
+        private async Task<OpenCifsRemoteShareInfo[]> EnumerateRemoteSharesCoreAsync(CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
             OpenCifsClientTreeHandle ipcTreeHandle = await TreeConnectAsync(IpcShareName, cancellationToken).ConfigureAwait(false);
@@ -317,7 +343,12 @@
         /// <param name="shareName">Remote share name.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Detailed remote share information.</returns>
-        public async Task<OpenCifsRemoteShareInfo> GetRemoteShareInfoAsync(string shareName, CancellationToken cancellationToken = default)
+        public Task<OpenCifsRemoteShareInfo> GetRemoteShareInfoAsync(string shareName, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => GetRemoteShareInfoCoreAsync(shareName, cancellationToken), cancellationToken);
+        }
+
+        private async Task<OpenCifsRemoteShareInfo> GetRemoteShareInfoCoreAsync(string shareName, CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
 
@@ -382,7 +413,12 @@
         /// <param name="dfsPath">DFS path such as <c>\server\share\link</c>.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Returned DFS referral entries.</returns>
-        public async Task<OpenCifsDfsReferral[]> GetDfsReferralsAsync(string dfsPath, CancellationToken cancellationToken = default)
+        public Task<OpenCifsDfsReferral[]> GetDfsReferralsAsync(string dfsPath, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => GetDfsReferralsCoreAsync(dfsPath, cancellationToken), cancellationToken);
+        }
+
+        private async Task<OpenCifsDfsReferral[]> GetDfsReferralsCoreAsync(string dfsPath, CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
             string normalizedDfsPath = NormalizeDfsPath(dfsPath);
@@ -462,7 +498,12 @@
         /// <param name="dfsPath">DFS path such as <c>\server\share\link\file.txt</c>.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Resolved DFS target path.</returns>
-        public async Task<OpenCifsResolvedDfsPath> ResolveDfsPathAsync(string dfsPath, CancellationToken cancellationToken = default)
+        public Task<OpenCifsResolvedDfsPath> ResolveDfsPathAsync(string dfsPath, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => ResolveDfsPathCoreAsync(dfsPath, cancellationToken), cancellationToken);
+        }
+
+        private async Task<OpenCifsResolvedDfsPath> ResolveDfsPathCoreAsync(string dfsPath, CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
             string normalizedDfsPath = NormalizeDfsPath(dfsPath);
@@ -495,7 +536,16 @@
         /// <param name="maxOutputResponse">Maximum response payload length.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Response payload.</returns>
-        public async Task<byte[]> TransceiveNamedPipeAsync(
+        public Task<byte[]> TransceiveNamedPipeAsync(
+            string pipeName,
+            byte[] inputBuffer,
+            uint maxOutputResponse = DefaultPipeTransceiveOutputLength,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => TransceiveNamedPipeCoreAsync(pipeName, inputBuffer, maxOutputResponse, cancellationToken), cancellationToken);
+        }
+
+        private async Task<byte[]> TransceiveNamedPipeCoreAsync(
             string pipeName,
             byte[] inputBuffer,
             uint maxOutputResponse = DefaultPipeTransceiveOutputLength,
@@ -574,7 +624,12 @@
         /// </summary>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Available credits after the expansion attempt.</returns>
-        public async Task<int> RequestMaximumCreditsAsync(CancellationToken cancellationToken = default)
+        public Task<int> RequestMaximumCreditsAsync(CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => RequestMaximumCreditsCoreAsync(cancellationToken), cancellationToken);
+        }
+
+        private async Task<int> RequestMaximumCreditsCoreAsync(CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
             int previousCredits = -1;
@@ -604,7 +659,12 @@
         /// <param name="shareName">Share name.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Tracked tree handle.</returns>
-        public async Task<OpenCifsClientTreeHandle> TreeConnectAsync(string shareName, CancellationToken cancellationToken = default)
+        public Task<OpenCifsClientTreeHandle> TreeConnectAsync(string shareName, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => TreeConnectCoreAsync(shareName, cancellationToken), cancellationToken);
+        }
+
+        private async Task<OpenCifsClientTreeHandle> TreeConnectCoreAsync(string shareName, CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
 
@@ -665,7 +725,12 @@
         /// <param name="treeHandle">Tracked tree handle.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task ValidateSecureNegotiateAsync(OpenCifsClientTreeHandle treeHandle, CancellationToken cancellationToken = default)
+        public Task ValidateSecureNegotiateAsync(OpenCifsClientTreeHandle treeHandle, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => ValidateSecureNegotiateForTreeCoreAsync(treeHandle, cancellationToken), cancellationToken);
+        }
+
+        private async Task ValidateSecureNegotiateForTreeCoreAsync(OpenCifsClientTreeHandle treeHandle, CancellationToken cancellationToken = default)
         {
             ValidateTreeHandle(treeHandle);
 
@@ -703,7 +768,12 @@
         /// <param name="treeHandle">Tracked tree handle.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task TreeDisconnectAsync(OpenCifsClientTreeHandle treeHandle, CancellationToken cancellationToken = default)
+        public Task TreeDisconnectAsync(OpenCifsClientTreeHandle treeHandle, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => TreeDisconnectCoreAsync(treeHandle, cancellationToken), cancellationToken);
+        }
+
+        private async Task TreeDisconnectCoreAsync(OpenCifsClientTreeHandle treeHandle, CancellationToken cancellationToken = default)
         {
             ValidateTreeHandle(treeHandle);
             Smb2TreeDisconnectRequest request = _Session.CreateTreeDisconnectRequest(treeHandle.TreeId);
@@ -740,7 +810,21 @@
         /// <param name="createOptions">Create options for the create leg.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Decoded query-info output buffer.</returns>
-        public async Task<byte[]> CompoundCreateQueryInfoCloseAsync(
+        public Task<byte[]> CompoundCreateQueryInfoCloseAsync(
+            OpenCifsClientTreeHandle treeHandle,
+            string path,
+            FileInformationClass informationClass,
+            uint outputBufferLength = DefaultQueryBufferLength,
+            uint desiredAccess = DefaultDesiredAccess,
+            uint shareAccess = DefaultShareAccess,
+            Smb2CreateDisposition createDisposition = Smb2CreateDisposition.Open,
+            Smb2CreateOptions createOptions = Smb2CreateOptions.NonDirectoryFile,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => CompoundCreateQueryInfoCloseCoreAsync(treeHandle, path, informationClass, outputBufferLength, desiredAccess, shareAccess, createDisposition, createOptions, cancellationToken), cancellationToken);
+        }
+
+        private async Task<byte[]> CompoundCreateQueryInfoCloseCoreAsync(
             OpenCifsClientTreeHandle treeHandle,
             string path,
             FileInformationClass informationClass,
@@ -753,9 +837,9 @@
         {
             ValidateTreeHandle(treeHandle);
 
-            if (string.IsNullOrWhiteSpace(path))
+            if (path == null)
             {
-                throw new ArgumentNullException(nameof(path), "Path cannot be null or whitespace.");
+                throw new ArgumentNullException(nameof(path), "Path cannot be null.");
             }
 
             await EnsureCreditsAsync(requiredCredits: 3, cancellationToken).ConfigureAwait(false);
@@ -881,7 +965,21 @@
         /// <param name="createOptions">Create options for the create leg.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Read data.</returns>
-        public async Task<byte[]> CompoundOpenReadCloseAsync(
+        public Task<byte[]> CompoundOpenReadCloseAsync(
+            OpenCifsClientTreeHandle treeHandle,
+            string path,
+            uint length,
+            ulong offset = 0,
+            uint minimumCount = 0,
+            uint desiredAccess = 0x80000000U,
+            uint shareAccess = DefaultShareAccess,
+            Smb2CreateOptions createOptions = Smb2CreateOptions.NonDirectoryFile,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => CompoundOpenReadCloseCoreAsync(treeHandle, path, length, offset, minimumCount, desiredAccess, shareAccess, createOptions, cancellationToken), cancellationToken);
+        }
+
+        private async Task<byte[]> CompoundOpenReadCloseCoreAsync(
             OpenCifsClientTreeHandle treeHandle,
             string path,
             uint length,
@@ -894,9 +992,9 @@
         {
             ValidateTreeHandle(treeHandle);
 
-            if (string.IsNullOrWhiteSpace(path))
+            if (path == null)
             {
-                throw new ArgumentNullException(nameof(path), "Path cannot be null or whitespace.");
+                throw new ArgumentNullException(nameof(path), "Path cannot be null.");
             }
 
             ushort readCredits = _Session.GetRequiredReadWriteCredits(length);
@@ -1030,7 +1128,21 @@
         /// <param name="createOptions">Create options for the create leg.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Acknowledged write length.</returns>
-        public async Task<uint> CompoundCreateWriteFlushCloseAsync(
+        public Task<uint> CompoundCreateWriteFlushCloseAsync(
+            OpenCifsClientTreeHandle treeHandle,
+            string path,
+            byte[] data,
+            uint desiredAccess = DefaultDesiredAccess,
+            FileAttributes fileAttributes = FileAttributes.Normal,
+            uint shareAccess = DefaultShareAccess,
+            Smb2CreateDisposition createDisposition = Smb2CreateDisposition.OverwriteIf,
+            Smb2CreateOptions createOptions = Smb2CreateOptions.NonDirectoryFile,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => CompoundCreateWriteFlushCloseCoreAsync(treeHandle, path, data, desiredAccess, fileAttributes, shareAccess, createDisposition, createOptions, cancellationToken), cancellationToken);
+        }
+
+        private async Task<uint> CompoundCreateWriteFlushCloseCoreAsync(
             OpenCifsClientTreeHandle treeHandle,
             string path,
             byte[] data,
@@ -1043,9 +1155,9 @@
         {
             ValidateTreeHandle(treeHandle);
 
-            if (string.IsNullOrWhiteSpace(path))
+            if (path == null)
             {
-                throw new ArgumentNullException(nameof(path), "Path cannot be null or whitespace.");
+                throw new ArgumentNullException(nameof(path), "Path cannot be null.");
             }
 
             if (data == null)
@@ -1201,7 +1313,24 @@
         /// <param name="requestedLeaseState">Requested SMB 2.1 lease state when <paramref name="requestedOplockLevel"/> is <see cref="Smb2OplockLevel.Lease"/>.</param>
         /// <param name="leaseKey">Optional 16-byte SMB 2.1 lease key. When omitted, a random key is generated.</param>
         /// <returns>Tracked open handle.</returns>
-        public async Task<OpenCifsClientOpenHandle> OpenAsync(
+        public Task<OpenCifsClientOpenHandle> OpenAsync(
+            OpenCifsClientTreeHandle treeHandle,
+            string path,
+            uint desiredAccess = DefaultDesiredAccess,
+            FileAttributes fileAttributes = FileAttributes.Normal,
+            uint shareAccess = DefaultShareAccess,
+            Smb2CreateDisposition createDisposition = Smb2CreateDisposition.Open,
+            Smb2CreateOptions createOptions = Smb2CreateOptions.NonDirectoryFile,
+            CancellationToken cancellationToken = default,
+            Smb2OplockLevel requestedOplockLevel = Smb2OplockLevel.None,
+            bool requestDurableHandle = false,
+            Smb2LeaseState requestedLeaseState = Smb2LeaseState.None,
+            byte[]? leaseKey = null)
+        {
+            return RunExclusiveAsync(() => OpenCoreAsync(treeHandle, path, desiredAccess, fileAttributes, shareAccess, createDisposition, createOptions, cancellationToken, requestedOplockLevel, requestDurableHandle, requestedLeaseState, leaseKey), cancellationToken);
+        }
+
+        private async Task<OpenCifsClientOpenHandle> OpenCoreAsync(
             OpenCifsClientTreeHandle treeHandle,
             string path,
             uint desiredAccess = DefaultDesiredAccess,
@@ -1306,7 +1435,20 @@
         /// <param name="requestedLeaseState">Requested SMB 2.1 lease state when <paramref name="requestedOplockLevel"/> is <see cref="Smb2OplockLevel.Lease"/>.</param>
         /// <param name="leaseKey">Optional 16-byte SMB 2.1 lease key. When omitted, a random key is generated.</param>
         /// <returns>Tracked open handle.</returns>
-        public async Task<OpenCifsClientOpenHandle> OpenExistingPathAsync(
+        public Task<OpenCifsClientOpenHandle> OpenExistingPathAsync(
+            OpenCifsClientTreeHandle treeHandle,
+            string path,
+            uint desiredAccess = DefaultDesiredAccess,
+            CancellationToken cancellationToken = default,
+            Smb2OplockLevel requestedOplockLevel = Smb2OplockLevel.None,
+            bool requestDurableHandle = false,
+            Smb2LeaseState requestedLeaseState = Smb2LeaseState.None,
+            byte[]? leaseKey = null)
+        {
+            return RunExclusiveAsync(() => OpenExistingPathCoreAsync(treeHandle, path, desiredAccess, cancellationToken, requestedOplockLevel, requestDurableHandle, requestedLeaseState, leaseKey), cancellationToken);
+        }
+
+        private async Task<OpenCifsClientOpenHandle> OpenExistingPathCoreAsync(
             OpenCifsClientTreeHandle treeHandle,
             string path,
             uint desiredAccess = DefaultDesiredAccess,
@@ -1405,7 +1547,15 @@
         /// <param name="durableOpenHandle">Handle from the original connection lifecycle.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Reconnected open handle.</returns>
-        public async Task<OpenCifsClientOpenHandle> ReconnectDurableOpenAsync(
+        public Task<OpenCifsClientOpenHandle> ReconnectDurableOpenAsync(
+            OpenCifsClientTreeHandle treeHandle,
+            OpenCifsClientOpenHandle durableOpenHandle,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => ReconnectDurableOpenCoreAsync(treeHandle, durableOpenHandle, cancellationToken), cancellationToken);
+        }
+
+        private async Task<OpenCifsClientOpenHandle> ReconnectDurableOpenCoreAsync(
             OpenCifsClientTreeHandle treeHandle,
             OpenCifsClientOpenHandle durableOpenHandle,
             CancellationToken cancellationToken = default)
@@ -1482,7 +1632,12 @@
         /// </summary>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Applied oplock-break notification.</returns>
-        public async Task<OpenCifsClientOplockBreakNotification> WaitForOplockBreakAsync(CancellationToken cancellationToken = default)
+        public Task<OpenCifsClientOplockBreakNotification> WaitForOplockBreakAsync(CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => WaitForOplockBreakCoreAsync(cancellationToken), cancellationToken);
+        }
+
+        private async Task<OpenCifsClientOplockBreakNotification> WaitForOplockBreakCoreAsync(CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
 
@@ -1554,7 +1709,12 @@
         /// </summary>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Applied lease-break notification.</returns>
-        public async Task<OpenCifsClientLeaseBreakNotification> WaitForLeaseBreakAsync(CancellationToken cancellationToken = default)
+        public Task<OpenCifsClientLeaseBreakNotification> WaitForLeaseBreakAsync(CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => WaitForLeaseBreakCoreAsync(cancellationToken), cancellationToken);
+        }
+
+        private async Task<OpenCifsClientLeaseBreakNotification> WaitForLeaseBreakCoreAsync(CancellationToken cancellationToken = default)
         {
             EnsureAuthenticatedSession();
 
@@ -1629,7 +1789,17 @@
         /// <param name="minimumCount">Minimum read length.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Read bytes.</returns>
-        public async Task<byte[]> ReadAsync(
+        public Task<byte[]> ReadAsync(
+            OpenCifsClientOpenHandle openHandle,
+            uint length,
+            ulong offset,
+            uint minimumCount = 0,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => ReadCoreAsync(openHandle, length, offset, minimumCount, cancellationToken), cancellationToken);
+        }
+
+        private async Task<byte[]> ReadCoreAsync(
             OpenCifsClientOpenHandle openHandle,
             uint length,
             ulong offset,
@@ -1682,7 +1852,12 @@
         /// <param name="offset">Byte offset.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Acknowledged write length.</returns>
-        public async Task<uint> WriteAsync(OpenCifsClientOpenHandle openHandle, byte[] data, ulong offset, CancellationToken cancellationToken = default)
+        public Task<uint> WriteAsync(OpenCifsClientOpenHandle openHandle, byte[] data, ulong offset, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => WriteCoreAsync(openHandle, data, offset, cancellationToken), cancellationToken);
+        }
+
+        private async Task<uint> WriteCoreAsync(OpenCifsClientOpenHandle openHandle, byte[] data, ulong offset, CancellationToken cancellationToken = default)
         {
             if (data == null)
             {
@@ -1727,7 +1902,12 @@
         /// <param name="openHandle">Tracked open handle.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task FlushAsync(OpenCifsClientOpenHandle openHandle, CancellationToken cancellationToken = default)
+        public Task FlushAsync(OpenCifsClientOpenHandle openHandle, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => FlushCoreAsync(openHandle, cancellationToken), cancellationToken);
+        }
+
+        private async Task FlushCoreAsync(OpenCifsClientOpenHandle openHandle, CancellationToken cancellationToken = default)
         {
             ValidateFileOpenHandle(openHandle, "SMB2 flush");
             Smb2FlushRequest request = _Session.CreateFlushRequest(openHandle.PersistentFileId, openHandle.VolatileFileId);
@@ -1758,7 +1938,12 @@
         /// <param name="locks">Requested lock elements.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task LockAsync(OpenCifsClientOpenHandle openHandle, Smb2LockElement[] locks, CancellationToken cancellationToken = default)
+        public Task LockAsync(OpenCifsClientOpenHandle openHandle, Smb2LockElement[] locks, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => LockCoreAsync(openHandle, locks, cancellationToken), cancellationToken);
+        }
+
+        private async Task LockCoreAsync(OpenCifsClientOpenHandle openHandle, Smb2LockElement[] locks, CancellationToken cancellationToken = default)
         {
             ValidateFileOpenHandle(openHandle, "SMB2 lock");
 
@@ -1797,7 +1982,16 @@
         /// <param name="outputBufferLength">Requested output buffer length.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Decoded output buffer.</returns>
-        public async Task<byte[]> QueryInfoAsync(
+        public Task<byte[]> QueryInfoAsync(
+            OpenCifsClientOpenHandle openHandle,
+            FileInformationClass informationClass,
+            uint outputBufferLength = DefaultQueryBufferLength,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => QueryInfoCoreAsync(openHandle, informationClass, outputBufferLength, cancellationToken), cancellationToken);
+        }
+
+        private async Task<byte[]> QueryInfoCoreAsync(
             OpenCifsClientOpenHandle openHandle,
             FileInformationClass informationClass,
             uint outputBufferLength = DefaultQueryBufferLength,
@@ -1845,7 +2039,18 @@
         /// <param name="flags">Query-directory flags.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Decoded output buffer.</returns>
-        public async Task<byte[]> QueryDirectoryAsync(
+        public Task<byte[]> QueryDirectoryAsync(
+            OpenCifsClientOpenHandle openHandle,
+            FileInformationClass informationClass,
+            uint outputBufferLength = DefaultQueryBufferLength,
+            string? fileNamePattern = null,
+            Smb2QueryDirectoryFlags flags = Smb2QueryDirectoryFlags.RestartScans,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => QueryDirectoryCoreAsync(openHandle, informationClass, outputBufferLength, fileNamePattern, flags, cancellationToken), cancellationToken);
+        }
+
+        private async Task<byte[]> QueryDirectoryCoreAsync(
             OpenCifsClientOpenHandle openHandle,
             FileInformationClass informationClass,
             uint outputBufferLength = DefaultQueryBufferLength,
@@ -1906,7 +2111,17 @@
         /// <param name="outputBufferLength">Requested output buffer length.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Decoded notify entries.</returns>
-        public async Task<FileNotifyInformation[]> ChangeNotifyAsync(
+        public Task<FileNotifyInformation[]> ChangeNotifyAsync(
+            OpenCifsClientOpenHandle openHandle,
+            FileNotifyChangeFilter completionFilter,
+            bool watchTree = false,
+            uint outputBufferLength = DefaultChangeNotifyBufferLength,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => ChangeNotifyCoreAsync(openHandle, completionFilter, watchTree, outputBufferLength, cancellationToken), cancellationToken);
+        }
+
+        private async Task<FileNotifyInformation[]> ChangeNotifyCoreAsync(
             OpenCifsClientOpenHandle openHandle,
             FileNotifyChangeFilter completionFilter,
             bool watchTree = false,
@@ -1968,7 +2183,12 @@
         /// <param name="information">Basic-information payload.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task SetBasicInfoAsync(OpenCifsClientOpenHandle openHandle, FileBasicInformation information, CancellationToken cancellationToken = default)
+        public Task SetBasicInfoAsync(OpenCifsClientOpenHandle openHandle, FileBasicInformation information, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => SetBasicInfoCoreAsync(openHandle, information, cancellationToken), cancellationToken);
+        }
+
+        private async Task SetBasicInfoCoreAsync(OpenCifsClientOpenHandle openHandle, FileBasicInformation information, CancellationToken cancellationToken = default)
         {
             if (information == null)
             {
@@ -1999,7 +2219,12 @@
         /// <param name="endOfFile">Requested logical EOF length.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task SetEndOfFileAsync(OpenCifsClientOpenHandle openHandle, ulong endOfFile, CancellationToken cancellationToken = default)
+        public Task SetEndOfFileAsync(OpenCifsClientOpenHandle openHandle, ulong endOfFile, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => SetEndOfFileCoreAsync(openHandle, endOfFile, cancellationToken), cancellationToken);
+        }
+
+        private async Task SetEndOfFileCoreAsync(OpenCifsClientOpenHandle openHandle, ulong endOfFile, CancellationToken cancellationToken = default)
         {
             ValidateFileOpenHandle(openHandle, "SMB2 set end-of-file");
             Smb2SetInfoRequest request = _Session.CreateSetEndOfFileInfoRequest(openHandle.PersistentFileId, openHandle.VolatileFileId, endOfFile);
@@ -2025,7 +2250,12 @@
         /// <param name="allocationSize">Requested allocation size.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task SetAllocationSizeAsync(OpenCifsClientOpenHandle openHandle, ulong allocationSize, CancellationToken cancellationToken = default)
+        public Task SetAllocationSizeAsync(OpenCifsClientOpenHandle openHandle, ulong allocationSize, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => SetAllocationSizeCoreAsync(openHandle, allocationSize, cancellationToken), cancellationToken);
+        }
+
+        private async Task SetAllocationSizeCoreAsync(OpenCifsClientOpenHandle openHandle, ulong allocationSize, CancellationToken cancellationToken = default)
         {
             ValidateFileOpenHandle(openHandle, "SMB2 set allocation size");
             Smb2SetInfoRequest request = _Session.CreateSetAllocationInfoRequest(openHandle.PersistentFileId, openHandle.VolatileFileId, allocationSize);
@@ -2051,7 +2281,12 @@
         /// <param name="deletePending">Delete-pending state.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task SetDeletePendingAsync(OpenCifsClientOpenHandle openHandle, bool deletePending = true, CancellationToken cancellationToken = default)
+        public Task SetDeletePendingAsync(OpenCifsClientOpenHandle openHandle, bool deletePending = true, CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => SetDeletePendingCoreAsync(openHandle, deletePending, cancellationToken), cancellationToken);
+        }
+
+        private async Task SetDeletePendingCoreAsync(OpenCifsClientOpenHandle openHandle, bool deletePending = true, CancellationToken cancellationToken = default)
         {
             ValidateOpenHandle(openHandle);
             Smb2SetInfoRequest request = _Session.CreateSetDispositionInfoRequest(openHandle.PersistentFileId, openHandle.VolatileFileId, deletePending);
@@ -2086,7 +2321,16 @@
         /// <param name="replaceIfExists">Whether an existing destination can be replaced.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task SetRenameAsync(
+        public Task SetRenameAsync(
+            OpenCifsClientOpenHandle openHandle,
+            string path,
+            bool replaceIfExists = false,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => SetRenameCoreAsync(openHandle, path, replaceIfExists, cancellationToken), cancellationToken);
+        }
+
+        private async Task SetRenameCoreAsync(
             OpenCifsClientOpenHandle openHandle,
             string path,
             bool replaceIfExists = false,
@@ -2129,7 +2373,15 @@
         /// <param name="postQueryAttributes">Whether to request post-close attributes.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Close response.</returns>
-        public async Task<Smb2CloseResponse> CloseAsync(
+        public Task<Smb2CloseResponse> CloseAsync(
+            OpenCifsClientOpenHandle openHandle,
+            bool postQueryAttributes = false,
+            CancellationToken cancellationToken = default)
+        {
+            return RunExclusiveAsync(() => CloseCoreAsync(openHandle, postQueryAttributes, cancellationToken), cancellationToken);
+        }
+
+        private async Task<Smb2CloseResponse> CloseCoreAsync(
             OpenCifsClientOpenHandle openHandle,
             bool postQueryAttributes = false,
             CancellationToken cancellationToken = default)
@@ -2164,10 +2416,15 @@
         /// </summary>
         /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>Completion task.</returns>
-        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+        public Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
-            ThrowIfDisposed();
-            await DisconnectCoreAsync(cancellationToken).ConfigureAwait(false);
+            return RunExclusiveAsync(
+                async () =>
+                {
+                    ThrowIfDisposed();
+                    await DisconnectCoreAsync(cancellationToken).ConfigureAwait(false);
+                },
+                cancellationToken);
         }
 
         /// <summary>
@@ -2180,7 +2437,12 @@
             return OpenCifsClientResultFactory.TryAsync(() => DisconnectAsync(cancellationToken));
         }
 
-        internal async Task SimulateTransportDisconnectAsync()
+        internal Task SimulateTransportDisconnectAsync()
+        {
+            return RunExclusiveAsync(() => SimulateTransportDisconnectCoreAsync(), CancellationToken.None);
+        }
+
+        private async Task SimulateTransportDisconnectCoreAsync()
         {
             ThrowIfDisposed();
 
@@ -2231,6 +2493,22 @@
 
         private async ValueTask DisposeAsyncCore()
         {
+            bool ownsOperationLock = false;
+
+            if (!_OperationLockHeld.Value)
+            {
+                // Wait for any in-flight operation to finish so the graceful logoff does not interleave with it.
+                // If an operation stays outstanding (for example a long CHANGE_NOTIFY wait), tear the transport
+                // down instead so disposal never hangs and the stuck operation fails promptly.
+                ownsOperationLock = await _OperationLock.WaitAsync(DisposeOperationLockTimeoutMs).ConfigureAwait(false);
+
+                if (!ownsOperationLock)
+                {
+                    await ResetTransportAsync().ConfigureAwait(false);
+                    return;
+                }
+            }
+
             try
             {
                 await DisconnectCoreAsync(CancellationToken.None).ConfigureAwait(false);
@@ -2239,6 +2517,13 @@
             {
                 await ResetTransportAsync().ConfigureAwait(false);
                 ResetSession();
+            }
+            finally
+            {
+                if (ownsOperationLock)
+                {
+                    _OperationLock.Release();
+                }
             }
         }
 
@@ -2405,8 +2690,26 @@
                 throw new OpenCifsClientStateException("The client connection is not connected.");
             }
 
-            await _Connection.WriteAsync(_Session.FinalizeRequestPacket(requestPacket), cancellationToken).ConfigureAwait(false);
-            byte[] responseBytes = await ReadNextResponsePacketBytesAsync(cancellationToken).ConfigureAwait(false);
+            // Once message identifiers are allocated the request must reach the server, otherwise the local
+            // sequence window and the server's view of outstanding credits diverge. Only the response wait
+            // honors cancellation; an abandoned response is drained later by ReadNextResponsePacketBytesAsync.
+            await _Connection.WriteAsync(_Session.FinalizeRequestPacket(requestPacket), CancellationToken.None).ConfigureAwait(false);
+            byte[] responseBytes;
+
+            try
+            {
+                responseBytes = await ReadNextResponsePacketBytesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                for (int index = 0; index < requestPacket.Entries.Count; index++)
+                {
+                    _AbandonedMessageIds.Add(requestPacket.Entries[index].Header.MessageId);
+                }
+
+                throw;
+            }
+
             Smb2CompoundPacket responsePacket = Smb2CompoundPacket.ReadFrom(responseBytes);
             _Session.ValidateResponsePacket(responsePacket, responseBytes);
             _Session.ApplyCompoundResponsePacket(responsePacket);
@@ -2555,11 +2858,23 @@
                 new Smb2CompoundPacketEntry(requestHeader, requestPayload)
             });
 
-            await _Connection.WriteAsync(_Session.FinalizeRequestPacket(requestPacket), cancellationToken).ConfigureAwait(false);
+            await _Connection.WriteAsync(_Session.FinalizeRequestPacket(requestPacket), CancellationToken.None).ConfigureAwait(false);
+            bool pendingResponseObserved = false;
 
             while (true)
             {
-                byte[] responseBytes = await ReadNextResponsePacketBytesAsync(cancellationToken).ConfigureAwait(false);
+                byte[] responseBytes;
+
+                try
+                {
+                    responseBytes = await ReadNextResponsePacketBytesAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    await AbandonOutstandingRequestAsync(requestHeader.MessageId, pendingResponseObserved).ConfigureAwait(false);
+                    throw;
+                }
+
                 Smb2CompoundPacket responsePacket = Smb2CompoundPacket.ReadFrom(responseBytes);
 
                 if (requestHeader.Command != Smb2Command.SessionSetup)
@@ -2588,6 +2903,7 @@
                         throw new OpenCifsClientProtocolException("The managed direct-TCP client connection does not support synchronous STATUS_PENDING SMB2 responses.");
                     }
 
+                    pendingResponseObserved = true;
                     continue;
                 }
 
@@ -2953,8 +3269,112 @@
                 throw new OpenCifsClientStateException("The client connection is not connected.");
             }
 
-            byte[] responseBytes = await _Connection.ReadAsync(cancellationToken).ConfigureAwait(false);
-            return _Session.UnwrapResponsePacket(responseBytes);
+            if (_DeferredResponsePackets.Count > 0)
+            {
+                return _DeferredResponsePackets.Dequeue();
+            }
+
+            while (true)
+            {
+                byte[] responseBytes = _Session.UnwrapResponsePacket(await _Connection.ReadAsync(cancellationToken).ConfigureAwait(false));
+
+                if (_AbandonedMessageIds.Count == 0 || !TryDrainAbandonedResponse(responseBytes))
+                {
+                    return responseBytes;
+                }
+            }
+        }
+
+        private async Task DrainAbandonedResponsesAsync(CancellationToken cancellationToken)
+        {
+            while (_AbandonedMessageIds.Count > 0)
+            {
+                if (_Connection == null)
+                {
+                    _AbandonedMessageIds.Clear();
+                    return;
+                }
+
+                byte[] responseBytes = _Session.UnwrapResponsePacket(await _Connection.ReadAsync(cancellationToken).ConfigureAwait(false));
+
+                if (!TryDrainAbandonedResponse(responseBytes))
+                {
+                    // Not an abandoned response (for example an unsolicited break notification); keep it for the
+                    // next reader instead of discarding it.
+                    _DeferredResponsePackets.Enqueue(responseBytes);
+                }
+            }
+        }
+
+        private async Task AbandonOutstandingRequestAsync(ulong messageId, bool pendingResponseObserved)
+        {
+            _AbandonedMessageIds.Add(messageId);
+
+            if (!pendingResponseObserved)
+            {
+                return;
+            }
+
+            try
+            {
+                await WriteCancelRequestAsync(messageId).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException || exception is ObjectDisposedException || exception is System.IO.IOException)
+            {
+            }
+        }
+
+        private bool TryDrainAbandonedResponse(byte[] responseBytes)
+        {
+            Smb2CompoundPacket responsePacket;
+
+            try
+            {
+                responsePacket = Smb2CompoundPacket.ReadFrom(responseBytes);
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+
+            if (responsePacket.Entries.Count == 0 || !_AbandonedMessageIds.Contains(responsePacket.Entries[0].Header.MessageId))
+            {
+                return false;
+            }
+
+            // The response belongs to a request whose caller was cancelled while waiting. Consume it here so the
+            // credits it grants return to the window and the next caller reads its own response.
+            Smb2Header firstHeader = responsePacket.Entries[0].Header;
+            bool isInterimResponse = responsePacket.Entries.Count == 1 &&
+                firstHeader.Status == NtStatus.Pending &&
+                (firstHeader.Flags & Smb2HeaderFlags.AsyncCommand) != 0;
+
+            try
+            {
+                _Session.ValidateResponsePacket(responsePacket, responseBytes);
+
+                if (responsePacket.Entries.Count == 1)
+                {
+                    _Session.ApplyResponseHeader(firstHeader);
+                }
+                else
+                {
+                    _Session.ApplyCompoundResponsePacket(responsePacket);
+                }
+            }
+            catch (Exception exception) when (exception is ArgumentException || exception is InvalidOperationException)
+            {
+            }
+
+            if (!isInterimResponse)
+            {
+                for (int index = 0; index < responsePacket.Entries.Count; index++)
+                {
+                    _AbandonedMessageIds.Remove(responsePacket.Entries[index].Header.MessageId);
+                }
+            }
+
+            return true;
         }
 
         private static void AssertCompoundResponseEntryCount(Smb2CompoundPacket responsePacket, int expectedCount)
@@ -3250,6 +3670,8 @@
             Guid clientGuid = _Session.ClientGuid;
             InvalidateTrackedHandles(invalidateDurableReconnect);
             _DfsReferralCache.Clear();
+            _AbandonedMessageIds.Clear();
+            _DeferredResponsePackets.Clear();
             _SessionGeneration++;
             _Session = new OpenCifsClientSession(Options, clientGuid);
         }
@@ -3463,6 +3885,49 @@
             return clones;
         }
 
+        private async Task RunExclusiveAsync(Func<Task> operation, CancellationToken cancellationToken)
+        {
+            await RunExclusiveAsync<object?>(
+                async () =>
+                {
+                    await operation().ConfigureAwait(false);
+                    return null;
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<T> RunExclusiveAsync<T>(Func<Task<T>> operation, CancellationToken cancellationToken)
+        {
+            // Every public operation owns the single direct-TCP request/response stream for its full duration so
+            // message identifiers, credits, signing state, and response correlation stay consistent when callers
+            // share one connection across threads. Nested public calls on the same async flow re-enter freely.
+            if (_OperationLockHeld.Value)
+            {
+                return await operation().ConfigureAwait(false);
+            }
+
+            await _OperationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                _OperationLockHeld.Value = true;
+
+                // Responses to requests whose callers were cancelled still carry the credits the next request
+                // needs, so consume them before issuing anything new on the shared stream.
+                if (_AbandonedMessageIds.Count > 0 && _Connection != null)
+                {
+                    await DrainAbandonedResponsesAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                return await operation().ConfigureAwait(false);
+            }
+            finally
+            {
+                _OperationLockHeld.Value = false;
+                _OperationLock.Release();
+            }
+        }
+
         private uint GetNextRpcCallId()
         {
             lock (_RpcSyncRoot)
@@ -3482,6 +3947,10 @@
         private readonly Dictionary<string, DfsReferralCacheEntry> _DfsReferralCache = new Dictionary<string, DfsReferralCacheEntry>(StringComparer.OrdinalIgnoreCase);
         private readonly Guid _ConnectionId = Guid.NewGuid();
         private readonly object _RpcSyncRoot = new object();
+        private readonly SemaphoreSlim _OperationLock = new SemaphoreSlim(1, 1);
+        private readonly AsyncLocal<bool> _OperationLockHeld = new AsyncLocal<bool>();
+        private readonly HashSet<ulong> _AbandonedMessageIds = new HashSet<ulong>();
+        private readonly Queue<byte[]> _DeferredResponsePackets = new Queue<byte[]>();
         private OpenCifsClientSession _Session;
         private FramedPipeConnection? _Connection;
         private TcpClient? _TcpClient;

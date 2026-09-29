@@ -4,8 +4,9 @@ OpenCIFS is an MIT-licensed SMB/CIFS library suite for .NET.
 
 ## Status
 
-- Current library and package version: `0.1.0`
+- Current library and package version: `0.1.1`
 - Release state: alpha
+- `0.1.1` highlights: complete multi-page directory enumeration, short-read-safe and multi-megabyte-safe reads and writes, safe concurrent use of one client, and new ranged (`Files.ReadAsync`), streamed (`Files.OpenReadAsync`, `Files.WriteAsync(path, Stream)`), existence (`Metadata.ExistsAsync`), and recursive-create (`Directories.CreateAsync(path, createParents: true)`) APIs. See `CHANGELOG.md`.
 - Compatibility posture: the current coverage and interoperability claims are bounded and evidence-backed, but thorough or exhaustive compatibility testing across SMB dialects, operating systems, client or server products, NAS devices, and deployment environments has not been performed.
 
 Current repository status:
@@ -87,6 +88,8 @@ The Touchstone core and server suites now also include deterministic parser-muta
 
 `eng/run-soak-smoke.ps1` compiles a temporary project-reference consumer, starts an in-process SMB 2.1 `OpenCIFS.Server`, and runs a timed operational soak over parallel primary-client connection churn plus large-file round trips and advanced durable or exclusive-oplock or lease churn. The harness verifies repeated share-session directory create or enumerate or rename or cleanup flows, non-empty-directory delete rejection, `200000`-byte payload hashing, detached durable read or lock conflict rejection, durable reconnect success, post-reconnect competing lock recovery, repeated exclusive oplock-break completion, repeated lease-break completion, and the configured minimum soak duration before the artifact is accepted. Evidence is written to `artifacts/soak-smoke/soak-smoke.json`.
 
+`eng/run-samba-interop.ps1` builds the Dockerized Samba peer and runs both directions per dialect lane. The `OpenCIFS.Client -> Samba` lane runs the protocol-level smoke plus a primary-surface pass (`PrimarySurface` in `artifacts/samba-interop/<dialect>/open-cifs-client-to-samba.json`) that covers recursive directory creation, `ExistsAsync`, zero-length and read-only files, 5 MiB transfers, ranged and streamed reads, streamed writes, a 1,500-entry multi-page enumeration with pattern filtering and dot-entry exclusion, directory-entry timestamps, and a 32-worker concurrency stress on one share session; the lane fails unless that pass is recorded. The primary-surface pass uses a container-local `scratch` share because smbd skips directory entries across `QUERY_DIRECTORY` continuations when the share lives on a Docker Desktop host bind mount. Every container the harness starts carries a per-run label and is removed in a `finally` block even when a lane fails.
+
 `eng/run-integration-gates.ps1` extends `eng/test.ps1` with the Python real-client, Samba, and native Windows interop smoke harnesses, and it now reruns that external stack under three merged dialect milestones: SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2. When `OPENCIFS_ENABLE_CROSS_VERSION_INTEROP=true`, it also runs the package-backed cross-version managed lane and records `artifacts/cross-version-managed-interop/cross-version-managed-interop.json`. When `OPENCIFS_DFS_SERVER_NAME`, `OPENCIFS_DFS_SHARE_NAME`, `OPENCIFS_DFS_NAMESPACE_PATH`, `OPENCIFS_DFS_USER_NAME`, and `OPENCIFS_DFS_PASSWORD` are configured, it also runs the external DFS namespace lane and records `artifacts/dfs-interop/dfs-interop.json`. When `OPENCIFS_ENABLE_LINUX_CIFS_INTEROP=true`, it also runs the privileged Linux kernel CIFS lane and records `artifacts/linux-cifs-interop/linux-cifs-interop.json`. When `OPENCIFS_WINDOWS_SERVER_NAME`, `OPENCIFS_WINDOWS_SERVER_SHARE_NAME`, `OPENCIFS_WINDOWS_SERVER_USER_NAME`, and `OPENCIFS_WINDOWS_SERVER_PASSWORD` are configured, it also runs the live `OpenCIFS.Client -> Windows server` harness and records `artifacts/windows-server-interop/windows-server-interop.json`.
 
 `eng/run-nightly-interop.ps1` extends the external-client stack into a deeper current-dialect nightly-style pass. It reruns the Python real-client, Samba, and native Windows three-dialect matrices across SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2 with a larger bounded payload, then composes those artifacts with a stronger SMB 2.1 soak that exercises durable reconnect, exclusive oplock breaks, lease breaks, and large-I/O churn on the managed path. Evidence is written to `artifacts/nightly-interop/nightly-interop.json`. The rerun external artifacts now also preserve structured advanced SMB 3.x durable/oplock/lease outcome or skip sections, while checked-in durable-handle v2 pass evidence, SMB 3.1.1 negotiation, and broader SMB 3.x nightly coverage remain backlog.
@@ -144,6 +147,58 @@ await client.DisconnectAsync();
 ```
 
 If you are connecting to `Sample.OpenCifsServer`, set `ServerName = "127.0.0.1"` and `ServerPort = 4450` unless you have explicitly bound the sample host to `445`.
+
+### Ranged, Streamed, And Large-Directory Operations
+
+`OpenCifsShareSession` also covers the blob-style access patterns that do not fit in a single byte array. Every call below has a `Try...Async` companion that returns `OpenCifsClientResult` / `OpenCifsClientResult<T>`.
+
+```csharp
+using System.IO;
+using OpenCIFS.Client;
+
+// Recursive, idempotent directory creation.
+await share.Directories.CreateAsync("/archive/2026/09", createParents: true);
+
+// Streamed upload from any readable stream (seekable or not). OverwriteIf semantics: existing content is truncated.
+await using (FileStream source = File.OpenRead("backup.bin"))
+{
+    await share.Files.WriteAsync("/archive/2026/09/backup.bin", source);
+}
+
+// Exactly N bytes from a longer source; EndOfStreamException if the source ends early.
+using (MemoryStream header = new MemoryStream(new byte[4096]))
+{
+    await share.Files.WriteAsync("/archive/2026/09/header.bin", header, length: 1024);
+}
+
+// Existence checks for files or directories (false for not-found statuses; other failures still throw).
+bool exists = await share.Metadata.ExistsAsync("/archive/2026/09/backup.bin");
+
+// Ranged read: fewer bytes at EOF, an empty array at or beyond EOF.
+byte[] firstKilobyte = await share.Files.ReadAsync("/archive/2026/09/backup.bin", offset: 0, count: 1024);
+
+// Lazy, seekable, read-only stream over an open handle; dispose it to close the handle.
+await using (Stream stream = await share.Files.OpenReadAsync("/archive/2026/09/backup.bin"))
+{
+    stream.Seek(-16, SeekOrigin.End);
+    await stream.CopyToAsync(Stream.Null);
+}
+
+// Enumeration pages through every QUERY_DIRECTORY response, never returns "." or "..",
+// and reports IsDirectory plus UTC timestamps per entry. "", "/", and "\" address the share root.
+foreach (OpenCifsClientDirectoryEntry entry in await share.Directories.EnumerateAsync("/archive/2026/09"))
+{
+    Console.WriteLine($"{entry.FileName} dir={entry.IsDirectory} size={entry.EndOfFile} modified={entry.LastWriteTimeUtc:o}");
+}
+```
+
+Notes:
+
+- `ReadAsync` and `OpenReadAsync` chunk by the negotiated maximum read size (capped at 1 MiB per request) and continue across legal short server reads. `ReadAllBytesAsync` returns a snapshot bounded by the end-of-file observed when it starts.
+- `OpenReadAsync` opens the file with generic read and share-read access, so other readers can open the file while writers are rejected until the stream is disposed. Its `Length` is the end-of-file at open time.
+- `WriteAsync(path, Stream, ...)` streams in chunks of the negotiated maximum write size and never buffers the whole source.
+- One `OpenCifsClient` (and every `OpenCifsShareSession` opened from it) is safe to share across concurrent callers. Requests are serialized over the single SMB connection, so concurrent operations interleave at request granularity rather than running in parallel on the wire. A long-lived `Directories.WaitForChangeAsync(...)` holds the connection until it completes or is cancelled, so use a dedicated client for change notifications. Open more clients if you need more parallel throughput.
+- Cancelling an operation is safe: the connection drains the abandoned response before the next request, so later operations on the same client keep working.
 
 Server-returned SMB failures on the high-level and advanced client surfaces now raise `OpenCifsStatusException`, so callers can inspect the exact SMB2 command, NTSTATUS, and normalized category:
 

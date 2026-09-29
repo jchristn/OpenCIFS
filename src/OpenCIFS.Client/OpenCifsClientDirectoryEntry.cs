@@ -1,5 +1,6 @@
 namespace OpenCIFS.Client
 {
+    using System;
     using OpenCIFS.Protocol;
 
     /// <summary>
@@ -26,5 +27,36 @@ namespace OpenCIFS.Client
         /// File attributes reported by the server.
         /// </summary>
         public FileAttributes FileAttributes { get; set; } = FileAttributes.Normal;
+
+        /// <summary>
+        /// Whether the entry is a directory, derived from <see cref="FileAttributes"/>.
+        /// </summary>
+        public bool IsDirectory
+        {
+            get
+            {
+                return (FileAttributes & FileAttributes.Directory) != 0;
+            }
+        }
+
+        /// <summary>
+        /// Creation timestamp in UTC, or null when the server did not report one.
+        /// </summary>
+        public DateTime? CreationTimeUtc { get; set; }
+
+        /// <summary>
+        /// Last-access timestamp in UTC, or null when the server did not report one.
+        /// </summary>
+        public DateTime? LastAccessTimeUtc { get; set; }
+
+        /// <summary>
+        /// Last-write timestamp in UTC, or null when the server did not report one.
+        /// </summary>
+        public DateTime? LastWriteTimeUtc { get; set; }
+
+        /// <summary>
+        /// Change timestamp in UTC, or null when the server did not report one.
+        /// </summary>
+        public DateTime? ChangeTimeUtc { get; set; }
     }
 }
