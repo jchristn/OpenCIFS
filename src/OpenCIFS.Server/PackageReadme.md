@@ -2,7 +2,7 @@
 
 Managed direct-TCP SMB 2.0.2 through bounded SMB 3.0.2 server surface for OpenCIFS.
 
-OpenCIFS `0.1.1` is alpha software. The documented server surface and interop claims are intentionally bounded, and exhaustive compatibility testing across SMB dialects, platforms, and third-party peers has not been performed.
+OpenCIFS `0.2.0-alpha` is alpha software. The documented server surface and interop claims are intentionally bounded, and exhaustive compatibility testing across SMB dialects, platforms, and third-party peers has not been performed.
 
 A bounded managed SMB 3.0.2 AES-128-CCM encrypted session slice now exists on the managed path, alongside the bounded non-encrypted SMB 3.0 / SMB 3.0.2 compatibility slice exposed through `WithSmb3EncryptionRequired(false)`.
 
@@ -18,7 +18,7 @@ A bounded managed SMB 3.0.2 AES-128-CCM encrypted session slice now exists on th
 ## Install
 
 ```powershell
-dotnet add package OpenCIFS.Server
+dotnet add package OpenCIFS.Server --prerelease
 ```
 
 This package depends on `OpenCIFS.Protocol`, `OpenCIFS.Security`, and `OpenCIFS.Transport`.
@@ -57,3 +57,7 @@ Builder/configuration faults on the documented server surface now raise `OpenCif
 `OpenCifsServerApplication` now also exposes bounded `TryRunAsync`, `TryStartAsync`, and `TryStopAsync` companions that return `OpenCifsServerResult` when you want non-throwing managed lifecycle control for bind conflicts, double-start attempts, or disposed-lifecycle misuse.
 
 Use `Sample.OpenCifsServer` for the full tester-facing sample host. The verified scope currently covers the managed SMB 2.0.2 and SMB 2.1 slices implemented in this repository plus bounded local `IPC$`/named-pipe hosting with the built-in `srvsvc` share-enumeration/share-info endpoint, the built-in UTF-8 echo endpoint, the bounded SMB 3.0 / SMB 3.0.2 negotiate, secure-negotiate validation, AES-CMAC signing, SMB 3.0.2 AES-128-CCM encrypted-session slice, and bounded SMB 3.0.2 non-persistent durable-handle v2 reconnect on the managed path. Continuous availability, persistent clustered handles, SMB 3.1.1, SMB1/CIFS, DFS, broader named-pipe semantics, and Kerberos remain backlog.
+
+## Observability
+
+The server emits metrics and traces through the BCL `Meter` and `ActivitySource` named `OpenCIFS.Server` (constants on `OpenCIFS.Protocol.OpenCifsTelemetryNames`), with no extra dependencies and near-zero cost until the host subscribes (for example `settings.Sources.AddMeter("OpenCIFS.Server")` with Radiant, or `AddMeter` / `AddSource` with the OpenTelemetry SDK). It covers connections, per-stage packet latency including the server-wide lock wait, per-command latency and NT status, storage-backend latency, authentication, sessions, trees, opens, durable reconnects, and break/notification delivery, with one root span per inbound packet. See `TELEMETRY.md` in the repository for the catalog and alerts.

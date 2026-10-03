@@ -2,7 +2,9 @@
 {
     using System;
     using System.Collections.Generic;
+    using System.Diagnostics;
     using System.Net.Sockets;
+    using System.Runtime.CompilerServices;
     using System.Threading;
     using System.Threading.Channels;
     using System.Threading.Tasks;
@@ -104,17 +106,30 @@
             using CancellationTokenSource linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutTokenSource.Token);
             CancellationToken linkedToken = linkedTokenSource.Token;
 
+            long connectTelemetryStart = OpenCifsClientTelemetry.ConnectStarted();
+
             try
             {
                 _TcpClient = new TcpClient();
-                await _TcpClient.ConnectAsync(Options.ServerName, Options.ServerPort, linkedToken).ConfigureAwait(false);
+
+                using (Activity? tcpActivity = OpenCifsClientTelemetry.Source.StartActivity("stage:tcp_connect", ActivityKind.Client))
+                {
+                    tcpActivity?.SetTag(OpenCifsTelemetryNames.SpanAttributeServerAddress, Options.ServerName);
+                    tcpActivity?.SetTag(OpenCifsTelemetryNames.AttributeServerPort, Options.ServerPort);
+                    await _TcpClient.ConnectAsync(Options.ServerName, Options.ServerPort, linkedToken).ConfigureAwait(false);
+                }
+
                 NetworkStream networkStream = _TcpClient.GetStream();
                 _Connection = FramedPipeConnection.Create(networkStream, new DirectTcpFrameProtocol());
                 _Connection.Start();
+                _TelemetryConnectionCounted = true;
+                OpenCifsClientTelemetry.ConnectionEstablished();
                 await NegotiateAsync(linkedToken).ConfigureAwait(false);
+                OpenCifsClientTelemetry.ConnectCompleted(connectTelemetryStart, null);
             }
             catch (Exception exception)
             {
+                OpenCifsClientTelemetry.ConnectCompleted(connectTelemetryStart, exception);
                 await ResetTransportAsync().ConfigureAwait(false);
                 ResetSession();
 
@@ -1100,6 +1115,7 @@
                 throw compoundFailure;
             }
 
+            OpenCifsClientTelemetry.RecordIoBytes(data.Length, write: false);
             return data;
         }
 
@@ -1282,6 +1298,7 @@
                 throw compoundFailure;
             }
 
+            OpenCifsClientTelemetry.RecordIoBytes(writtenCount, write: true);
             return writtenCount;
         }
 
@@ -1842,11 +1859,13 @@
                 sessionId: _Session.SessionId!.Value,
                 creditCharge: creditCharge);
             (Smb2Header responseHeader, byte[] responsePayload) = await SendSingleRequestAsync(requestHeader, request.ToByteArray(), cancellationToken).ConfigureAwait(false);
-            return _Session.ApplyReadResult(
+            byte[] readData = _Session.ApplyReadResult(
                 openHandle.PersistentFileId,
                 openHandle.VolatileFileId,
                 responseHeader.Status,
                 ReadSuccessResponseOrDefault(responseHeader.Status, responsePayload, Smb2ReadResponse.ReadFrom));
+            OpenCifsClientTelemetry.RecordIoBytes(readData.Length, write: false);
+            return readData;
         }
 
         /// <summary>
@@ -1900,11 +1919,13 @@
                 sessionId: _Session.SessionId!.Value,
                 creditCharge: creditCharge);
             (Smb2Header responseHeader, byte[] responsePayload) = await SendSingleRequestAsync(requestHeader, request.ToByteArray(), cancellationToken).ConfigureAwait(false);
-            return _Session.ApplyWriteResult(
+            uint writtenCount = _Session.ApplyWriteResult(
                 openHandle.PersistentFileId,
                 openHandle.VolatileFileId,
                 responseHeader.Status,
                 ReadSuccessResponseOrDefault(responseHeader.Status, responsePayload, Smb2WriteResponse.ReadFrom));
+            OpenCifsClientTelemetry.RecordIoBytes(writtenCount, write: true);
+            return writtenCount;
         }
 
         /// <summary>
@@ -2706,6 +2727,39 @@
 
         private async Task<Smb2CompoundPacket> SendCompoundRequestAsync(Smb2CompoundPacket requestPacket, CancellationToken cancellationToken)
         {
+            long startTimestamp = Stopwatch.GetTimestamp();
+            Activity? activity = OpenCifsClientTelemetry.StartRequest(OpenCifsClientTelemetry.CompoundCommandName, null, Options.ServerName, Options.ServerPort);
+
+            if (activity != null && activity.IsAllDataRequested)
+            {
+                activity.SetTag(OpenCifsTelemetryNames.SpanAttributeCompoundCount, requestPacket?.Entries.Count ?? 0);
+                activity.SetTag("smb.compound.commands", OpenCifsClientTelemetry.DescribeCompound(requestPacket));
+            }
+
+            try
+            {
+                Smb2CompoundPacket responsePacket = await SendCompoundRequestCoreAsync(requestPacket!, cancellationToken).ConfigureAwait(false);
+                OpenCifsClientTelemetry.CompleteRequest(
+                    OpenCifsClientTelemetry.CompoundCommandName,
+                    requestPacket!.Entries.Count > 0 ? requestPacket.Entries[0].Header : null,
+                    OpenCifsClientTelemetry.SummarizeCompoundStatus(responsePacket),
+                    startTimestamp,
+                    activity);
+                return responsePacket;
+            }
+            catch (Exception exception)
+            {
+                OpenCifsClientTelemetry.FailRequest(OpenCifsClientTelemetry.CompoundCommandName, exception, startTimestamp, activity);
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+        }
+
+        private async Task<Smb2CompoundPacket> SendCompoundRequestCoreAsync(Smb2CompoundPacket requestPacket, CancellationToken cancellationToken)
+        {
             if (requestPacket == null)
             {
                 throw new ArgumentNullException(nameof(requestPacket), "RequestPacket cannot be null.");
@@ -2731,6 +2785,7 @@
                 for (int index = 0; index < requestPacket.Entries.Count; index++)
                 {
                     _AbandonedMessageIds.Add(requestPacket.Entries[index].Header.MessageId);
+                    OpenCifsClientTelemetry.RecordRequestAbandoned();
                 }
 
                 throw;
@@ -2768,6 +2823,33 @@
         }
 
         private async Task<(Smb2Header ResponseHeader, byte[] ResponsePayload, bool CancelledByClient)> SendChangeNotifyRequestAsync(
+            Smb2Header requestHeader,
+            byte[] requestPayload,
+            CancellationToken cancellationToken)
+        {
+            string commandName = OpenCifsTelemetryFormat.CommandName(Smb2Command.ChangeNotify);
+            long startTimestamp = Stopwatch.GetTimestamp();
+            Activity? activity = OpenCifsClientTelemetry.StartRequest(commandName, requestHeader, Options.ServerName, Options.ServerPort);
+
+            try
+            {
+                (Smb2Header ResponseHeader, byte[] ResponsePayload, bool CancelledByClient) result =
+                    await SendChangeNotifyRequestCoreAsync(requestHeader, requestPayload, cancellationToken).ConfigureAwait(false);
+                OpenCifsClientTelemetry.CompleteRequest(commandName, requestHeader, result.ResponseHeader.Status, startTimestamp, activity);
+                return result;
+            }
+            catch (Exception exception)
+            {
+                OpenCifsClientTelemetry.FailRequest(commandName, exception, startTimestamp, activity);
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+        }
+
+        private async Task<(Smb2Header ResponseHeader, byte[] ResponsePayload, bool CancelledByClient)> SendChangeNotifyRequestCoreAsync(
             Smb2Header requestHeader,
             byte[] requestPayload,
             CancellationToken cancellationToken)
@@ -2860,6 +2942,33 @@
         }
 
         private async Task<(Smb2Header ResponseHeader, byte[] ResponsePayload)> SendSingleRequestAsync(
+            Smb2Header requestHeader,
+            byte[] requestPayload,
+            CancellationToken cancellationToken)
+        {
+            string commandName = requestHeader != null ? OpenCifsTelemetryFormat.CommandName(requestHeader.Command) : OpenCifsTelemetryFormat.Other;
+            long startTimestamp = Stopwatch.GetTimestamp();
+            Activity? activity = OpenCifsClientTelemetry.StartRequest(commandName, requestHeader, Options.ServerName, Options.ServerPort);
+
+            try
+            {
+                (Smb2Header ResponseHeader, byte[] ResponsePayload) result =
+                    await SendSingleRequestCoreAsync(requestHeader!, requestPayload, cancellationToken).ConfigureAwait(false);
+                OpenCifsClientTelemetry.CompleteRequest(commandName, requestHeader, result.ResponseHeader.Status, startTimestamp, activity);
+                return result;
+            }
+            catch (Exception exception)
+            {
+                OpenCifsClientTelemetry.FailRequest(commandName, exception, startTimestamp, activity);
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+        }
+
+        private async Task<(Smb2Header ResponseHeader, byte[] ResponsePayload)> SendSingleRequestCoreAsync(
             Smb2Header requestHeader,
             byte[] requestPayload,
             CancellationToken cancellationToken)
@@ -3335,6 +3444,7 @@
         private async Task AbandonOutstandingRequestAsync(ulong messageId, bool pendingResponseObserved)
         {
             _AbandonedMessageIds.Add(messageId);
+            OpenCifsClientTelemetry.RecordRequestAbandoned();
 
             if (!pendingResponseObserved)
             {
@@ -3732,6 +3842,12 @@
             _Connection = null;
             _TcpClient = null;
 
+            if (_TelemetryConnectionCounted)
+            {
+                _TelemetryConnectionCounted = false;
+                OpenCifsClientTelemetry.ConnectionReleased();
+            }
+
             if (connection != null)
             {
                 try
@@ -3949,6 +4065,7 @@
             try
             {
                 await connection.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+                OpenCifsClientTelemetry.RecordNetworkIo(payload.Length, transmit: true);
             }
             catch (Exception exception) when (IsTransportException(exception))
             {
@@ -3964,7 +4081,9 @@
 
             try
             {
-                return await connection.ReadAsync(cancellationToken).ConfigureAwait(false);
+                byte[] frame = await connection.ReadAsync(cancellationToken).ConfigureAwait(false);
+                OpenCifsClientTelemetry.RecordNetworkIo(frame.Length, transmit: false);
+                return frame;
             }
             catch (Exception exception) when (IsTransportException(exception))
             {
@@ -3978,6 +4097,11 @@
         {
             // Tear the dead transport down so IsConnected/IsAuthenticated report false and every tracked handle is
             // invalidated. Durable reconnect state is preserved so durable opens can be reconnected on a new session.
+            if (_TransportFailure == null)
+            {
+                OpenCifsClientTelemetry.RecordTransportFailure(cause);
+            }
+
             _TransportFailure ??= cause;
             await ResetTransportAsync().ConfigureAwait(false);
             ResetSession(invalidateDurableReconnect: false);
@@ -4024,7 +4148,7 @@
                 exception is ObjectDisposedException;
         }
 
-        private async Task RunExclusiveAsync(Func<Task> operation, CancellationToken cancellationToken)
+        private async Task RunExclusiveAsync(Func<Task> operation, CancellationToken cancellationToken, [CallerMemberName] string operationName = "")
         {
             await RunExclusiveAsync<object?>(
                 async () =>
@@ -4032,10 +4156,36 @@
                     await operation().ConfigureAwait(false);
                     return null;
                 },
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                operationName).ConfigureAwait(false);
         }
 
-        private async Task<T> RunExclusiveAsync<T>(Func<Task<T>> operation, CancellationToken cancellationToken)
+        private async Task<T> RunExclusiveAsync<T>(Func<Task<T>> operation, CancellationToken cancellationToken, [CallerMemberName] string operationName = "")
+        {
+            // The caller member name is the public API method (for example ReadAsync), which keeps the operation
+            // label bounded to the public surface.
+            string telemetryOperation = OpenCifsClientTelemetry.OperationName(operationName);
+            long startTimestamp = Stopwatch.GetTimestamp();
+            Activity? activity = OpenCifsClientTelemetry.StartOperation(telemetryOperation, Options.ServerName, Options.ServerPort);
+
+            try
+            {
+                T result = await RunExclusiveCoreAsync(operation, telemetryOperation, cancellationToken).ConfigureAwait(false);
+                OpenCifsClientTelemetry.CompleteOperation(telemetryOperation, startTimestamp, activity);
+                return result;
+            }
+            catch (Exception exception)
+            {
+                OpenCifsClientTelemetry.FailOperation(telemetryOperation, exception, startTimestamp, activity);
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+        }
+
+        private async Task<T> RunExclusiveCoreAsync<T>(Func<Task<T>> operation, string telemetryOperation, CancellationToken cancellationToken)
         {
             // Every public operation owns the single direct-TCP request/response stream for its full duration so
             // message identifiers, credits, signing state, and response correlation stay consistent when callers
@@ -4045,7 +4195,19 @@
                 return await operation().ConfigureAwait(false);
             }
 
-            await _OperationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            long queueStartTimestamp = Stopwatch.GetTimestamp();
+            OpenCifsClientTelemetry.OperationsWaiting.Add(1);
+
+            try
+            {
+                await _OperationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                OpenCifsClientTelemetry.OperationsWaiting.Add(-1);
+            }
+
+            OpenCifsClientTelemetry.RecordOperationQueued(telemetryOperation, queueStartTimestamp);
 
             try
             {
@@ -4096,6 +4258,7 @@
         private readonly Guid _ConnectionId = Guid.NewGuid();
         private readonly object _RpcSyncRoot = new object();
         private readonly SemaphoreSlim _OperationLock = new SemaphoreSlim(1, 1);
+        private bool _TelemetryConnectionCounted;
         private readonly AsyncLocal<bool> _OperationLockHeld = new AsyncLocal<bool>();
         private readonly HashSet<ulong> _AbandonedMessageIds = new HashSet<ulong>();
         private readonly Queue<byte[]> _DeferredResponsePackets = new Queue<byte[]>();

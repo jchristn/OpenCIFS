@@ -1,6 +1,7 @@
 namespace OpenCIFS.Server
 {
     using System;
+    using System.Diagnostics;
     using OpenCIFS.Protocol;
 
     /// <summary>
@@ -17,5 +18,11 @@ namespace OpenCIFS.Server
         /// Response payload.
         /// </summary>
         public byte[] Payload { get; set; } = Array.Empty<byte>();
+
+        internal string TelemetryKind { get; set; } = OpenCifsServerTelemetry.AsyncKindOther;
+
+        internal long TelemetryQueuedTimestamp { get; set; }
+
+        internal ActivityContext TelemetryParentContext { get; set; }
     }
 }

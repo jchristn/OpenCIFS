@@ -63,7 +63,7 @@ namespace OpenCIFS.Build
             for (int rootIndex = 0; rootIndex < _AuditRoots.Length; rootIndex++)
             {
                 string relativeRoot = _AuditRoots[rootIndex];
-                string fullRoot = Path.Combine(repositoryRoot, relativeRoot);
+                string fullRoot = Path.Combine(repositoryRoot, relativeRoot.Replace('\\', Path.DirectorySeparatorChar));
 
                 if (!Directory.Exists(fullRoot))
                 {
@@ -91,7 +91,7 @@ namespace OpenCIFS.Build
             for (int fileIndex = 0; fileIndex < _ReleaseFacingFiles.Length; fileIndex++)
             {
                 string relativePath = _ReleaseFacingFiles[fileIndex];
-                string fullPath = Path.Combine(repositoryRoot, relativePath);
+                string fullPath = Path.Combine(repositoryRoot, relativePath.Replace('\\', Path.DirectorySeparatorChar));
 
                 if (!File.Exists(fullPath))
                 {

@@ -2,6 +2,7 @@
 {
     using System;
     using System.Collections.Generic;
+    using System.Diagnostics;
     using System.IO;
     using System.Net;
     using System.Net.Sockets;
@@ -43,12 +44,14 @@
             }
 
             _IsRunning = true;
+            object? listenerTelemetryToken = null;
 
             try
             {
                 IPAddress bindAddress = ResolveBindAddress(_Options.BindAddress);
                 TcpListener listener = new TcpListener(bindAddress, _Options.BindPort);
                 listener.Start();
+                listenerTelemetryToken = OpenCifsServerTelemetry.ListenerStarted(_Options);
 
                 try
                 {
@@ -84,6 +87,7 @@
             }
             finally
             {
+                OpenCifsServerTelemetry.ListenerStopped(listenerTelemetryToken);
                 _IsRunning = false;
             }
         }
@@ -116,6 +120,13 @@
 
         private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
         {
+            // Each connection's packets are independent root traces; never parent them on whatever span started the listener.
+            Activity.Current = null;
+            long connectionTelemetryStart = OpenCifsServerTelemetry.ConnectionOpened();
+            string closeReason = OpenCifsServerTelemetry.CloseReasonClientClosed;
+            IPEndPoint? peerEndPoint = TryGetEndPoint(client, remote: true);
+            int localPort = TryGetEndPoint(client, remote: false)?.Port ?? _Options.BindPort;
+
             using (client)
             {
                 client.NoDelay = true;
@@ -171,16 +182,37 @@
                             break;
                         }
 
-                        byte[]? responsePayload;
-
-                        lock (host.SyncRoot)
+                        using (OpenCifsServerPacketScope packetScope = new OpenCifsServerPacketScope(peerEndPoint, localPort, requestPayload.Length))
                         {
-                            responsePayload = DispatchRequest(host, requestPayload);
-                        }
+                            try
+                            {
+                                byte[]? responsePayload;
 
-                        if (responsePayload != null)
-                        {
-                            await connection.WriteAsync(responsePayload, cancellationToken).ConfigureAwait(false);
+                                // Every connection serializes on the server-wide state lock; the queued stage is the
+                                // contention signal an operator needs when latency climbs with connection count.
+                                packetScope.BeginStage(OpenCifsServerTelemetry.StageQueued);
+                                OpenCifsServerTelemetry.LockWaiting.Add(1);
+
+                                lock (host.SyncRoot)
+                                {
+                                    OpenCifsServerTelemetry.LockWaiting.Add(-1);
+                                    responsePayload = DispatchRequest(host, requestPayload, packetScope);
+                                }
+
+                                if (responsePayload != null)
+                                {
+                                    packetScope.BeginStage(OpenCifsServerTelemetry.StageSend);
+                                    await connection.WriteAsync(responsePayload, cancellationToken).ConfigureAwait(false);
+                                    packetScope.ResponseWritten(responsePayload.Length);
+                                }
+
+                                packetScope.Complete();
+                            }
+                            catch (Exception exception)
+                            {
+                                packetScope.Fail(exception);
+                                throw;
+                            }
                         }
 
                         await FlushReadyAsyncResponsesAsync(host, connection, cancellationToken).ConfigureAwait(false);
@@ -190,30 +222,41 @@
                 }
                 catch (IOException)
                 {
+                    closeReason = OpenCifsServerTelemetry.CloseReasonTransportError;
                 }
                 catch (ObjectDisposedException)
                 {
+                    closeReason = OpenCifsServerTelemetry.CloseReasonTransportError;
                 }
                 catch (SocketException)
                 {
+                    closeReason = OpenCifsServerTelemetry.CloseReasonTransportError;
                 }
                 catch (ProtocolEncodingException exception)
                 {
+                    closeReason = OpenCifsServerTelemetry.CloseReasonProtocolError;
                     connectionFaultHandled = true;
                     _ExceptionHandler(exception);
                 }
                 catch (ProtocolValidationException exception)
                 {
+                    closeReason = OpenCifsServerTelemetry.CloseReasonProtocolError;
                     connectionFaultHandled = true;
                     _ExceptionHandler(exception);
                 }
                 catch (Exception exception)
                 {
+                    closeReason = OpenCifsServerTelemetry.CloseReasonServerError;
                     connectionFaultHandled = true;
                     _ExceptionHandler(exception);
                 }
                 finally
                 {
+                    if (closeReason == OpenCifsServerTelemetry.CloseReasonClientClosed && cancellationToken.IsCancellationRequested)
+                    {
+                        closeReason = OpenCifsServerTelemetry.CloseReasonShutdown;
+                    }
+
                     lock (host.SyncRoot)
                     {
                         host.HandleTransportDisconnect();
@@ -266,7 +309,25 @@
                     {
                         _ExceptionHandler(exception);
                     }
+
+                    OpenCifsServerTelemetry.ConnectionClosed(connectionTelemetryStart, closeReason);
                 }
+            }
+        }
+
+        private static IPEndPoint? TryGetEndPoint(TcpClient client, bool remote)
+        {
+            try
+            {
+                return (remote ? client.Client.RemoteEndPoint : client.Client.LocalEndPoint) as IPEndPoint;
+            }
+            catch (ObjectDisposedException)
+            {
+                return null;
+            }
+            catch (SocketException)
+            {
+                return null;
             }
         }
 
@@ -274,24 +335,45 @@
         {
             while (host.TryDequeueAsyncResponse(out OpenCifsServerAsyncResponse? asyncResponse) && asyncResponse != null)
             {
-                await connection.WriteAsync(
-                    CreateSingleResponsePacket(host, asyncResponse.Header, asyncResponse.Payload),
-                    cancellationToken).ConfigureAwait(false);
+                using (Activity? activity = OpenCifsServerTelemetry.StartAsyncResponseSend(asyncResponse))
+                {
+                    try
+                    {
+                        byte[] packet = CreateSingleResponsePacket(host, asyncResponse.Header, asyncResponse.Payload);
+
+                        await connection.WriteAsync(packet, cancellationToken).ConfigureAwait(false);
+                        OpenCifsServerTelemetry.RecordNetworkIo(packet.Length, transmit: true);
+                        OpenCifsServerTelemetry.CompleteAsyncResponseSend(asyncResponse, activity);
+                    }
+                    catch (Exception exception)
+                    {
+                        OpenCifsServerTelemetry.MarkFailed(activity, exception);
+                        throw;
+                    }
+                }
             }
         }
 
-        private static byte[]? DispatchRequest(OpenCifsServerHost host, ReadOnlyMemory<byte> requestPayload)
+        private static byte[]? DispatchRequest(OpenCifsServerHost host, ReadOnlyMemory<byte> requestPayload, OpenCifsServerPacketScope packetScope)
         {
             try
             {
+                packetScope.BeginStage(OpenCifsServerTelemetry.StageDecode);
+
                 if (LooksLikeSmb1Packet(requestPayload.Span))
                 {
-                    return DispatchSmb1MultiProtocolNegotiate(host, requestPayload);
+                    return DispatchSmb1MultiProtocolNegotiate(host, requestPayload, packetScope);
                 }
 
                 byte[] plainRequestPayload = host.UnwrapRequestPacket(requestPayload, out bool wasEncrypted);
                 Smb2CompoundPacket requestPacket = Smb2CompoundPacket.ReadFrom(plainRequestPayload);
                 host.ValidateRequestPacket(requestPacket, plainRequestPayload, wasEncrypted);
+                packetScope.Describe(
+                    requestPacket.Entries.Count > 1 ? OpenCifsServerTelemetry.PacketKindSmb2Compound : OpenCifsServerTelemetry.PacketKindSmb2,
+                    requestPacket.Entries.Count > 0 ? requestPacket.Entries[0].Header : null,
+                    requestPacket.Entries.Count,
+                    wasEncrypted);
+                packetScope.BeginStage(OpenCifsServerTelemetry.StageDispatch);
 
                 if (requestPacket.Entries.Count == 1)
                 {
@@ -301,26 +383,27 @@
 
                     if (requestHeader.Command == Smb2Command.Cancel)
                     {
-                        Smb2CancelRequest cancelRequest = Smb2CancelRequest.ReadFrom(trimmedPayload);
-                        OpenCifsServerCancelResult cancelResult = host.HandleCancel(requestHeader, cancelRequest);
+                        OpenCifsServerCancelResult cancelResult = DispatchCancel(host, requestHeader, trimmedPayload);
 
                         if (!cancelResult.WasCancelled || cancelResult.TargetResponseHeader == null)
                         {
                             return null;
                         }
 
+                        packetScope.BeginStage(OpenCifsServerTelemetry.StageEncode);
                         return CreateSingleResponsePacket(host, cancelResult.TargetResponseHeader, cancelResult.TargetResponsePayload);
                     }
 
                     if (requestHeader.Command == Smb2Command.ChangeNotify)
                     {
-                        Smb2ChangeNotifyRequest changeNotifyRequest = Smb2ChangeNotifyRequest.ReadFrom(trimmedPayload);
-                        OpenCifsServerAsyncResponse asyncResponse = host.HandleChangeNotify(requestHeader, changeNotifyRequest);
+                        OpenCifsServerAsyncResponse asyncResponse = DispatchChangeNotify(host, requestHeader, trimmedPayload);
+                        packetScope.BeginStage(OpenCifsServerTelemetry.StageEncode);
                         return CreateSingleResponsePacket(host, asyncResponse.Header, asyncResponse.Payload);
                     }
                 }
 
                 Smb2CompoundPacket responsePacket = host.HandleCompoundRequestPacket(requestPacket);
+                packetScope.BeginStage(OpenCifsServerTelemetry.StageEncode);
                 return host.FinalizeResponsePacket(responsePacket);
             }
             catch (ProtocolEncodingException)
@@ -345,9 +428,62 @@
             }
         }
 
-        private static byte[] DispatchSmb1MultiProtocolNegotiate(OpenCifsServerHost host, ReadOnlyMemory<byte> requestPayload)
+        private static OpenCifsServerCancelResult DispatchCancel(OpenCifsServerHost host, Smb2Header requestHeader, byte[] trimmedPayload)
+        {
+            long startTimestamp = Stopwatch.GetTimestamp();
+            Activity? activity = OpenCifsServerTelemetry.StartCommand(requestHeader);
+
+            try
+            {
+                Smb2CancelRequest cancelRequest = Smb2CancelRequest.ReadFrom(trimmedPayload);
+                OpenCifsServerCancelResult cancelResult = host.HandleCancel(requestHeader, cancelRequest);
+
+                // CANCEL has no response of its own; report the status of the response it completed, if any.
+                NtStatus status = cancelResult.WasCancelled && cancelResult.TargetResponseHeader != null
+                    ? cancelResult.TargetResponseHeader.Status
+                    : NtStatus.Success;
+                OpenCifsServerTelemetry.CompleteCommand(Smb2Command.Cancel, status, startTimestamp, activity);
+                return cancelResult;
+            }
+            catch (Exception exception)
+            {
+                OpenCifsServerTelemetry.FailCommand(Smb2Command.Cancel, exception, startTimestamp, activity);
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+        }
+
+        private static OpenCifsServerAsyncResponse DispatchChangeNotify(OpenCifsServerHost host, Smb2Header requestHeader, byte[] trimmedPayload)
+        {
+            long startTimestamp = Stopwatch.GetTimestamp();
+            Activity? activity = OpenCifsServerTelemetry.StartCommand(requestHeader);
+
+            try
+            {
+                Smb2ChangeNotifyRequest changeNotifyRequest = Smb2ChangeNotifyRequest.ReadFrom(trimmedPayload);
+                OpenCifsServerAsyncResponse asyncResponse = host.HandleChangeNotify(requestHeader, changeNotifyRequest);
+                OpenCifsServerTelemetry.CompleteCommand(Smb2Command.ChangeNotify, asyncResponse.Header.Status, startTimestamp, activity);
+                return asyncResponse;
+            }
+            catch (Exception exception)
+            {
+                OpenCifsServerTelemetry.FailCommand(Smb2Command.ChangeNotify, exception, startTimestamp, activity);
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+        }
+
+        private static byte[] DispatchSmb1MultiProtocolNegotiate(OpenCifsServerHost host, ReadOnlyMemory<byte> requestPayload, OpenCifsServerPacketScope packetScope)
         {
             Smb1NegotiateRequest smb1Request = Smb1NegotiateRequest.ReadFrom(requestPayload);
+            packetScope.Describe(OpenCifsServerTelemetry.PacketKindSmb1Negotiate, null, 1, wasEncrypted: false);
+            packetScope.BeginStage(OpenCifsServerTelemetry.StageDispatch);
 
             if (!smb1Request.ContainsDialect(Smb1NegotiateRequest.Smb2002DialectString))
             {
@@ -387,6 +523,7 @@
             {
                 new Smb2CompoundPacketEntry(syntheticHeader, bridgedRequest.ToByteArray())
             }));
+            packetScope.BeginStage(OpenCifsServerTelemetry.StageEncode);
             return host.FinalizeResponsePacket(responsePacket);
         }
 

@@ -22,7 +22,7 @@ namespace OpenCIFS.Server.Tests.Shared
                 throw new InvalidOperationException("A direct-TCP test port is already reserved on this async flow.");
             }
 
-            Semaphore? semaphore = new Semaphore(initialCount: 1, maximumCount: 1, name: DirectTcpPortReservationSemaphoreName);
+            CrossProcessTestLock? semaphore = new CrossProcessTestLock(DirectTcpPortReservationSemaphoreName);
             bool lockTaken = false;
 
             try
@@ -361,13 +361,13 @@ namespace OpenCIFS.Server.Tests.Shared
 
         private sealed class DirectTcpPortReservation
         {
-            public DirectTcpPortReservation(Semaphore semaphore, int port)
+            public DirectTcpPortReservation(CrossProcessTestLock semaphore, int port)
             {
                 Semaphore = semaphore ?? throw new ArgumentNullException(nameof(semaphore));
                 Port = port;
             }
 
-            public Semaphore Semaphore { get; }
+            public CrossProcessTestLock Semaphore { get; }
 
             public int Port { get; }
         }

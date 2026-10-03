@@ -9,7 +9,7 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <LangVersion>latest</LangVersion>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true' or '$(Configuration)' == 'Release'">true</ContinuousIntegrationBuild>
-    <Version>0.1.1</Version>
+    <Version>0.2.0-alpha</Version>
     <Company>OpenCIFS Contributors</Company>
     <Authors>OpenCIFS Contributors</Authors>
     <Copyright>Copyright (c) 2026 OpenCIFS Contributors</Copyright>
@@ -20,7 +20,7 @@
     <PackageProjectUrl>https://github.com/jchristn/OpenCIFS</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageReleaseNotes>0.1.1: fixed truncated multi-page directory enumeration (and '.'/'..' are no longer returned), short-read truncation in ReadAllBytesAsync, READ/WRITE frames that exceeded the direct-TCP frame limit, stale responses after cancellation, unsafe concurrent use of one client connection, raw ChannelClosedException on transport loss, OperationCanceledException on connect timeout, and stale or inconsistent server file timestamps; added OpenCifsClientTransportException, ranged ReadAsync, streaming OpenReadAsync and WriteAsync(Stream), Metadata.ExistsAsync, recursive Directories.CreateAsync, share-root paths, and directory-entry IsDirectory plus UTC timestamps. See https://github.com/jchristn/OpenCIFS/blob/main/CHANGELOG.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.2.0-alpha: built-in observability. OpenCIFS.Server and OpenCIFS.Client now emit metrics and traces through the base-class-library Meter and ActivitySource types (names OpenCIFS.Server and OpenCIFS.Client, listed in OpenCifsTelemetryNames), with no new package dependencies and near-zero cost until a host subscribes: server connections, per-stage packet latency including the server-wide lock wait, per-command latency and NT status, storage-backend latency, authentication, negotiation, session, tree, open, durable-handle, and async break/notification metrics with per-packet span trees; client operation, request, connect, queue, transport-failure, and byte metrics with nested spans. Also fixed CHANGE_NOTIFY file names using the host path separator instead of backslashes on Linux and macOS servers. See https://github.com/jchristn/OpenCIFS/blob/main/TELEMETRY.md and CHANGELOG.md.</PackageReleaseNotes>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
 

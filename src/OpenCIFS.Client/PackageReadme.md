@@ -2,7 +2,7 @@
 
 Managed direct-TCP SMB 2.0.2 through bounded SMB 3.0.2 client surface for OpenCIFS.
 
-OpenCIFS `0.1.1` is alpha software. The documented client surface and interop claims are intentionally bounded, and exhaustive compatibility testing across SMB dialects, platforms, and third-party peers has not been performed.
+OpenCIFS `0.2.0-alpha` is alpha software. The documented client surface and interop claims are intentionally bounded, and exhaustive compatibility testing across SMB dialects, platforms, and third-party peers has not been performed.
 
 A bounded managed SMB 3.0.2 AES-128-CCM encrypted session slice now exists on the managed path, alongside the bounded non-encrypted SMB 3.0 / SMB 3.0.2 compatibility slice exposed through `WithPreferredEncryption(false)`.
 
@@ -20,7 +20,7 @@ A bounded managed SMB 3.0.2 AES-128-CCM encrypted session slice now exists on th
 ## Install
 
 ```powershell
-dotnet add package OpenCIFS.Client
+dotnet add package OpenCIFS.Client --prerelease
 ```
 
 This package depends on `OpenCIFS.Protocol`, `OpenCIFS.Security`, and `OpenCIFS.Transport`.
@@ -89,3 +89,7 @@ Server-returned SMB failures raise `OpenCifsStatusException`, which now exposes 
 The primary client happy path now also exposes bounded non-throwing `Try...Async` companions that return `OpenCifsClientResult` / `OpenCifsClientResult<T>`. Those envelopes preserve the typed client exception, SMB2 command, NTSTATUS, and normalized category for expected negative paths without forcing consumers to parse exception strings. The bounded advanced/raw `OpenCifsClientConnection` surface now follows the same convention for lifecycle, compound, open, I/O, query, set, notify, close, and disconnect flows.
 
 Use `OpenCifsClientConnection` directly for the lower-level batch-oplock or lease-backed durable reconnect, SMB 3.0.2 non-persistent durable-handle v2 reconnect, lease-backed open, locking, large multi-credit I/O, SMB 3.0.2 encrypted compound flows, and bounded SMB 3.0 / SMB 3.0.2 secure-negotiate validation. SMB 3.1.1, Kerberos, and broader Windows-server interop remain backlog.
+
+## Observability
+
+The client emits metrics and traces through the BCL `Meter` and `ActivitySource` named `OpenCIFS.Client` (constants on `OpenCIFS.Protocol.OpenCifsTelemetryNames`), with no extra dependencies and near-zero cost until the host subscribes. It covers per-operation latency and outcome, per-request round trips by SMB2 command and NT status, connect latency and failures, connection-lock queueing, transport failures, and bytes, with `OpenCIFS <Operation>` spans wrapping `SMB2 <COMMAND>` client spans under the caller's current span. See `TELEMETRY.md` in the repository for the catalog and alerts.

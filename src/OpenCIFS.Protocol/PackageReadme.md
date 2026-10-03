@@ -2,7 +2,7 @@
 
 Shared SMB/CIFS protocol models, enums, codecs, validators, and state types used by the OpenCIFS client and server packages.
 
-OpenCIFS `0.1.1` is alpha software. This package exposes bounded protocol foundations used by the current client and server surfaces, and exhaustive compatibility testing across SMB dialects and external peers has not been performed.
+OpenCIFS `0.2.0-alpha` is alpha software. This package exposes bounded protocol foundations used by the current client and server surfaces, and exhaustive compatibility testing across SMB dialects and external peers has not been performed.
 
 ## Scope
 
@@ -16,7 +16,7 @@ OpenCIFS `0.1.1` is alpha software. This package exposes bounded protocol founda
 ## Install
 
 ```powershell
-dotnet add package OpenCIFS.Protocol
+dotnet add package OpenCIFS.Protocol --prerelease
 ```
 
 ## Example
@@ -32,3 +32,7 @@ Console.WriteLine($"Dialect ceiling: {maximumDialect}");
 ```
 
 The verified scope currently covers the managed SMB 2.0.2 and SMB 2.1 slices implemented in this repository. SMB 3.x and SMB1/CIFS compatibility work beyond the current bounded scope remains backlog.
+
+## Telemetry Names
+
+`OpenCifsTelemetryNames` holds the stable meter, activity-source, instrument, and attribute names emitted by `OpenCIFS.Server` and `OpenCIFS.Client`, so hosts can subscribe without string literals. See `TELEMETRY.md` in the repository.

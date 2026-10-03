@@ -96,7 +96,9 @@ namespace OpenCIFS.Build
                     continue;
                 }
 
-                string referencedProjectPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(projectPath)!, includeAttribute.Value));
+                // Project files use Windows separators; normalize them so the graph resolves on Linux and macOS too.
+                string includePath = includeAttribute.Value.Replace('\\', Path.DirectorySeparatorChar);
+                string referencedProjectPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(projectPath)!, includePath));
                 projectReferencePaths.Add(referencedProjectPath);
             }
 

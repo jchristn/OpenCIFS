@@ -9,7 +9,26 @@ namespace OpenCIFS.Server
     /// </summary>
     public sealed class OpenCifsServerSharedState
     {
+        /// <summary>
+        /// Initialize empty server-wide state and register it with the server telemetry gauges.
+        /// </summary>
+        public OpenCifsServerSharedState()
+        {
+            OpenCifsServerTelemetry.TrackSharedState(this);
+        }
+
         internal object SyncRoot { get; } = new object();
+
+        /// <summary>
+        /// Detached durable opens awaiting reconnect. Callers must hold <see cref="SyncRoot" />.
+        /// </summary>
+        internal long TelemetryDetachedDurableOpenCount
+        {
+            get
+            {
+                return _DetachedDurableOpens.Count;
+            }
+        }
 
         /// <summary>
         /// Server-wide tracked file timestamps keyed by full backing path, shared by every connection-scoped host.
@@ -255,13 +274,21 @@ namespace OpenCIFS.Server
                     {
                     }
 
-                    durableOpenRecord.Backend.DeleteFileIfPresent(durableOpenRecord.FullPath);
+                    using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageDelete))
+                    {
+                        durableOpenRecord.Backend.DeleteFileIfPresent(durableOpenRecord.FullPath);
+                        storage.Succeed();
+                    }
                     return;
                 }
 
                 if (durableOpenRecord.Backend.DirectoryExists(durableOpenRecord.FullPath))
                 {
-                    durableOpenRecord.Backend.DeleteDirectoryIfPresent(durableOpenRecord.FullPath, recursive: false);
+                    using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageDelete))
+                    {
+                        durableOpenRecord.Backend.DeleteDirectoryIfPresent(durableOpenRecord.FullPath, recursive: false);
+                        storage.Succeed();
+                    }
                 }
             }
             catch (UnauthorizedAccessException)

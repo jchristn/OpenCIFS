@@ -5,6 +5,7 @@ namespace OpenCIFS.Test.Shared
     using OpenCIFS.Core.Tests.Shared;
     using OpenCIFS.Interop.Tests.Shared;
     using OpenCIFS.Server.Tests.Shared;
+    using OpenCIFS.Telemetry.Tests.Shared;
     using Touchstone.Core;
 
     /// <summary>
@@ -16,7 +17,7 @@ namespace OpenCIFS.Test.Shared
     {
         /// <summary>
         /// All shared Touchstone suites for the entire OpenCIFS platform, in execution order:
-        /// protocol/core foundations, then server, then client, then in-process interop loopback.
+        /// protocol/core foundations, then server, then client, then in-process interop loopback, then telemetry emission.
         /// </summary>
         public static IReadOnlyList<TestSuiteDescriptor> All
         {
@@ -27,6 +28,7 @@ namespace OpenCIFS.Test.Shared
                 suites.AddRange(ServerTestSuites.All);
                 suites.AddRange(ClientTestSuites.All);
                 suites.AddRange(InteropTestSuites.All);
+                suites.AddRange(TelemetryTestSuites.All);
                 return suites;
             }
         }

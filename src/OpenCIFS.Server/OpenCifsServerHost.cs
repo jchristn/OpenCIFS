@@ -3,6 +3,7 @@ namespace OpenCIFS.Server
     using System;
     using System.Collections.Concurrent;
     using System.Collections.Generic;
+    using System.Diagnostics;
     using System.Formats.Asn1;
     using System.IO;
     using System.IO.Enumeration;
@@ -123,6 +124,61 @@ namespace OpenCIFS.Server
         }
 
         internal Guid HostId => _HostId;
+
+        // Telemetry gauge sources. Callers must hold SyncRoot, except for the concurrent async-response queue.
+        internal long TelemetrySessionCount
+        {
+            get
+            {
+                return _Sessions.Count;
+            }
+        }
+
+        internal long TelemetryTreeCount
+        {
+            get
+            {
+                long count = 0;
+
+                foreach (ServerSessionRecord sessionRecord in _Sessions.Values)
+                {
+                    count += sessionRecord.Trees.Count;
+                }
+
+                return count;
+            }
+        }
+
+        internal long TelemetryOpenCount
+        {
+            get
+            {
+                long count = 0;
+
+                foreach (ServerSessionRecord sessionRecord in _Sessions.Values)
+                {
+                    count += sessionRecord.Opens.Count;
+                }
+
+                return count;
+            }
+        }
+
+        internal long TelemetryPendingChangeNotifyCount
+        {
+            get
+            {
+                return _PendingChangeNotifySubscriptions.Count;
+            }
+        }
+
+        internal long TelemetryQueuedAsyncResponseCount
+        {
+            get
+            {
+                return _ReadyAsyncResponses.Count;
+            }
+        }
 
         internal IEnumerable<global::OpenCIFS.Server.PendingChangeNotifySubscription> EnumeratePendingChangeNotifySubscriptions()
         {
@@ -453,13 +509,14 @@ namespace OpenCIFS.Server
             }
         }
 
-        private void EnqueueAsyncResponse(OpenCifsServerAsyncResponse response)
+        private void EnqueueAsyncResponse(OpenCifsServerAsyncResponse response, string telemetryKind)
         {
             if (response == null)
             {
                 throw new ArgumentNullException(nameof(response), "Response cannot be null.");
             }
 
+            OpenCifsServerTelemetry.MarkQueued(response, telemetryKind);
             _ReadyAsyncResponses.Enqueue(response);
             _AsyncResponseSignal.Release();
         }
@@ -1363,10 +1420,46 @@ namespace OpenCIFS.Server
 
             if (sessionId == 0)
             {
-                return BeginSessionSetup(request);
+                OpenCifsServerSessionSetupResult beginResult = BeginSessionSetup(request);
+
+                if (beginResult.Status != NtStatus.MoreProcessingRequired)
+                {
+                    // The handshake ended on its first leg (unsupported mechanism or malformed token).
+                    string mechanism = beginResult.Status == NtStatus.NotSupported ? "kerberos" : OpenCifsTelemetryFormat.Unknown;
+                    OpenCifsServerTelemetry.RecordAuthAttempt(mechanism, beginResult.Status, beginResult.Response.SessionFlags);
+                }
+
+                return beginResult;
             }
 
-            return CompleteSessionSetup(sessionId, request);
+            string sessionMechanism = _Sessions.TryGetValue(sessionId, out ServerSessionRecord? pendingSessionRecord) && pendingSessionRecord != null
+                ? GetAuthMechanismName(pendingSessionRecord.SessionSetupFlavor)
+                : OpenCifsTelemetryFormat.Unknown;
+            OpenCifsServerSessionSetupResult completeResult = CompleteSessionSetup(sessionId, request);
+
+            if (completeResult.Status != NtStatus.MoreProcessingRequired)
+            {
+                OpenCifsServerTelemetry.RecordAuthAttempt(sessionMechanism, completeResult.Status, completeResult.Response.SessionFlags);
+            }
+
+            return completeResult;
+        }
+
+        private static string GetAuthMechanismName(SessionSetupFlavor flavor)
+        {
+            switch (flavor)
+            {
+                case SessionSetupFlavor.LegacyOpenCifs:
+                    return "legacy_ntlm";
+                case SessionSetupFlavor.RawNtlm:
+                    return "ntlm";
+                case SessionSetupFlavor.SpnegoNtlm:
+                    return "spnego_ntlm";
+                case SessionSetupFlavor.SpnegoKerberos:
+                    return "kerberos";
+                default:
+                    return OpenCifsTelemetryFormat.Unknown;
+            }
         }
 
         /// <summary>
@@ -1861,7 +1954,11 @@ namespace OpenCIFS.Server
             {
                 try
                 {
-                    stream = treeRecord.Backend.OpenFile(fullPath, fileMode, fileAccess, FileShare.ReadWrite | FileShare.Delete);
+                    using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageOpen))
+                    {
+                        stream = treeRecord.Backend.OpenFile(fullPath, fileMode, fileAccess, FileShare.ReadWrite | FileShare.Delete);
+                        storage.Succeed();
+                    }
                 }
                 catch (DirectoryNotFoundException)
                 {
@@ -2078,6 +2175,29 @@ namespace OpenCIFS.Server
         }
 
         private OpenCifsServerOperationResult<Smb2CreateResponse> HandleDurableReconnectCreate(
+            ServerSessionRecord sessionRecord,
+            ServerTreeRecord treeRecord,
+            Smb2CreateRequest request,
+            string fullPath,
+            ulong persistentFileId,
+            ulong originalVolatileFileId,
+            Guid? durableCreateGuid,
+            Smb2CreateRequestLeaseContext? leaseRequestContext)
+        {
+            OpenCifsServerOperationResult<Smb2CreateResponse> result = HandleDurableReconnectCreateCore(
+                sessionRecord,
+                treeRecord,
+                request,
+                fullPath,
+                persistentFileId,
+                originalVolatileFileId,
+                durableCreateGuid,
+                leaseRequestContext);
+            OpenCifsServerTelemetry.RecordDurableReconnect(result.Status);
+            return result;
+        }
+
+        private OpenCifsServerOperationResult<Smb2CreateResponse> HandleDurableReconnectCreateCore(
             ServerSessionRecord sessionRecord,
             ServerTreeRecord treeRecord,
             Smb2CreateRequest request,
@@ -2507,19 +2627,27 @@ namespace OpenCIFS.Server
             byte[] buffer = new byte[(int)request.Length];
             int bytesRead;
 
-            try
+            using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageRead))
             {
-                openRecord.Stream.Position = checked((long)request.Offset);
-                bytesRead = openRecord.Stream.Read(buffer, 0, buffer.Length);
+                try
+                {
+                    openRecord.Stream.Position = checked((long)request.Offset);
+                    bytesRead = openRecord.Stream.Read(buffer, 0, buffer.Length);
+                    storage.Succeed();
+                }
+                catch (ArgumentOutOfRangeException exception)
+                {
+                    storage.Fail(exception);
+                    return CreateOperationResult(NtStatus.InvalidParameter, new Smb2ReadResponse());
+                }
+                catch (IOException exception)
+                {
+                    storage.Fail(exception);
+                    return CreateOperationResult(NtStatus.AccessDenied, new Smb2ReadResponse());
+                }
             }
-            catch (ArgumentOutOfRangeException)
-            {
-                return CreateOperationResult(NtStatus.InvalidParameter, new Smb2ReadResponse());
-            }
-            catch (IOException)
-            {
-                return CreateOperationResult(NtStatus.AccessDenied, new Smb2ReadResponse());
-            }
+
+            OpenCifsServerTelemetry.RecordIoBytes(bytesRead, write: false);
 
             if (bytesRead == 0)
             {
@@ -2589,20 +2717,28 @@ namespace OpenCIFS.Server
                 return CreateOperationResult(NtStatus.FileLockConflict, new Smb2WriteResponse());
             }
 
-            try
+            using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageWrite))
             {
-                openRecord.Stream.Position = checked((long)request.Offset);
-                openRecord.Stream.Write(request.DataBuffer, 0, request.DataBuffer.Length);
-                EnsureDeclaredAllocationSize(openRecord.FullPath, unchecked((ulong)Math.Max(0L, openRecord.Stream.Length)));
+                try
+                {
+                    openRecord.Stream.Position = checked((long)request.Offset);
+                    openRecord.Stream.Write(request.DataBuffer, 0, request.DataBuffer.Length);
+                    EnsureDeclaredAllocationSize(openRecord.FullPath, unchecked((ulong)Math.Max(0L, openRecord.Stream.Length)));
+                    storage.Succeed();
+                }
+                catch (ArgumentOutOfRangeException exception)
+                {
+                    storage.Fail(exception);
+                    return CreateOperationResult(NtStatus.InvalidParameter, new Smb2WriteResponse());
+                }
+                catch (IOException exception)
+                {
+                    storage.Fail(exception);
+                    return CreateOperationResult(NtStatus.AccessDenied, new Smb2WriteResponse());
+                }
             }
-            catch (ArgumentOutOfRangeException)
-            {
-                return CreateOperationResult(NtStatus.InvalidParameter, new Smb2WriteResponse());
-            }
-            catch (IOException)
-            {
-                return CreateOperationResult(NtStatus.AccessDenied, new Smb2WriteResponse());
-            }
+
+            OpenCifsServerTelemetry.RecordIoBytes(request.DataBuffer.Length, write: true);
 
             PublishModifiedNotification(openRecord.FullPath, FileNotifyChangeFilter.Size | NoteTimestampMutation(openRecord, updateLastWrite: true, updateChange: true));
             Smb2WriteResponse response = new Smb2WriteResponse
@@ -2645,13 +2781,18 @@ namespace OpenCIFS.Server
                 return CreateOperationResult(NtStatus.InvalidParameter, new Smb2FlushResponse());
             }
 
-            try
+            using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageFlush))
             {
-                openRecord.Stream.Flush();
-            }
-            catch (IOException)
-            {
-                return CreateOperationResult(NtStatus.AccessDenied, new Smb2FlushResponse());
+                try
+                {
+                    openRecord.Stream.Flush();
+                    storage.Succeed();
+                }
+                catch (IOException exception)
+                {
+                    storage.Fail(exception);
+                    return CreateOperationResult(NtStatus.AccessDenied, new Smb2FlushResponse());
+                }
             }
 
             Smb2FlushResponse response = new Smb2FlushResponse();
@@ -4557,6 +4698,29 @@ namespace OpenCIFS.Server
 
         private Smb2CompoundPacketEntry HandleCompoundRequestEntry(Smb2CompoundPacketEntry requestEntry)
         {
+            Smb2Command command = requestEntry.Header.Command;
+            long startTimestamp = Stopwatch.GetTimestamp();
+            Activity? activity = OpenCifsServerTelemetry.StartCommand(requestEntry.Header);
+
+            try
+            {
+                Smb2CompoundPacketEntry responseEntry = HandleCompoundRequestEntryCore(requestEntry);
+                OpenCifsServerTelemetry.CompleteCommand(command, responseEntry.Header.Status, startTimestamp, activity);
+                return responseEntry;
+            }
+            catch (Exception exception)
+            {
+                OpenCifsServerTelemetry.FailCommand(command, exception, startTimestamp, activity);
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+        }
+
+        private Smb2CompoundPacketEntry HandleCompoundRequestEntryCore(Smb2CompoundPacketEntry requestEntry)
+        {
             Smb2Header requestHeader = requestEntry.Header;
             byte[] trimmedPayload = Smb2CompoundPayloadHelper.TrimRequestPayload(requestHeader.Command, requestEntry.Payload);
 
@@ -4566,6 +4730,7 @@ namespace OpenCIFS.Server
                     Smb2NegotiateRequest negotiateRequest = Smb2NegotiateRequest.ReadFrom(trimmedPayload);
                     ValidateAndAcceptRequestHeader(requestHeader, Smb2Command.Negotiate);
                     Smb2NegotiateResponse negotiateResponse = HandleNegotiate(negotiateRequest);
+                    OpenCifsServerTelemetry.RecordNegotiation(_NegotiatedDialect);
                     Smb2Header negotiateResponseHeader = CreateResponseHeader(requestHeader, NtStatus.Success);
                     byte[] negotiateResponseBody = negotiateResponse.ToByteArray();
                     AppendPreauthMessageBytes(requestHeader, trimmedPayload);
@@ -4766,6 +4931,29 @@ namespace OpenCIFS.Server
         }
 
         private Smb2CompoundPacketEntry HandleRelatedCompoundRequestEntry(Smb2CompoundPacketEntry requestEntry, RelatedCompoundContext context, bool isFirstEntry)
+        {
+            Smb2Command command = requestEntry.Header.Command;
+            long startTimestamp = Stopwatch.GetTimestamp();
+            Activity? activity = OpenCifsServerTelemetry.StartCommand(requestEntry.Header);
+
+            try
+            {
+                Smb2CompoundPacketEntry responseEntry = HandleRelatedCompoundRequestEntryCore(requestEntry, context, isFirstEntry);
+                OpenCifsServerTelemetry.CompleteCommand(command, responseEntry.Header.Status, startTimestamp, activity);
+                return responseEntry;
+            }
+            catch (Exception exception)
+            {
+                OpenCifsServerTelemetry.FailCommand(command, exception, startTimestamp, activity);
+                throw;
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+        }
+
+        private Smb2CompoundPacketEntry HandleRelatedCompoundRequestEntryCore(Smb2CompoundPacketEntry requestEntry, RelatedCompoundContext context, bool isFirstEntry)
         {
             Smb2Header requestHeader = requestEntry.Header;
             byte[] trimmedPayload = Smb2CompoundPayloadHelper.TrimRequestPayload(requestHeader.Command, requestEntry.Payload);
@@ -6292,7 +6480,15 @@ namespace OpenCIFS.Server
             {
                 try
                 {
-                    if (openRecord.Backend.EnumerateFileSystemInfos(openRecord.FullPath).Count != 0)
+                    int childCount;
+
+                    using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageEnumerate))
+                    {
+                        childCount = openRecord.Backend.EnumerateFileSystemInfos(openRecord.FullPath).Count;
+                        storage.Succeed();
+                    }
+
+                    if (childCount != 0)
                     {
                         return NtStatus.DirectoryNotEmpty;
                     }
@@ -6372,13 +6568,21 @@ namespace OpenCIFS.Server
 
             if (openRecord.IsDirectory)
             {
-                openRecord.Backend.Move(sourceFullPath, destinationFullPath, isDirectory: true);
+                using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageRename))
+                {
+                    openRecord.Backend.Move(sourceFullPath, destinationFullPath, isDirectory: true);
+                    storage.Succeed();
+                }
                 MoveDeclaredAllocationSizesForDirectoryRename(sourceFullPath, destinationFullPath);
                 MoveTrackedFileTimestampsForDirectoryRename(sourceFullPath, destinationFullPath);
             }
             else
             {
-                openRecord.Backend.Move(sourceFullPath, destinationFullPath, isDirectory: false);
+                using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageRename))
+                {
+                    openRecord.Backend.Move(sourceFullPath, destinationFullPath, isDirectory: false);
+                    storage.Succeed();
+                }
                 MoveDeclaredAllocationSize(sourceFullPath, destinationFullPath);
                 MoveTrackedFileTimestamp(sourceFullPath, destinationFullPath);
             }
@@ -6672,7 +6876,7 @@ namespace OpenCIFS.Server
             {
                 Header = openRecord.OwnerHost.CreateOplockBreakNotificationHeader(openRecord),
                 Payload = notification.ToByteArray()
-            });
+            }, OpenCifsServerTelemetry.AsyncKindOplockBreak);
         }
 
         private void QueueLeaseBreakNotificationsForConflictingOpens(string fullPath, ServerOpenRecord excludedOpenRecord)
@@ -6720,7 +6924,7 @@ namespace OpenCIFS.Server
             {
                 Header = openRecord.OwnerHost.CreateOplockBreakNotificationHeader(openRecord),
                 Payload = notification.ToByteArray()
-            });
+            }, OpenCifsServerTelemetry.AsyncKindLeaseBreak);
         }
 
         private bool HasDeletePendingConflict(string fullPath)
@@ -6786,7 +6990,11 @@ namespace OpenCIFS.Server
         {
             try
             {
-                backend.CreateDirectory(fullPath);
+                using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageCreateDirectory))
+                {
+                    backend.CreateDirectory(fullPath);
+                    storage.Succeed();
+                }
                 status = NtStatus.Success;
                 return true;
             }
@@ -7101,7 +7309,12 @@ namespace OpenCIFS.Server
         {
             if (backend.DirectoryExists(fullPath))
             {
-                DirectoryInfo directoryInfo = (DirectoryInfo)backend.GetFileSystemInfo(fullPath);
+                DirectoryInfo directoryInfo;
+                using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageStat))
+                {
+                    directoryInfo = (DirectoryInfo)backend.GetFileSystemInfo(fullPath);
+                    storage.Succeed();
+                }
                 directoryInfo.Refresh();
                 ulong creationTime = unchecked((ulong)directoryInfo.CreationTimeUtc.ToFileTimeUtc());
                 ulong lastAccessTime = unchecked((ulong)directoryInfo.LastAccessTimeUtc.ToFileTimeUtc());
@@ -7115,7 +7328,12 @@ namespace OpenCIFS.Server
                 };
             }
 
-            FileInfo fileInfo = (FileInfo)backend.GetFileSystemInfo(fullPath);
+            FileInfo fileInfo;
+            using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageStat))
+            {
+                fileInfo = (FileInfo)backend.GetFileSystemInfo(fullPath);
+                storage.Succeed();
+            }
             fileInfo.Refresh();
             ulong fileTimeCreation = fileInfo.Exists ? unchecked((ulong)fileInfo.CreationTimeUtc.ToFileTimeUtc()) : 0;
             ulong fileTimeAccess = fileInfo.Exists ? unchecked((ulong)fileInfo.LastAccessTimeUtc.ToFileTimeUtc()) : 0;
@@ -7344,7 +7562,11 @@ namespace OpenCIFS.Server
 
                 try
                 {
-                    backend.DeleteFileIfPresent(fullPath);
+                    using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageDelete))
+                    {
+                        backend.DeleteFileIfPresent(fullPath);
+                        storage.Succeed();
+                    }
                 }
                 catch (FileNotFoundException)
                 {
@@ -7372,7 +7594,11 @@ namespace OpenCIFS.Server
             {
                 try
                 {
-                    backend.DeleteDirectoryIfPresent(fullPath, recursive: false);
+                    using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageDelete))
+                    {
+                        backend.DeleteDirectoryIfPresent(fullPath, recursive: false);
+                        storage.Succeed();
+                    }
                 }
                 catch (DirectoryNotFoundException)
                 {
@@ -7403,7 +7629,12 @@ namespace OpenCIFS.Server
 
             if (backend.DirectoryExists(fullPath))
             {
-                DirectoryInfo directoryInfo = (DirectoryInfo)backend.GetFileSystemInfo(fullPath);
+                DirectoryInfo directoryInfo;
+                using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageStat))
+                {
+                    directoryInfo = (DirectoryInfo)backend.GetFileSystemInfo(fullPath);
+                    storage.Succeed();
+                }
                 directoryInfo.Refresh();
                 return new FileMetadata
                 {
@@ -7417,7 +7648,12 @@ namespace OpenCIFS.Server
                 };
             }
 
-            FileInfo fileInfo = (FileInfo)backend.GetFileSystemInfo(fullPath);
+            FileInfo fileInfo;
+            using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageStat))
+            {
+                fileInfo = (FileInfo)backend.GetFileSystemInfo(fullPath);
+                storage.Succeed();
+            }
             fileInfo.Refresh();
             long endOfFile = fileInfo.Exists ? fileInfo.Length : 0;
             ulong effectiveEndOfFile = unchecked((ulong)Math.Max(0L, endOfFile));
@@ -7796,7 +8032,7 @@ namespace OpenCIFS.Server
             {
                 Header = ownerHost.CreateResponseHeader(requestState.Header, status, sessionId: requestState.Header.SessionId, treeId: requestState.Header.TreeId),
                 Payload = response.ToByteArray()
-            });
+            }, OpenCifsServerTelemetry.AsyncKindChangeNotify);
         }
 
         private void QueueCancelledChangeNotifyResponsesForOpen(ulong volatileFileId)
@@ -7828,7 +8064,7 @@ namespace OpenCIFS.Server
                 {
                     Header = CreateResponseHeader(requestState.Header, NtStatus.Cancelled, sessionId: requestState.Header.SessionId, treeId: requestState.Header.TreeId),
                     Payload = cancelledErrorResponse.ToByteArray()
-                });
+                }, OpenCifsServerTelemetry.AsyncKindChangeNotifyCancelled);
             }
         }
 
@@ -7852,7 +8088,9 @@ namespace OpenCIFS.Server
                     return false;
                 }
 
-                relativePath = fullPath.Substring(directoryPrefix.Length);
+                // FILE_NOTIFY_INFORMATION names are SMB paths, which always use backslash separators regardless of the
+                // host operating system that backs the share.
+                relativePath = fullPath.Substring(directoryPrefix.Length).Replace(Path.DirectorySeparatorChar, '\\');
                 return relativePath.Length != 0;
             }
 
@@ -7957,7 +8195,12 @@ namespace OpenCIFS.Server
             List<FileSystemInfo> matches = new List<FileSystemInfo>();
             string normalizedPattern = NormalizeDirectorySearchPattern(pattern);
 
-            IReadOnlyList<FileSystemInfo> children = backend.EnumerateFileSystemInfos(fullPath);
+            IReadOnlyList<FileSystemInfo> children;
+            using (OpenCifsServerStorageScope storage = OpenCifsServerStorageScope.Start(OpenCifsServerTelemetry.StorageEnumerate))
+            {
+                children = backend.EnumerateFileSystemInfos(fullPath);
+                storage.Succeed();
+            }
 
             for (int index = 0; index < children.Count; index++)
             {

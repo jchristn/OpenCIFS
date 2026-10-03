@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.2.0-alpha
+
+Package version `0.2.0-alpha` for `OpenCIFS.Protocol`, `OpenCIFS.Security`, `OpenCIFS.Transport`, `OpenCIFS.Client`, and `OpenCIFS.Server`. This release adds built-in observability to the client and server libraries and fixes a CHANGE_NOTIFY path bug on Linux and macOS hosts. Public API changes are additive. The `-alpha` label follows the repository versioning standard for `0.x` releases; install with `--prerelease`.
+
+### Added
+
+- **Server telemetry (`OpenCIFS.Server`).** A `Meter` and `ActivitySource` named `OpenCIFS.Server` emit:
+  - connection lifecycle: `opencifs.server.connections.accepted`, `.active`, `.closed` (by `reason`: `client_closed`, `transport_error`, `protocol_error`, `server_error`, `shutdown`), and `opencifs.server.connection.duration`;
+  - the per-packet pipeline: `opencifs.server.packet.duration` (by packet kind and outcome) and `opencifs.server.packet.stage.duration` for every stage (`queued`, `decode`, `dispatch`, `encode`, `send`), plus `opencifs.server.lock.waiting`. Every packet on every connection takes one server-wide state lock, and the `queued` stage makes that contention visible;
+  - per-command latency `opencifs.server.command.duration` labeled by `smb.command`, `smb.status`, and `outcome`, and `opencifs.server.errors` by `error.type` and `stage`;
+  - storage-backend latency `opencifs.server.storage.duration` by `storage.operation` (`open`, `read`, `write`, `flush`, `enumerate`, `stat`, `create_directory`, `delete`, `rename`) and outcome;
+  - domain counters and state gauges: negotiations by dialect, authentication attempts by mechanism, outcome, and session kind, durable reconnects, active sessions, trees, opens, detached durable opens, pending CHANGE_NOTIFY subscriptions, queued async responses, async responses sent and their queue wait by kind (oplock break, lease break, change notify), file-data and network bytes, listener count, listener configuration info, and build info;
+  - spans: one `Server` root per inbound packet (`SMB2 <COMMAND>`, `SMB2 COMPOUND`, `SMB1 NEGOTIATE`) with `stage:*` children, a `command:<COMMAND>` span per SMB2 command, a `storage <operation>` span per backend call, and an `async_response <kind>` producer span for breaks and notifications, parented on the request that produced them so the background hand-off stays in one trace.
+- **Client telemetry (`OpenCIFS.Client`).** A `Meter` and `ActivitySource` named `OpenCIFS.Client` emit `opencifs.client.operation.duration` (by public operation, outcome, and `error.type`), `opencifs.client.operation.queue.duration` and `opencifs.client.operations.waiting` for the per-connection operation lock, `opencifs.client.request.duration` (by SMB2 command, NT status, and outcome), `opencifs.client.connect.duration`, `opencifs.client.connections.active`, `opencifs.client.transport.failures`, `opencifs.client.requests.abandoned`, file-data and network bytes, and build info. Spans: `OpenCIFS <Operation>` (nested under the caller's current span) wrapping `SMB2 <COMMAND>` / `SMB2 COMPOUND` client spans and a `stage:tcp_connect` span.
+- `OpenCifsTelemetryNames` (public, `OpenCIFS.Protocol`): every meter, activity-source, instrument, and attribute name as a constant.
+- A public parameterless constructor on `OpenCifsServerSharedState` (previously implicit), which registers the state with the server gauges.
+- `TELEMETRY.md`: the metrics and spans catalog, label vocabulary, subscription examples for Radiant and the OpenTelemetry SDK, recommended PromQL alerts, and a Grafana dashboard map.
+- A `Telemetry` Touchstone suite (10 cases, run by the automated, xUnit, and NUnit runners) that proves emission with in-memory listeners across the success path, failure paths, label hygiene, and the no-listener path.
+
+Telemetry uses only the base-class library, adds no package dependencies, records nothing until a host subscribes, keeps every metric label bounded (identifiers and peer addresses appear only on spans), never records payloads, paths, file names, user names, or credentials, and never fails an SMB operation.
+
+### Fixed
+
+- **CHANGE_NOTIFY reported forward-slash file names from Linux and macOS servers.** Watched-tree notifications built the relative name with the host path separator, so an `OpenCIFS.Server` running on Linux or macOS sent `nested/child.txt` instead of the SMB-required `nested\child.txt`. Names now always use backslashes.
+- **The build and test suite did not run on Linux or macOS.** The package-graph and source-audit validators combined Windows-style relative paths without normalizing separators (the package-graph check failed the build; the source audit silently scanned nothing), and the direct-TCP test suites reserved ports with a named `Semaphore`, which only Windows supports. The validators now normalize separators, and port reservation uses a named semaphore on Windows and an exclusive lock file elsewhere.
+
 ## v0.1.1
 
 Package version `0.1.1` for `OpenCIFS.Protocol`, `OpenCIFS.Security`, `OpenCIFS.Transport`, `OpenCIFS.Client`, and `OpenCIFS.Server`. This release fixes data-path bugs in the primary client surface, makes one client safe to share across concurrent callers, adds ranged and streamed file APIs, and makes the packages publish-ready. Public API changes are additive; no existing public signature changed.

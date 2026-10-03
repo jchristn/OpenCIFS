@@ -4,8 +4,9 @@ OpenCIFS is an MIT-licensed SMB/CIFS library suite for .NET.
 
 ## Status
 
-- Current library and package version: `0.1.1`
+- Current library and package version: `0.2.0-alpha`
 - Release state: alpha
+- `0.2.0-alpha` highlights: built-in observability. `OpenCIFS.Server` and `OpenCIFS.Client` emit metrics and traces through the BCL `Meter` and `ActivitySource` (no new dependencies, near-zero cost until a host subscribes), covering server connections, per-stage packet latency including the server-wide lock wait, per-command latency and NT status, storage-backend latency, authentication, sessions, trees, opens, durable handles, and async break/notification delivery, plus client operations, requests, connects, and transport failures. See [Observability](#observability) and `TELEMETRY.md`. Also fixes CHANGE_NOTIFY file names on Linux and macOS hosts.
 - `0.1.1` highlights: complete multi-page directory enumeration, short-read-safe and multi-megabyte-safe reads and writes, safe concurrent use of one client, and new ranged (`Files.ReadAsync`), streamed (`Files.OpenReadAsync`, `Files.WriteAsync(path, Stream)`), existence (`Metadata.ExistsAsync`), and recursive-create (`Directories.CreateAsync(path, createParents: true)`) APIs. See `CHANGELOG.md`.
 - Compatibility posture: the current coverage and interoperability claims are bounded and evidence-backed, but thorough or exhaustive compatibility testing across SMB dialects, operating systems, client or server products, NAS devices, and deployment environments has not been performed.
 
@@ -43,10 +44,10 @@ Current repository status:
 
 The entire test surface is unified on [Touchstone](https://www.nuget.org/packages/Touchstone.Core). `OpenCIFS.Test.Shared` is the single central source of truth that defines every Core, Server, Client, and Interop suite once; the three runner projects each execute exactly that aggregate (`OpenCIFS.Test.Shared.AllSuites.All`).
 
-- `src/OpenCIFS.Test.Shared` — central Touchstone source of truth (Core, Server, Client, and Interop suites)
-- `src/OpenCIFS.Test.Automated` — Touchstone command-line runner
-- `src/OpenCIFS.Test.Xunit` — Touchstone xUnit adapter
-- `src/OpenCIFS.Test.Nunit` — Touchstone NUnit adapter
+- `src/OpenCIFS.Test.Shared`: central Touchstone source of truth (Core, Server, Client, Interop, and Telemetry suites)
+- `src/OpenCIFS.Test.Automated`: Touchstone command-line runner
+- `src/OpenCIFS.Test.Xunit`: Touchstone xUnit adapter
+- `src/OpenCIFS.Test.Nunit`: Touchstone NUnit adapter
 
 ## Build
 
@@ -78,6 +79,10 @@ powershell -ExecutionPolicy Bypass -File .\eng\run-release-gates.ps1 -Configurat
 
 `eng/test.ps1` now runs the clean build, Touchstone console suites, `dotnet test`, package smoke, README smoke, and tester-console smoke as one local managed-path gate.
 
+The `Telemetry` Touchstone suite attaches in-memory `MeterListener` and `ActivityListener` instances and proves that a loopback client/server session emits every documented metric and span, that failure paths (bad credentials, missing files, transport loss, failed connects, malformed packets, storage errors) are recorded with bounded labels and error spans, that no file names, paths, or credentials leak into labels, and that the unobserved path is a safe no-op.
+
+The direct-TCP suites serialize port reservation across test hosts with a named semaphore on Windows and an exclusive lock file on Linux and macOS, so the full suite runs on all three. The SMB 3.x AES-128-CCM encryption cases require a platform with AES-CCM support (Windows, or Linux with OpenSSL); macOS does not provide it, so those cases fail there by design.
+
 The Touchstone core and server suites now also include deterministic parser-mutation corpuses and malformed direct-TCP listener bursts, so malformed-input hardening is exercised on every local managed-path gate run before the broader external interop stack is replayed.
 
 `eng/run-package-smoke.ps1` packs `OpenCIFS.Protocol`, `OpenCIFS.Security`, `OpenCIFS.Transport`, `OpenCIFS.Client`, and `OpenCIFS.Server` into a temporary local feed, validates the emitted nuspec metadata plus bounded package-specific readme and XML-doc payloads, restores a generated downstream consumer against that feed, and verifies authenticated echo, directory create, file write or read, metadata query, directory enumeration, rename, cleanup, bad-credential rejection, and non-empty-directory delete rejection from packaged artifacts. Evidence is written to `artifacts/package-smoke/package-metadata.json` and `artifacts/package-smoke/package-smoke.json`.
@@ -95,6 +100,36 @@ The Touchstone core and server suites now also include deterministic parser-muta
 `eng/run-nightly-interop.ps1` extends the external-client stack into a deeper current-dialect nightly-style pass. It reruns the Python real-client, Samba, and native Windows three-dialect matrices across SMB 2.0.2, SMB 2.1, and encryption-required SMB 3.0.2 with a larger bounded payload, then composes those artifacts with a stronger SMB 2.1 soak that exercises durable reconnect, exclusive oplock breaks, lease breaks, and large-I/O churn on the managed path. Evidence is written to `artifacts/nightly-interop/nightly-interop.json`. The rerun external artifacts now also preserve structured advanced SMB 3.x durable/oplock/lease outcome or skip sections, while checked-in durable-handle v2 pass evidence, SMB 3.1.1 negotiation, and broader SMB 3.x nightly coverage remain backlog.
 
 `eng/run-release-gates.ps1` reruns the full integration stack in `Release`, including the external SMB 2.0.2, SMB 2.1, and SMB 3.0.2 interop matrix, then runs `eng/run-soak-smoke.ps1`, then calls `eng/validate-release-artifacts.ps1` to verify current coverage and interop matrix structure, rerun the bounded package-claim and source-audit gates, require same-day pass-row interop evidence, validate the timed soak artifact shape and churn counters, require all claimed dialect runs in the external interop artifacts, and record a release summary in `artifacts/release-gates/release-gates.json`.
+
+## Observability
+
+`OpenCIFS.Server` and `OpenCIFS.Client` are instrumented with the base-class-library `System.Diagnostics.Metrics.Meter` and `System.Diagnostics.ActivitySource`. They take no OpenTelemetry, Radiant, or exporter dependency, there is nothing to enable, and nothing is recorded until your host subscribes:
+
+| Signal | Name |
+| --- | --- |
+| Server meter and activity source | `OpenCIFS.Server` |
+| Client meter and activity source | `OpenCIFS.Client` |
+
+All names are constants on `OpenCIFS.Protocol.OpenCifsTelemetryNames`. Subscribe from your host, for example with Radiant:
+
+```csharp
+RadiantSettings settings = new RadiantSettings("my-file-service");
+settings.Sources.AddMeter(OpenCifsTelemetryNames.ServerMeterName);
+settings.Sources.AddActivitySource(OpenCifsTelemetryNames.ServerActivitySourceName);
+settings.Sources.AddMeter(OpenCifsTelemetryNames.ClientMeterName);
+settings.Sources.AddActivitySource(OpenCifsTelemetryNames.ClientActivitySourceName);
+using RadiantHost host = RadiantHost.Start(settings);
+```
+
+or with the OpenTelemetry SDK (`.AddMeter("OpenCIFS.Server", "OpenCIFS.Client")` and `.AddSource("OpenCIFS.Server", "OpenCIFS.Client")`).
+
+What you get:
+
+- **Server:** connections accepted, active, and closed by reason; end-to-end and per-stage packet latency (`queued` on the server-wide state lock, `decode`, `dispatch`, `encode`, `send`); per-SMB2-command latency labeled by command, NT status, and outcome; share-backend storage latency by operation; negotiations by dialect; authentication attempts by mechanism and outcome; live session, tree, open, detached-durable, pending-notify, and async-queue gauges; durable reconnects; oplock/lease break and notification delivery; data and network bytes; errors by exception type and stage; build and listener-configuration info.
+- **Server traces:** one root span per inbound packet (`SMB2 READ`, `SMB2 COMPOUND`) with `stage:*` children, a `command:<COMMAND>` span per SMB2 command, and a `storage <operation>` span per backend call. Break and notification sends are parented on the request that produced them, even across connections.
+- **Client:** operation latency and outcome by public method, request round trips by command and NT status, connect latency and failures, connection-lock queueing, transport failures, abandoned requests, and bytes, with `OpenCIFS <Operation>` spans wrapping `SMB2 <COMMAND>` client spans, nested under the caller's current span.
+
+Metric labels are bounded (no ids, paths, file names, users, or credentials), quantiles are computed in your backend from histograms, and instrumentation never fails an SMB operation. `TELEMETRY.md` has the full metrics and spans catalog, label vocabulary, recommended PromQL alerts, and a Grafana dashboard map.
 
 ## Code Examples
 

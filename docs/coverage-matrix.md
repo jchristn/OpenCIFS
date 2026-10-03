@@ -1,6 +1,6 @@
 ﻿# Coverage Matrix
 
-OpenCIFS `0.1.1` is alpha software. This matrix records the current bounded implementation and verification surface; it is not an exhaustive compatibility or protocol-completeness certification beyond the explicitly listed suites and evidence.
+OpenCIFS `0.2.0-alpha` is alpha software. This matrix records the current bounded implementation and verification surface; it is not an exhaustive compatibility or protocol-completeness certification beyond the explicitly listed suites and evidence.
 
 | dialect | area | command or capability | server status | client status | advertised | implemented | test suite name | descriptor count | descriptor skipped count | last samba verification date | last windows verification date | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
