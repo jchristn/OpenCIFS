@@ -4,8 +4,9 @@ OpenCIFS is an MIT-licensed SMB/CIFS library suite for .NET.
 
 ## Status
 
-- Current library and package version: `0.2.0-alpha`
+- Current library and package version: `0.2.1-alpha`
 - Release state: alpha
+- `0.2.1-alpha` highlights: dependency refresh. No public API or behavior changes; the shipped packages now build against `System.IO.Pipelines` 10.0.12, and the test and tooling graph moves to Touchstone 0.2.0, NUnit 5.0.0, xUnit v3 4.0.1, Microsoft.NET.Test.Sdk 18.10.1, Microsoft.Testing.Platform 2.4.1, and the latest pinned transitive versions (Microsoft.Extensions.* 10.0.12, OpenTelemetry 1.19.1, Azure.Core 1.63.0, MSAL 4.90.1).
 - `0.2.0-alpha` highlights: built-in observability. `OpenCIFS.Server` and `OpenCIFS.Client` emit metrics and traces through the BCL `Meter` and `ActivitySource` (no new dependencies, near-zero cost until a host subscribes), covering server connections, per-stage packet latency including the server-wide lock wait, per-command latency and NT status, storage-backend latency, authentication, sessions, trees, opens, durable handles, and async break/notification delivery, plus client operations, requests, connects, and transport failures. See [Observability](#observability) and `TELEMETRY.md`. Also fixes CHANGE_NOTIFY file names on Linux and macOS hosts.
 - `0.1.1` highlights: complete multi-page directory enumeration, short-read-safe and multi-megabyte-safe reads and writes, safe concurrent use of one client, and new ranged (`Files.ReadAsync`), streamed (`Files.OpenReadAsync`, `Files.WriteAsync(path, Stream)`), existence (`Metadata.ExistsAsync`), and recursive-create (`Directories.CreateAsync(path, createParents: true)`) APIs. See `CHANGELOG.md`.
 - Compatibility posture: the current coverage and interoperability claims are bounded and evidence-backed, but thorough or exhaustive compatibility testing across SMB dialects, operating systems, client or server products, NAS devices, and deployment environments has not been performed.

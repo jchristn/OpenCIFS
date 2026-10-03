@@ -35,7 +35,7 @@ OpenCIFS is a set of libraries, so it emits and the host collects:
 | Meter | `OpenCIFS.Client` | `OpenCifsTelemetryNames.ClientMeterName` |
 | Activity source | `OpenCIFS.Client` | `OpenCifsTelemetryNames.ClientActivitySourceName` |
 
-The meter and activity-source version is the package version (for example `0.2.0-alpha`). Treat these names as a public API; they will not change without a breaking-change note in `CHANGELOG.md`.
+The meter and activity-source version is the package version (for example `0.2.1-alpha`). Treat these names as a public API; they will not change without a breaking-change note in `CHANGELOG.md`.
 
 ## Enabling and subscribing
 

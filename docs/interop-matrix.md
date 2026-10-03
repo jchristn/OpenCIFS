@@ -1,6 +1,6 @@
 ﻿# Interop Matrix
 
-OpenCIFS `0.2.0-alpha` is alpha software. This matrix records the current bounded interoperability evidence and release-facing claims; it is not an exhaustive compatibility certification across SMB dialects, peers, platforms, or deployment environments.
+OpenCIFS `0.2.1-alpha` is alpha software. This matrix records the current bounded interoperability evidence and release-facing claims; it is not an exhaustive compatibility certification across SMB dialects, peers, platforms, or deployment environments.
 
 | role | peer | target environment | dialect scope | smoke status | deep status | last verified date | evidence | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

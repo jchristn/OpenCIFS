@@ -9,7 +9,7 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <LangVersion>latest</LangVersion>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true' or '$(Configuration)' == 'Release'">true</ContinuousIntegrationBuild>
-    <Version>0.2.0-alpha</Version>
+    <Version>0.2.1-alpha</Version>
     <Company>OpenCIFS Contributors</Company>
     <Authors>OpenCIFS Contributors</Authors>
     <Copyright>Copyright (c) 2026 OpenCIFS Contributors</Copyright>
@@ -20,7 +20,7 @@
     <PackageProjectUrl>https://github.com/jchristn/OpenCIFS</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageReleaseNotes>0.2.0-alpha: built-in observability. OpenCIFS.Server and OpenCIFS.Client now emit metrics and traces through the base-class-library Meter and ActivitySource types (names OpenCIFS.Server and OpenCIFS.Client, listed in OpenCifsTelemetryNames), with no new package dependencies and near-zero cost until a host subscribes: server connections, per-stage packet latency including the server-wide lock wait, per-command latency and NT status, storage-backend latency, authentication, negotiation, session, tree, open, durable-handle, and async break/notification metrics with per-packet span trees; client operation, request, connect, queue, transport-failure, and byte metrics with nested spans. Also fixed CHANGE_NOTIFY file names using the host path separator instead of backslashes on Linux and macOS servers. See https://github.com/jchristn/OpenCIFS/blob/main/TELEMETRY.md and CHANGELOG.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.2.1-alpha: dependency refresh with no public API or behavior changes. The packages now build against System.IO.Pipelines 10.0.12 (from 10.0.11); test and tooling dependencies were updated (Touchstone 0.2.0, NUnit 5.0.0, xUnit v3 4.0.1, Microsoft.NET.Test.Sdk 18.10.1, Microsoft.Testing.Platform 2.4.1). See https://github.com/jchristn/OpenCIFS/blob/main/CHANGELOG.md.</PackageReleaseNotes>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.1-alpha
+
+Package version `0.2.1-alpha` for `OpenCIFS.Protocol`, `OpenCIFS.Security`, `OpenCIFS.Transport`, `OpenCIFS.Client`, and `OpenCIFS.Server`. This is a dependency-refresh release with no public API or behavior changes.
+
+### Changed
+
+- **Shipped package dependency.** `OpenCIFS.Transport` (and therefore `OpenCIFS.Client` and `OpenCIFS.Server`) now depends on `System.IO.Pipelines` 10.0.12 (from 10.0.11).
+- **Test and tooling dependencies.** `Touchstone.Core`, `Touchstone.Cli`, and `Touchstone.NunitAdapter` 0.1.12 -> 0.2.0; `NUnit` 4.6.1 -> 5.0.0; `NUnit.Analyzers` 4.14.0 -> 4.15.0; `NUnit3TestAdapter` 6.2.0 -> 6.3.0; `xunit.v3` 4.0.0 -> 4.0.1; `Microsoft.NET.Test.Sdk` 18.9.0 -> 18.10.1; `Microsoft.Testing.Platform`, `Microsoft.Testing.Platform.MSBuild`, `Microsoft.Testing.Extensions.Telemetry`, `Microsoft.Testing.Extensions.TrxReport.Abstractions`, and `Microsoft.Testing.Extensions.VSTestBridge` 2.3.3 -> 2.4.1.
+- **Centrally pinned transitive versions.** `Microsoft.Extensions.*`, `Microsoft.Bcl.AsyncInterfaces`, `System.Diagnostics.DiagnosticSource`, `System.Memory.Data`, `System.Net.ServerSentEvents`, `System.Security.Cryptography.ProtectedData`, `System.Text.Encodings.Web`, and `System.Text.Json` 10.0.11 -> 10.0.12; `OpenTelemetry`, `OpenTelemetry.Api`, `OpenTelemetry.Api.ProviderBuilderExtensions`, and `OpenTelemetry.Extensions.Hosting` 1.17.0 -> 1.19.1; `Azure.Core` 1.61.0 -> 1.63.0; `Azure.Monitor.OpenTelemetry.Exporter` 1.8.3 -> 1.9.0; `Microsoft.Identity.Client` and `Microsoft.Identity.Client.Extensions.Msal` 4.87.0 -> 4.90.1; `Microsoft.IdentityModel.Abstractions` 8.22.0 -> 8.23.0; `System.ClientModel` 1.15.0 -> 1.16.0.
+
+### Verification
+
+- The full Touchstone suite (433 cases) was rerun against the updated dependency graph. On macOS every case passes except the 37 SMB 3.x AES-128-CCM cases, which need platform AES-CCM support (documented). In a Linux container, those 37 AES-CCM cases pass; the remaining 11 Linux failures are Hidden-attribute and timestamp-precision cases that fail identically on `v0.2.0-alpha`, so the update introduced no regressions.
+
 ## v0.2.0-alpha
 
 Package version `0.2.0-alpha` for `OpenCIFS.Protocol`, `OpenCIFS.Security`, `OpenCIFS.Transport`, `OpenCIFS.Client`, and `OpenCIFS.Server`. This release adds built-in observability to the client and server libraries and fixes a CHANGE_NOTIFY path bug on Linux and macOS hosts. Public API changes are additive. The `-alpha` label follows the repository versioning standard for `0.x` releases; install with `--prerelease`.
